@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useGame } from './store'
+import { allProblems } from '../game/problems/index'
 
 const DIFFICULTY = ['◆◇◇◇◇', '◆◆◇◇◇', '◆◆◆◇◇', '◆◆◆◆◇', '◆◆◆◆◆']
 
@@ -18,7 +19,7 @@ export function HudCard() {
     <div className={`hud${collapsed ? ' hud-collapsed' : ''}`}>
       <div className="hud-meta">
         <span className="hud-diff">{DIFFICULTY[problem.level - 1]} LEVEL {problem.level}</span>
-        <span className="hud-count">{solvedCount}/20 SOLVED</span>
+        <span className="hud-count">{solvedCount}/{allProblems.length} SOLVED</span>
         <button
           className="hud-fold"
           aria-expanded={!collapsed}

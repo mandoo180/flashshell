@@ -3,6 +3,11 @@
   --phos-green: #4ee06a;
   --phos-amber: #ffb03a;
   --phos-dim: #2e7a3f;
+  --phos-border: #2f4a24;   /* dim green rule/border */
+  --phos-text: #b6e08a;     /* body copy on the HUD */
+  --phos-body: #9fd47a;     /* body copy in the reveal sheet */
+  --phos-panel: rgba(11, 14, 8, 0.86);       /* HUD panel background (derived from --phos-bg) */
+  --phos-panel-solid: rgba(11, 14, 8, 0.96); /* reveal sheet panel background, more opaque */
   --glow-green: 0 0 6px rgba(78, 224, 106, 0.55);
   --glow-amber: 0 0 7px rgba(255, 176, 58, 0.6);
 }
@@ -73,8 +78,8 @@ html, body { margin: 0; }
   top: 1rem; left: 1rem; right: 1rem;
   z-index: 2;
   padding: 0.9rem 1.1rem;
-  background: rgba(10, 16, 8, 0.86);
-  border: 1px solid #2f4a24;
+  background: var(--phos-panel);
+  border: 1px solid var(--phos-border);
   backdrop-filter: blur(3px);
   color: var(--phos-green);
 }
@@ -82,10 +87,10 @@ html, body { margin: 0; }
 .hud-diff { color: var(--phos-amber); }
 .hud-count { color: var(--phos-dim); margin-left: auto; }
 .hud-fold,
-.hud-exit { background: none; border: 1px solid #2f4a24; color: var(--phos-dim); font: inherit; padding: 0.15rem 0.5rem; cursor: pointer; }
+.hud-exit { background: none; border: 1px solid var(--phos-border); color: var(--phos-dim); font: inherit; padding: 0.15rem 0.5rem; cursor: pointer; }
 .hud-collapsed { padding-bottom: 0.55rem; }
 .hud-title { margin: 0.55rem 0 0.2rem; font-size: 1rem; text-shadow: var(--glow-green); }
-.hud-prompt { margin: 0; line-height: 1.55; color: #b6e08a; }
+.hud-prompt { margin: 0; line-height: 1.55; color: var(--phos-text); }
 .hud-hint { margin: 0.45rem 0 0; color: var(--phos-amber); text-shadow: var(--glow-amber); font-size: 0.9rem; }
 .hud-hint-button { margin-top: 0.7rem; background: none; border: 1px solid var(--phos-amber); color: var(--phos-amber); font: inherit; font-size: 0.7rem; letter-spacing: 0.18em; padding: 0.25rem 0.75rem; cursor: pointer; }
 
@@ -94,11 +99,11 @@ html, body { margin: 0; }
   left: 1rem; right: 1rem; bottom: 0;
   z-index: 3;
   padding: 1rem 1.2rem 1.2rem;
-  background: rgba(10, 16, 8, 0.96);
+  background: var(--phos-panel-solid);
   border: 1px solid var(--phos-green);
   border-bottom: 0;
   box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.7);
-  color: #9fd47a;
+  color: var(--phos-body);
   animation: sheet-rise 260ms ease-out;
   max-height: 60vh;
   overflow-y: auto;
@@ -107,7 +112,7 @@ html, body { margin: 0; }
 
 .sheet-header { color: var(--phos-green); text-shadow: var(--glow-green); letter-spacing: 0.24em; font-size: 0.75rem; }
 .sheet-label { color: var(--phos-dim); font-size: 0.65rem; letter-spacing: 0.2em; margin-top: 0.8rem; }
-.sheet-code { margin: 0.3rem 0 0; padding: 0.55rem 0.7rem; background: var(--phos-bg); border: 1px solid #2f4a24; color: var(--phos-green); overflow-x: auto; }
+.sheet-code { margin: 0.3rem 0 0; padding: 0.55rem 0.7rem; background: var(--phos-bg); border: 1px solid var(--phos-border); color: var(--phos-green); overflow-x: auto; }
 .sheet-body { margin: 0.3rem 0 0; line-height: 1.65; }
 .sheet-next { margin-top: 1rem; background: none; border: 1px solid var(--phos-green); color: var(--phos-green); font: inherit; letter-spacing: 0.18em; padding: 0.3rem 1rem; cursor: pointer; }
 
@@ -118,13 +123,30 @@ html, body { margin: 0; }
 .levels-title { letter-spacing: 0.35em; text-shadow: var(--glow-green); }
 .levels-sub { color: var(--phos-dim); }
 .levels-list { list-style: none; padding: 0; display: grid; gap: 0.6rem; margin-top: 2rem; }
-.level { display: grid; grid-template-columns: 6rem 8rem 1fr auto; gap: 1rem; align-items: baseline; width: 100%; text-align: left; padding: 0.85rem 1rem; background: rgba(10, 16, 8, 0.8); border: 1px solid #2f4a24; color: var(--phos-green); font: inherit; cursor: pointer; }
+.level { display: grid; grid-template-columns: 6rem 8rem 1fr auto; gap: 1rem; align-items: baseline; width: 100%; text-align: left; padding: 0.85rem 1rem; background: rgba(10, 16, 8, 0.8); border: 1px solid var(--phos-border); color: var(--phos-green); font: inherit; cursor: pointer; }
 .level:hover:not(:disabled) { border-color: var(--phos-green); box-shadow: 0 0 14px rgba(78, 224, 106, 0.18); }
 .level-locked { color: var(--phos-dim); cursor: not-allowed; }
 .level-num { font-size: 0.7rem; letter-spacing: 0.2em; color: var(--phos-amber); }
 .level-locked .level-num { color: var(--phos-dim); }
 .level-topic { color: var(--phos-dim); font-size: 0.8rem; }
 .level-status { font-size: 0.7rem; letter-spacing: 0.12em; }
+
+/* --- 키보드 포커스 링 ---------------------------------------------------
+   기본 브라우저 포커스 링(파랑)은 CRT 색감을 깨고, `outline: none`으로
+   지우면 접근성 회귀가 된다. 대신 팔레트 색으로 또렷한 링을 그린다.
+   :focus 가 아니라 :focus-visible 을 쓰는 이유: 버튼을 마우스로 클릭했을
+   때는 링이 뜨지 않아야 하고(:focus는 클릭에도 반응한다), 키보드로 탭 이동한
+   경우에만 링이 떠야 하기 때문이다. RevealSheet의 NEXT ▸ 버튼은 문제를 풀
+   때마다 autoFocus 되므로, 여기서 outline을 지우면 안 된다. */
+.hud-fold:focus-visible,
+.hud-exit:focus-visible,
+.hud-hint-button:focus-visible,
+.level:focus-visible,
+.sheet-next:focus-visible,
+.term-input:focus-visible {
+  outline: 2px solid var(--phos-green);
+  outline-offset: 2px;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .sheet { animation: none; }
