@@ -13,9 +13,6 @@ import { fileURLToPath } from 'node:url'
  */
 const shellDir = dirname(fileURLToPath(import.meta.url))
 
-const BANNED_IMPORTS: RegExp[] = [/^node:/, /^fs$/, /^fs\//, /^path$/, /^path\//, /^child_process$/, /^child_process\//]
-const BANNED_GLOBALS = ['window', 'document', 'localStorage', 'process']
-
 /** src/shell 아래 *.ts 파일을 재귀적으로 모은다. *.test.ts 는 제외한다. */
 function listSourceFiles(dir: string): string[] {
   const out: string[] = []
@@ -31,10 +28,10 @@ function listSourceFiles(dir: string): string[] {
 }
 
 /**
- * `import ... from '...'`, `export ... from '...'`, `require('...')`,
- * `import('...')` 뒤에 오는 모듈 스펙파이어를 전부 뽑는다.
+ * Extract all import specifiers from source code.
+ * Handles: import/export from, require(), dynamic import().
  */
-function importSpecifiers(source: string): string[] {
+function extractImportSpecifiers(source: string): string[] {
   const re =
     /\b(?:import|export)\b[^'"]*?\bfrom\s*['"]([^'"]+)['"]|\brequire\(\s*['"]([^'"]+)['"]\s*\)|\bimport\(\s*['"]([^'"]+)['"]\s*\)/g
   const specs: string[] = []
@@ -46,6 +43,82 @@ function importSpecifiers(source: string): string[] {
   return specs
 }
 
+/**
+ * Check imports. Invert the logic: allow ONLY relative imports (./  or ../).
+ * Returns list of bad import specifiers.
+ */
+function findBadImports(source: string): string[] {
+  const specs = extractImportSpecifiers(source)
+  return specs.filter((spec) => !spec.startsWith('./') && !spec.startsWith('../'))
+}
+
+/**
+ * Strip line and block comments from source code.
+ */
+function stripComments(source: string): string {
+  let result = ''
+  let i = 0
+  while (i < source.length) {
+    // Check for line comment
+    if (source[i] === '/' && source[i + 1] === '/') {
+      i += 2
+      while (i < source.length && source[i] !== '\n') i++
+      if (i < source.length) result += '\n' // preserve line breaks
+      i++
+      continue
+    }
+    // Check for block comment
+    if (source[i] === '/' && source[i + 1] === '*') {
+      i += 2
+      while (i < source.length - 1 && !(source[i] === '*' && source[i + 1] === '/')) {
+        if (source[i] === '\n') result += '\n' // preserve line breaks
+        i++
+      }
+      i += 2
+      continue
+    }
+    result += source[i]
+    i++
+  }
+  return result
+}
+
+/**
+ * Banned globals to scan for (as whole words).
+ * Include host APIs (Node + browser) that the engine must not reference.
+ */
+const BANNED_GLOBALS = [
+  'window', 'document', 'localStorage', 'sessionStorage', 'navigator',
+  'alert', 'process', 'Buffer', '__dirname', '__filename', 'global', 'require'
+]
+
+/**
+ * Check for banned globals in source (after stripping comments).
+ * Returns list of bad global references.
+ *
+ * Uses negative lookbehind to exclude property names (like obj.process).
+ * Uses negative lookahead to exclude property keys (like { process: 5 }).
+ * Allows globalThis.* (e.g., globalThis.process) since globalThis is the standards-compliant global.
+ */
+function findBannedGlobals(source: string): string[] {
+  const noComments = stripComments(source)
+  const found: string[] = []
+  const seen = new Set<string>()
+
+  for (const token of BANNED_GLOBALS) {
+    // Two alternatives:
+    // 1. Standalone reference not preceded by dot, not followed by colon
+    // 2. Reference via globalThis (which is allowed for standards like TextEncoder)
+    const regex = new RegExp(`(?<!\\.)\\b${token}\\b(?!\\s*:)|globalThis\\.\\b${token}\\b`, 'u')
+    if (regex.test(noComments) && !seen.has(token)) {
+      found.push(token)
+      seen.add(token)
+    }
+  }
+
+  return found
+}
+
 describe('src/shell 엔진은 Node/DOM 전역을 참조하지 않는다', () => {
   const files = listSourceFiles(shellDir)
 
@@ -53,24 +126,107 @@ describe('src/shell 엔진은 Node/DOM 전역을 참조하지 않는다', () => 
     expect(files.length).toBeGreaterThan(10)
   })
 
+  describe('import 규칙: 상대 경로만(./  ../)', () => {
+    it('상대 import는 통과', () => {
+      expect(findBadImports("import { readFileSync } from './file'")).toEqual([])
+      expect(findBadImports("import type { T } from '../types'")).toEqual([])
+      expect(findBadImports("import * as ns from './module'")).toEqual([])
+    })
+
+    it('상대 export는 통과', () => {
+      expect(findBadImports("export { errnoText } from '../errors'")).toEqual([])
+      expect(findBadImports("export * from './utils'")).toEqual([])
+      expect(findBadImports("export type { VFS } from './vfs'")).toEqual([])
+    })
+
+    it('node: 프리픽스는 금지', () => {
+      expect(findBadImports("import { readFileSync } from 'node:fs'")).toContain('node:fs')
+      expect(findBadImports("import os from 'node:os'")).toContain('node:os')
+    })
+
+    it('Node 모듈 베어 임포트는 금지', () => {
+      expect(findBadImports("import { randomUUID } from 'crypto'")).toContain('crypto')
+      expect(findBadImports("import os from 'os'")).toContain('os')
+      expect(findBadImports("import { EventEmitter } from 'events'")).toContain('events')
+      expect(findBadImports("import { parse } from 'url'")).toContain('url')
+    })
+
+    it('require() 는 node 모듈을 금지', () => {
+      expect(findBadImports("require('fs')")).toContain('fs')
+      expect(findBadImports("const path = require('path')")).toContain('path')
+    })
+
+    it('동적 import() 는 node 모듈을 금지', () => {
+      expect(findBadImports("await import('node:path')")).toContain('node:path')
+      expect(findBadImports("const m = await import('crypto')")).toContain('crypto')
+    })
+  })
+
+  describe('전역 규칙: 호스트 전용 API 금지 (주석 제외)', () => {
+    it('상대경로 import type은 통과', () => {
+      expect(findBannedGlobals("import type { VFS } from './vfs'")).toEqual([])
+    })
+
+    it('TextEncoder 전역은 통과 (웹 표준, 사용 가능)', () => {
+      expect(findBannedGlobals("const encoder = new TextEncoder()")).toEqual([])
+    })
+
+    it('Buffer.from() 은 금지', () => {
+      expect(findBannedGlobals("const x = Buffer.from('a')")).toContain('Buffer')
+    })
+
+    it('__dirname, __filename 은 금지', () => {
+      expect(findBannedGlobals("const dir = __dirname")).toContain('__dirname')
+      expect(findBannedGlobals("const file = __filename")).toContain('__filename')
+    })
+
+    it('process 는 금지', () => {
+      expect(findBannedGlobals("const env = process.env")).toContain('process')
+    })
+
+    it('global, globalThis.process 는 금지', () => {
+      expect(findBannedGlobals("const g = global")).toContain('global')
+      expect(findBannedGlobals("const p = globalThis.process")).toContain('process')
+    })
+
+    it('require 전역함수는 금지', () => {
+      expect(findBannedGlobals("const mod = require('module')")).toContain('require')
+    })
+
+    it('require 함수 이름 아니면 통과: processLine 변수, .process 속성', () => {
+      expect(findBannedGlobals("let processLine = 1")).not.toContain('process')
+      expect(findBannedGlobals("const obj = { process: 5 }")).not.toContain('process')
+      expect(findBannedGlobals("obj.process = 10")).not.toContain('process')
+    })
+
+    it('주석 속 금지어는 무시', () => {
+      expect(findBannedGlobals("// document.title")).toEqual([])
+      expect(findBannedGlobals("/* window.alert() */")).toEqual([])
+      expect(findBannedGlobals("const x = 5 // process.env")).toEqual([])
+    })
+
+    it('DOM 전역 금지: window, document, localStorage, sessionStorage, navigator, alert', () => {
+      expect(findBannedGlobals("window.location")).toContain('window')
+      expect(findBannedGlobals("document.getElementById('x')")).toContain('document')
+      expect(findBannedGlobals("localStorage.setItem('k', 'v')")).toContain('localStorage')
+      expect(findBannedGlobals("sessionStorage.getItem('k')")).toContain('sessionStorage')
+      expect(findBannedGlobals("navigator.userAgent")).toContain('navigator')
+      expect(findBannedGlobals("alert('hi')")).toContain('alert')
+    })
+  })
+
   for (const file of files) {
     const rel = file.slice(shellDir.length + 1)
-    it(`${rel}: node 임포트도, window/document/localStorage/process 참조도 없다`, () => {
+    it(`${rel}: 상대 임포트만, 금지된 전역 없음`, () => {
       const source = readFileSync(file, 'utf8')
-      const violations: string[] = []
+      const badImports = findBadImports(source)
+      const badGlobals = findBannedGlobals(source)
+      const violations: string[] = [
+        ...badImports.map((spec) => `import '${spec}'`),
+        ...badGlobals.map((token) => `전역 '${token}'`),
+      ]
 
-      for (const spec of importSpecifiers(source)) {
-        if (BANNED_IMPORTS.some((re) => re.test(spec))) {
-          violations.push(`import '${spec}'`)
-        }
-      }
-      for (const token of BANNED_GLOBALS) {
-        if (new RegExp(`\\b${token}\\b`).test(source)) {
-          violations.push(`전역 '${token}'`)
-        }
-      }
-
-      expect(violations, `src/shell/${rel} references Node/DOM-only API(s): ${violations.join(', ')}`).toEqual([])
+      expect(violations, `src/shell/${rel} references: ${violations.join(', ')}`).toEqual([])
     })
   }
 })
