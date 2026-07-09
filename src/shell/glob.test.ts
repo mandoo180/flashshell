@@ -157,4 +157,17 @@ describe('expandGlob', () => {
     fs.symlink('sub', '/w/link')
     expect(expandGlob('/w/*/d.txt', '/', fs)).toEqual(['/w/link/d.txt', '/w/sub/d.txt'])
   })
+
+  it('겹친 상대 target 링크를 통과하는 글롭도 실제 매치를 돌려준다 (리터럴 폴백 아님)', () => {
+    // /R1/lnk -> ../R2, /R2/lnk -> ../R3 (둘 다 상대). '/R1/lnk/*/f.txt'는
+    // '/R1/lnk'(=/R2)를 readdir 해 'lnk'를 후보로 올린 뒤 'f.txt'를 붙여
+    // exists('/R1/lnk/lnk/f.txt')로 확인하는데, 이는 상대 target 중간 링크 두 개를
+    // 연달아 풀어야만 참이 된다. 물리 경로를 들고 다니지 않으면 거짓이 되어 패턴이
+    // 리터럴로 폴백된다. 실제 bash(`echo R1/lnk/*/f.txt`)는 R1/lnk/lnk/f.txt 를 준다.
+    fs.mkdir('/R1'); fs.mkdir('/R2'); fs.mkdir('/R3')
+    fs.symlink('../R2', '/R1/lnk')
+    fs.symlink('../R3', '/R2/lnk')
+    fs.writeFile('/R3/f.txt', 'hi')
+    expect(expandGlob('/R1/lnk/*/f.txt', '/', fs)).toEqual(['/R1/lnk/lnk/f.txt'])
+  })
 })

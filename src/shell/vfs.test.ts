@@ -323,9 +323,8 @@ describe('VFS 심볼릭 링크: 중간 요소의 상대 target', () => {
     // root의 'lnk' -> /R1, /R1의 'lnk' -> /R2, ..., /R(k-1)의 'lnk' -> /Rk 로 체인을
     // 만들고 '/lnk/lnk/.../lnk/f' (lnk가 k개)를 찾는다. 각 'lnk'는 다음 세그먼트를
     // 보기 위해 반드시 거쳐야 하는 "중간 요소"이고, target이 일반 디렉터리이므로
-    // resolveLookup 내부 while 루프가 정확히 1홉씩만 소비한다. budget이 resolveLstat의
-    // for 루프 전체에서 공유되지 않는다면(예: 매번 새 예산을 만들면) 이 경계는 절대
-    // 나타나지 않는다.
+    // 링크를 따라갈 때 정확히 1홉씩만 소비한다. budget이 전체 걷기에서 공유되지
+    // 않는다면 (예: 매번 새 예산을 만들면) 이 경계는 절대 나타나지 않는다.
     const buildChain = (target: VFS, k: number): void => {
       target.mkdir('/R1')
       target.symlink('/R1', '/lnk')
@@ -343,5 +342,105 @@ describe('VFS 심볼릭 링크: 중간 요소의 상대 target', () => {
     const fs2 = new VFS()
     buildChain(fs2, 32)
     expect(fs2.lookup(path(32))).toBeNull()
+  })
+})
+
+// 물리 경로 추적 회귀: resolvePhysical은 경로를 한 번만 훑으면서 "지금 서 있는
+// 디렉터리의 물리 절대경로"(dirAbs)를 들고 다녀야 한다. 상대 target 중간 링크가
+// 여러 개 겹치면, 각 링크는 자기 자신이 실제로 놓인 물리 디렉터리 기준으로 풀려야
+// 한다 — 원래 조회 경로의 어휘적(pre-resolution) 접두가 아니다. 아래 기대값은 모두
+// 실제 bash 5.2에서 실행해 확인했다.
+describe('VFS 심볼릭 링크: 겹친 상대 target 중간 요소 (물리 경로 추적)', () => {
+  it('..-상대 target 중간 링크 두 개가 겹쳐도 풀린다 (실제 bash: cat R1/lnk/lnk/f)', () => {
+    fs.mkdir('/R1'); fs.mkdir('/R2'); fs.mkdir('/R3')
+    fs.symlink('../R2', '/R1/lnk') // /R1/lnk -> ../R2  => /R2
+    fs.symlink('../R3', '/R2/lnk') // /R2/lnk -> ../R3  => /R3
+    fs.writeFile('/R3/f', 'content-1')
+    expect(fs.exists('/R1/lnk/lnk/f')).toBe(true)
+    expect(fs.readFile('/R1/lnk/lnk/f')).toBe('content-1')
+  })
+
+  it('상대/절대가 섞인 중간 링크 세 개가 겹쳐도 풀린다', () => {
+    fs.mkdir('/A'); fs.mkdir('/B'); fs.mkdir('/C'); fs.mkdir('/D')
+    fs.symlink('../B', '/A/lnk') // 상대 -> /B
+    fs.symlink('/C', '/B/lnk')   // 절대 -> /C
+    fs.symlink('../D', '/C/lnk') // 상대 -> /D
+    fs.writeFile('/D/f', 'content-2')
+    expect(fs.exists('/A/lnk/lnk/lnk/f')).toBe(true)
+    expect(fs.readFile('/A/lnk/lnk/lnk/f')).toBe('content-2')
+  })
+
+  it('앞으로-상대(forward-relative) 중첩 체인 depth 10이 풀린다 (홉이 선형임을 증명)', () => {
+    // lvl0/lnk -> lvl1, lvl0/lvl1/lnk -> lvl2, ... 각 lnk는 자기 디렉터리 안의 다음
+    // 레벨 디렉터리를 상대로 가리킨다. 옛 코드는 중간 링크마다 루트부터 전체 접두를
+    // 다시 걸어 홉을 제곱으로 소비했고 (k(k+1)/2), 32홉 예산이 k>=6에서 바닥났다.
+    // 물리 경로를 들고 다니면 링크당 정확히 1홉이라 depth 10도 여유롭게 풀린다.
+    let dir = '/lvl0'
+    fs.mkdir(dir)
+    for (let k = 1; k <= 10; k++) {
+      fs.symlink(`lvl${k}`, `${dir}/lnk`)
+      dir = `${dir}/lvl${k}`
+      fs.mkdir(dir)
+    }
+    fs.writeFile(`${dir}/f`, 'deep-content')
+    const path = '/lvl0/' + Array(10).fill('lnk').join('/') + '/f'
+    expect(fs.exists(path)).toBe(true)
+    expect(fs.readFile(path)).toBe('deep-content')
+  })
+
+  it('상대 target 링크 31단은 풀리고 32단은 null — 절대 체인과 같은 경계 (링크당 1홉)', () => {
+    // 상대 target 체인: L0 -> real, L1 -> L0, ... 모두 루트 안, 상대 경로.
+    fs.writeFile('/real', 'ok')
+    for (let i = 0; i < 31; i++) {
+      fs.symlink(i === 0 ? 'real' : `L${i - 1}`, `/L${i}`)
+    }
+    expect(fs.lookup('/L30')!.content).toBe('ok')
+    fs.symlink('L30', '/L31')
+    expect(fs.lookup('/L31')).toBeNull()
+
+    // 절대 target도 정확히 같은 31/32 경계 (한쪽을 깨서 다른 쪽을 만족시키지 못하게
+    // 두 체계를 한 테스트에서 함께 못박는다).
+    const abs = new VFS()
+    abs.writeFile('/real', 'ok')
+    for (let i = 0; i < 31; i++) {
+      abs.symlink(i === 0 ? '/real' : `/A${i - 1}`, `/A${i}`)
+    }
+    expect(abs.lookup('/A30')!.content).toBe('ok')
+    abs.symlink('/A30', '/A31')
+    expect(abs.lookup('/A31')).toBeNull()
+  })
+
+  it('세 가지 순환 링크는 여전히 throw 없이 null이다 (자기경유/상호경유/상대 자기순환)', () => {
+    const a = new VFS(); a.symlink('/a/b', '/a')
+    expect(() => a.lookup('/a')).not.toThrow()
+    expect(a.lookup('/a')).toBeNull()
+
+    const b = new VFS(); b.symlink('/b/x', '/a'); b.symlink('/a/y', '/b')
+    expect(() => b.lookup('/a')).not.toThrow()
+    expect(b.lookup('/a')).toBeNull()
+
+    const c = new VFS(); c.mkdir('/w'); c.symlink('link', '/w/link') // 상대 자기순환
+    expect(() => c.lookup('/w/link')).not.toThrow()
+    expect(c.lookup('/w/link')).toBeNull()
+  })
+
+  it('상대 target이 마지막 구성요소일 때 lstat은 링크를, lookup은 대상을 준다', () => {
+    fs.mkdir('/w')
+    fs.writeFile('/w/f.txt', 'body')
+    fs.symlink('f.txt', '/w/flink') // 상대 마지막 구성요소
+    expect(fs.lstat('/w/flink')!.kind).toBe('symlink')
+    expect(fs.lookup('/w/flink')!.kind).toBe('file')
+    expect(fs.readFile('/w/flink')).toBe('body')
+  })
+
+  it('첫 구성요소가 심볼릭 링크여도 동작한다 (내부에서 // 나 빈 문자열 생성 금지)', () => {
+    fs.mkdir('/w')
+    fs.writeFile('/w/d.txt', 'D')
+    fs.symlink('w', '/link') // /link -> w (상대, 루트 기준)
+    expect(fs.exists('/link/d.txt')).toBe(true)
+    expect(fs.readFile('/link/d.txt')).toBe('D')
+    // 절대 target 첫 구성요소도 동일하게.
+    fs.symlink('/w', '/alink')
+    expect(fs.readFile('/alink/d.txt')).toBe('D')
   })
 })

@@ -45,61 +45,70 @@ export class VFS {
 
   /** 심볼릭 링크를 따라가지 않고 노드를 찾는다. 중간 경로 요소가 링크면 그것은 따라간다. */
   lstat(abs: string): VNode | null {
-    return this.resolveLstat(abs, { hops: MAX_SYMLINK_HOPS })
+    return this.resolvePhysical(abs, { hops: MAX_SYMLINK_HOPS }, false)?.node ?? null
   }
 
   /** 심볼릭 링크를 끝까지 따라간다. */
   lookup(abs: string): VNode | null {
-    return this.resolveLookup(abs, { hops: MAX_SYMLINK_HOPS })
+    return this.resolvePhysical(abs, { hops: MAX_SYMLINK_HOPS }, true)?.node ?? null
   }
 
   /**
-   * lstat과 lookup은 서로를 호출하는 상호재귀 구조다: 중간 경로 요소가 심볼릭 링크면
-   * lstat이 lookup을 부르고, lookup은 각 홉마다 lstat을 부른다. 두 함수가 각자 독립된
-   * 홉 카운터를 쓰면, 링크의 target이 그 링크 자신을 다시 중간 경로 요소로 거치는
-   * 경우 (예: symlink('/a/b', '/a') — '/a'가 자기 자신을 통해야 도달하는 '/a/b'를
-   * 가리킨다) 재귀할 때마다 카운터가 리셋되어 무한 재귀에 빠지고 RangeError로 죽는다.
-   * budget 객체를 참조로 공유해 lstat<->lookup 상호재귀 전체가 하나의 32홉 예산을
-   * 소비하도록 한다 — 예산이 바닥나면 어느 쪽에서든 즉시 null로 되돌아온다.
+   * abs를 물리 노드와 그 물리 절대경로로 해석한다. 경로를 왼→오로 딱 한 번 훑으면서
+   * "지금 서 있는 디렉터리의 물리 절대경로"(dirAbs)를 들고 다닌다. dirAbs는 '/'에서
+   * 출발한다.
+   *
+   * - 요소로 내려가려면 현재 노드가 디렉터리여야 한다 (아니면 null — ENOTDIR 취급).
+   * - 방금 밟은 자식이 심볼릭 링크면:
+   *   · 마지막 구성요소이고 followFinal=false면 (lstat) 그 링크 노드를 그대로 돌려준다.
+   *   · 아니면 따라간다: 공유 예산에서 정확히 1홉을 쓰고, target이 절대면 그대로,
+   *     상대면 this.resolve(target, dirAbs)로 (즉 "그 링크가 실제로 놓인 물리
+   *     디렉터리" 기준으로 — 조회 경로의 어휘적 접두가 아니라) 절대경로를 만든 뒤
+   *     같은 budget으로 재귀 해석한다. 링크를 따라간 뒤 dirAbs는 착지한 노드의 물리
+   *     경로가 된다. 이래야 상대 target 링크가 여러 개 겹쳐도 각 링크가 자기 실제
+   *     위치 기준으로 풀린다.
+   * - 일반 디렉터리/파일 진입은 0홉이다. 비용은 "따라간 링크 수"에 선형이며, 이게
+   *   원래 32홉 예산이 재려던 값이다 (예산은 순환을 막기 위한 것이지 합법적 깊이를
+   *   다섯으로 제한하려던 게 아니다).
+   *
+   * 홉 규약: 링크를 따라가기 직전에 감소시키고 0 이하가 되면 null. 예산 32에서 최대
+   * 31번까지 따라갈 수 있어 (32번째 감소가 0을 만들어 컷) 절대/상대/중간 요소 어느
+   * 체인이든 31단은 풀리고 32단은 null인 기존 경계가 그대로 유지된다. 예산이
+   * 바닥나면(순환 포함) null을 돌려준다 — 절대 던지지 않고 절대 무한루프하지 않는다.
+   * 재귀는 같은 budget 객체를 넘기는 한 안전하다.
    */
-  private resolveLstat(abs: string, budget: { hops: number }): VNode | null {
+  private resolvePhysical(
+    abs: string,
+    budget: { hops: number },
+    followFinal: boolean,
+  ): { node: VNode; path: string } | null {
     const parts = this.split(abs)
     let node: VNode = this.root
+    let dirAbs = '/'
     for (let i = 0; i < parts.length; i++) {
       const name = parts[i]!
-      // 중간 경로 요소는 반드시 디렉터리여야 한다. 링크면 따라간다.
-      if (node.kind === 'symlink') {
-        if (budget.hops <= 0) return null
-        // node는 parts[i-1]에서 찾은 노드이므로 그 자신의 절대경로는
-        // parts.slice(0, i)다. 상대 target은 "그 링크 자신이 있는 디렉터리"
-        // (그 경로의 dirname) 기준으로 풀어야 한다 — 루트 기준이 아니다.
-        // (resolveLookup이 마지막 구성요소에서 이미 하는 것과 동일한 규칙.)
-        const symlinkPath = '/' + parts.slice(0, i).join('/')
-        const targetAbs = node.target.startsWith('/')
-          ? node.target
-          : this.resolve(node.target, this.dirname(symlinkPath))
-        const resolved = this.resolveLookup(targetAbs, budget)
-        if (!resolved) return null
-        node = resolved
-      }
-      if (node.kind !== 'dir') return null
+      if (node.kind !== 'dir') return null // ENOTDIR 취급
       const child = node.children.get(name)
-      if (!child) return null
-      node = child
+      if (!child) return null // ENOENT 취급
+      const childPath = dirAbs === '/' ? `/${name}` : `${dirAbs}/${name}`
+      const isFinal = i === parts.length - 1
+      if (child.kind === 'symlink' && !(isFinal && !followFinal)) {
+        // 링크를 따라간다: 정확히 1홉을 쓴다.
+        budget.hops--
+        if (budget.hops <= 0) return null // 순환/예산 소진 → ENOENT 취급
+        const targetAbs = child.target.startsWith('/')
+          ? child.target
+          : this.resolve(child.target, dirAbs)
+        const resolved = this.resolvePhysical(targetAbs, budget, true)
+        if (!resolved) return null
+        node = resolved.node
+        dirAbs = resolved.path
+      } else {
+        node = child
+        dirAbs = childPath
+      }
     }
-    return node
-  }
-
-  private resolveLookup(abs: string, budget: { hops: number }): VNode | null {
-    let current = abs
-    while (budget.hops > 0) {
-      budget.hops--
-      const node = this.resolveLstat(current, budget)
-      if (!node) return null
-      if (node.kind !== 'symlink') return node
-      current = node.target.startsWith('/') ? node.target : this.resolve(node.target, this.dirname(current))
-    }
-    return null // 순환/예산 소진. ENOENT로 취급한다.
+    return { node, path: dirAbs }
   }
 
   private dirname(abs: string): string {
