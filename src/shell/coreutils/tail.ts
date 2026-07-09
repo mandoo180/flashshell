@@ -1,11 +1,11 @@
 import type { CommandFn } from '../types'
 import { parseFlags, readSources, toLines, normalizeCountFlag } from './shared'
-import { renderSelected } from './head'
+import { renderSelected, formatOpenError } from './head'
 
 export const tail: CommandFn = (e) => {
   const { flags, rest } = parseFlags(normalizeCountFlag(e.args), ['n'])
   const count = Number(flags.get('n') ?? 10)
-  const { sources, stderr, failed } = readSources(e, rest)
+  const { sources, stderr, failed } = readSources(e, rest, formatOpenError(e.name))
   // head.ts 의 주석 참고: 헤더는 요청한 파일 인자가 둘 이상일 때만 붙는다.
   const showHeaders = rest.length > 1
 

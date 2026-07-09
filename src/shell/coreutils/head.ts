@@ -1,5 +1,5 @@
 import type { CommandFn } from '../types'
-import { parseFlags, readSources, toLines, normalizeCountFlag, type Source } from './shared'
+import { parseFlags, readSources, toLines, normalizeCountFlag, isDirectoryError, errnoText, type Source } from './shared'
 
 /**
  * 골라낸 줄들을 이어붙인다. GNU head/tail 은 파일을 "줄의 배열"로 재구성하는 게
@@ -20,10 +20,27 @@ function renderSelected(source: Source, selected: string[], includesTail: boolea
   return out
 }
 
+/**
+ * task-10 finding 1: head/tail 의 "없는 파일" 문구는 cat/wc/grep 과 다르다 — 그리고
+ * 두 명령이 서로 같은 문구 틀을 쓴다(명령 이름만 다르다). docker debian:stable-slim
+ * coreutils 9.7 실측:
+ *   `head missing.txt` -> "head: cannot open 'missing.txt' for reading: No such file or directory"
+ *   `tail missing.txt` -> "tail: cannot open 'missing.txt' for reading: No such file or directory"
+ *   `head /somedir`    -> "head: error reading '/somedir': Is a directory" (디렉터리는 문구 틀 자체가 다르다)
+ *   `tail /somedir`    -> "tail: error reading '/somedir': Is a directory"
+ * head.ts 와 tail.ts 가 함께 쓴다(renderSelected 처럼 head.ts 에서 export).
+ */
+function formatOpenError(name: string): (file: string, err: unknown) => string {
+  return (file, err) =>
+    isDirectoryError(err)
+      ? `${name}: error reading '${file}': ${errnoText(err)}`
+      : `${name}: cannot open '${file}' for reading: ${errnoText(err)}`
+}
+
 export const head: CommandFn = (e) => {
   const { flags, rest } = parseFlags(normalizeCountFlag(e.args), ['n'])
   const count = Number(flags.get('n') ?? 10)
-  const { sources, stderr, failed } = readSources(e, rest)
+  const { sources, stderr, failed } = readSources(e, rest, formatOpenError(e.name))
   // 파일 인자가 둘 이상일 때만 "==> 이름 <==" 헤더를 붙인다 — 실패한 인자도 개수에
   // 들어간다. docker로 확인: `head -n 1 missing.txt a.txt` 도 생존자 a.txt 에 헤더가
   // 붙는다(요청한 인자가 2개였으므로).
@@ -41,4 +58,4 @@ export const head: CommandFn = (e) => {
   return { stdout, stderr, exitCode: failed ? 1 : 0 }
 }
 
-export { renderSelected }
+export { renderSelected, formatOpenError }

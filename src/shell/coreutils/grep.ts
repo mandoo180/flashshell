@@ -19,7 +19,12 @@ export const grep: CommandFn = (e) => {
     // new RegExp 가 던지는 예외를 여기서 반드시 잡는다 — 명령 실행 도중의 예외는
     // 인터프리터가 exit 1 짜리 일반 에러로 뭉개버리므로, grep 고유의 exit 2를
     // 지키려면 여기서 직접 fail 을 반환해야 한다.
-    return { stdout: '', stderr: `grep: ${pattern}: invalid regular expression\n`, exitCode: 2 }
+    //
+    // task-10 finding 4: 문구가 GNU 와 달랐다(패턴을 끼워 넣고 소문자로 시작했다).
+    // docker debian:stable-slim grep 3.11 실측: `echo x | grep '['` ->
+    // stderr "grep: Invalid regular expression" exit=2 — 패턴 문자열은 메세지에
+    // 아예 안 들어간다.
+    return { stdout: '', stderr: 'grep: Invalid regular expression\n', exitCode: 2 }
   }
 
   const files = rest.slice(1)

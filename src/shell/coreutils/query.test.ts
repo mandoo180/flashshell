@@ -104,6 +104,14 @@ describe('cat', () => {
     expect(r.stdout).toBe('one\ntwo\nthree\n')
     expect(r.exitCode).toBe(1)
   })
+
+  // task-10 finding 1 회귀 가드: cat 의 에러 문구는 손대지 않는다 (이미 GNU 와 일치).
+  // docker: `cat nope` -> "cat: nope: No such file or directory" exit=1.
+  it('회귀 가드 — 없는 파일 에러 문구는 그대로다', async () => {
+    const r = await sh.exec('cat nope')
+    expect(r.stderr).toBe('cat: nope: No such file or directory\n')
+    expect(r.exitCode).toBe(1)
+  })
 })
 
 describe('head / tail', () => {
@@ -154,6 +162,29 @@ describe('head / tail', () => {
   })
   it('파일 하나뿐이면 헤더가 없다', async () => {
     expect(await out('head -n 1 a.txt')).toBe('one\n')
+  })
+
+  // task-10 finding 1: head/tail 의 "없는 파일" 에러 문구는 cat/wc/grep 과 다르다.
+  // docker debian:stable-slim coreutils 9.7 실측:
+  //   `head missing.txt` -> "head: cannot open 'missing.txt' for reading: No such file or directory" exit=1
+  //   `tail missing.txt` -> "tail: cannot open 'missing.txt' for reading: No such file or directory" exit=1
+  it('head 의 없는 파일 에러는 GNU 문구 그대로다 ("cannot open ... for reading")', async () => {
+    const r = await sh.exec('head missing.txt')
+    expect(r.stderr).toBe("head: cannot open 'missing.txt' for reading: No such file or directory\n")
+    expect(r.exitCode).toBe(1)
+  })
+  it('tail 의 없는 파일 에러는 GNU 문구 그대로다 ("cannot open ... for reading")', async () => {
+    const r = await sh.exec('tail missing.txt')
+    expect(r.stderr).toBe("tail: cannot open 'missing.txt' for reading: No such file or directory\n")
+    expect(r.exitCode).toBe(1)
+  })
+  it('여러 인자 중 하나가 없으면, 생존한 파일에도 헤더가 붙고 stderr 엔 GNU 문구가 남는다', async () => {
+    // docker: `head a.txt missing.txt` -> stdout "==> a.txt <==\none\ntwo\nthree\n",
+    // stderr "head: cannot open 'missing.txt' for reading: No such file or directory\n", exit=1.
+    const r = await sh.exec('head a.txt missing.txt')
+    expect(r.stdout).toBe('==> a.txt <==\none\ntwo\nthree\n')
+    expect(r.stderr).toBe("head: cannot open 'missing.txt' for reading: No such file or directory\n")
+    expect(r.exitCode).toBe(1)
   })
 })
 
@@ -221,6 +252,14 @@ describe('wc', () => {
     expect(r.stdout).toBe('0 0 0 total\n')
     expect(r.exitCode).toBe(1)
   })
+
+  // task-10 finding 1 회귀 가드: wc 의 에러 문구는 손대지 않는다 (이미 GNU 와 일치).
+  // docker: `wc missing.txt` -> "wc: missing.txt: No such file or directory" exit=1.
+  it('회귀 가드 — 없는 파일 에러 문구는 그대로다', async () => {
+    const r = await sh.exec('wc missing.txt')
+    expect(r.stderr).toBe('wc: missing.txt: No such file or directory\n')
+    expect(r.exitCode).toBe(1)
+  })
 })
 
 describe('stat', () => {
@@ -240,6 +279,13 @@ describe('stat', () => {
     const r = await sh.exec('stat -c %s missing.txt')
     expect(r.exitCode).toBe(1)
     expect(r.stderr).toBe("stat: cannot statx 'missing.txt': No such file or directory\n")
+  })
+
+  // task-10 finding 3: 단일 훑음 정규식(/%[nsaF]/g)이 %% 를 모른다. docker debian:stable-slim
+  // coreutils 9.7 실측: `stat -c '%n%%end' a.txt` -> "a.txt%end" (exit 0). 우리 구현은
+  // "a.txt%%end" 를 냈었다.
+  it('%% 는 리터럴 % 하나로 치환된다', async () => {
+    expect(await out('stat -c %n%%end a.txt')).toBe('a.txt%end\n')
   })
 })
 
@@ -287,6 +333,24 @@ describe('grep', () => {
   it('-c 와 -n 을 같이 주면 -n 은 무시된다 (개수만 나온다)', async () => {
     expect(await out('grep -c -n t a.txt')).toBe('2\n')
   })
+
+  // task-10 finding 1 회귀 가드: grep 의 에러 문구는 손대지 않는다 (이미 GNU 와 일치).
+  // docker: `grep t missing.txt` -> "grep: missing.txt: No such file or directory" exit=2.
+  it('회귀 가드 — 없는 파일 에러 문구는 그대로다', async () => {
+    const r = await sh.exec('grep t missing.txt')
+    expect(r.stderr).toBe('grep: missing.txt: No such file or directory\n')
+    expect(r.exitCode).toBe(2)
+  })
+
+  // task-10 finding 4: 잘못된 정규식의 에러 문구가 GNU 와 다르다. docker debian:stable-slim
+  // grep 3.11 실측: `echo x | grep '['` -> stderr "grep: Invalid regular expression" exit=2
+  // (패턴 문자열은 메세지에 포함되지 않는다 — 예전 우리 구현은 "grep: [: invalid regular
+  // expression" 이라 패턴을 끼워 넣고 문구도 소문자였다).
+  it('잘못된 정규식 메세지는 GNU 문구 그대로다', async () => {
+    const r = await sh.exec('grep [ a.txt')
+    expect(r.stderr).toBe('grep: Invalid regular expression\n')
+    expect(r.exitCode).toBe(2)
+  })
 })
 
 describe('sort', () => {
@@ -326,5 +390,25 @@ describe('sort', () => {
   it('-ru 는 정렬 후 중복 제거하고 뒤집는다 (역시 뒤집고 중복 제거해도 같은 결과)', async () => {
     fs.writeFile('/w/letters.txt', 'b\na\nb\nc\na\n')
     expect(await out('sort -ru letters.txt')).toBe('c\nb\na\n')
+  })
+
+  // task-10 finding 2: -n 의 숫자 키는 parseFloat 이 아니라 GNU 문법(선행 `-`만 허용,
+  // `+`와 지수표기 `e` 는 불허)을 따라야 한다. docker debian:stable-slim coreutils 9.7 실측:
+  // `printf -- "-3\n+2\nx5\n.5\n1e3\n5x\n10\n" | LC_ALL=C sort -n`
+  //   -> "-3\n+2\nx5\n.5\n1e3\n5x\n10\n" (입력 순서 그대로 — 이미 오름차순이었다)
+  // parseFloat 였다면 +2 는 2, 1e3 는 1000 으로 읽혀 순서가 달라진다
+  // ("-3\nx5\n.5\n+2\n5x\n10\n1e3\n").
+  it('-n 은 선행 + 와 지수표기(e)를 받아들이지 않는다 (GNU 실측)', async () => {
+    fs.writeFile('/w/mixed.txt', '-3\n+2\nx5\n.5\n1e3\n5x\n10\n')
+    expect(await out('sort -n mixed.txt')).toBe('-3\n+2\nx5\n.5\n1e3\n5x\n10\n')
+  })
+
+  // task-10 finding 1: sort 의 "없는 파일" 에러 문구도 head/tail 처럼 cat/wc/grep 과
+  // 다르고, exit 코드도 다르다(2). docker debian:stable-slim coreutils 9.7 실측:
+  // `sort missing.txt` -> "sort: cannot read: missing.txt: No such file or directory" exit=2.
+  it('sort 의 없는 파일 에러는 GNU 문구 그대로다 ("cannot read: ...") 이고 exit 2다', async () => {
+    const r = await sh.exec('sort missing.txt')
+    expect(r.stderr).toBe('sort: cannot read: missing.txt: No such file or directory\n')
+    expect(r.exitCode).toBe(2)
   })
 })
