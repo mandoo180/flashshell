@@ -7,7 +7,16 @@ import { wc } from './wc'
 import { stat } from './stat'
 import { grep } from './grep'
 import { sort } from './sort'
+import { cp } from './cp'
+import { mv } from './mv'
+import { rm } from './rm'
+import { mkdir } from './mkdir'
+import { rmdir } from './rmdir'
+import { touch } from './touch'
+import { ln } from './ln'
+import { chmod } from './chmod'
 
 export const coreutils: Record<string, CommandFn> = {
   ls, cat, head, tail, wc, stat, grep, sort,
+  cp, mv, rm, mkdir, rmdir, touch, ln, chmod,
 }
