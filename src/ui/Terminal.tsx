@@ -66,7 +66,7 @@ export function Terminal({ lines, prompt, onSubmit, completions, disabled }: Ter
       const head = value.slice(0, lastSpace + 1)
       const partial = value.slice(lastSpace + 1)
       const candidates = completions(partial)
-      if (candidates.length === 0) return
+      if (candidates.length === 0) { setExtra([]); return }
       const filled = commonPrefix(candidates)
       setValue(head + filled)
       setExtra(candidates.length > 1 ? [{ text: candidates.join('  '), tone: 'dim' }] : [])
