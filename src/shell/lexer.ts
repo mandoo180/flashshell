@@ -82,9 +82,18 @@ export function tokenize(input: string): Token[] {
     if (ch === '"') {
       let j = i + 1
       let text = ''
+      // \", \\, \$ 는 백슬래시가 사라지고 다음 글자가 확장에서 보호된 literal이 된다.
+      // dquote 텍스트로 합쳐버리면 \$ 가 진짜 $와 구분이 안 돼 확장기가 다시 확장해버린다
+      // — 그래서 여기서 literal 조각으로 갈라 push한다. 그 외 백슬래시는 그대로 둔다.
+      let producedPart = false
       while (j < input.length && input[j] !== '"') {
         if (input[j] === '\\' && (input[j + 1] === '"' || input[j + 1] === '\\' || input[j + 1] === '$')) {
-          text += input[j + 1]!
+          if (text.length > 0) {
+            push('dquote', text)
+            text = ''
+          }
+          push('literal', input[j + 1]!)
+          producedPart = true
           j += 2
           continue
         }
@@ -92,7 +101,10 @@ export function tokenize(input: string): Token[] {
         j++
       }
       if (j >= input.length) throw new Error('unexpected EOF while looking for matching `"`')
-      push('dquote', text)
+      // 빈 텍스트라도 조각은 남겨야 `echo ""`/`echo a""b`가 빈 dquote 조각을 낸다.
+      // 단, 이미 이 따옴표 안에서 literal 조각을 냈다면(예: `"\$"`) 뒤에 남는 빈
+      // dquote까지 덧붙일 필요는 없다 — 그러면 [literal:'$'] 대신 [literal:'$', dquote:'']가 된다.
+      if (text.length > 0 || !producedPart) push('dquote', text)
       i = j + 1
       continue
     }

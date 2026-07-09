@@ -58,6 +58,20 @@ describe('expandWord — 변수', () => {
   })
 })
 
+describe('expandWord — 큰따옴표 안의 이스케이프된 $', () => {
+  it('\\$NAME 은 확장되지 않고 리터럴 $NAME 으로 남는다', async () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'NAME=world; echo "\$NAME"' => $NAME
+    expect(await expandWord(wordOf('"\\$NAME"'), ctx)).toEqual(['$NAME'])
+  })
+  it('회귀: 이스케이프 없는 "$NAME" 은 여전히 확장된다', async () => {
+    expect(await expandWord(wordOf('"$NAME"'), ctx)).toEqual(['world'])
+  })
+  it('회귀: \\$NAME 은 NAME 값에 공백이 있어도 한 단어로 남는다 (분할되지 않는다)', async () => {
+    ctx.env.NAME = 'a b c'
+    expect(await expandWord(wordOf('"\\$NAME"'), ctx)).toEqual(['$NAME'])
+  })
+})
+
 describe('expandWord — 단어분할', () => {
   it('따옴표 없는 $X 는 공백으로 쪼개진다', async () => {
     expect(await expandWord(wordOf('$X'), ctx)).toEqual(['a', 'b'])

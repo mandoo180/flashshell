@@ -125,6 +125,51 @@ describe('tokenize', () => {
     expect(words(ts2)[1]!.word).toEqual([{ kind: 'dquote', text: 'a\\tb' }])
   })
 
+  it('큰따옴표 안의 \\$ 는 literal 조각으로 갈라진다 ($ 확장을 막기 위해)', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'NAME=world; echo "\$NAME"' => $NAME
+    const ts = tokenize('echo "\\$NAME"')
+    expect(words(ts)[1]!.word).toEqual([
+      { kind: 'literal', text: '$' },
+      { kind: 'dquote', text: 'NAME' },
+    ])
+  })
+
+  it('큰따옴표 중간의 \\$ 도 앞뒤 dquote 조각을 literal로 끊는다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo "a\$b"' => a$b
+    const ts = tokenize('echo "a\\$b"')
+    expect(words(ts)[1]!.word).toEqual([
+      { kind: 'dquote', text: 'a' },
+      { kind: 'literal', text: '$' },
+      { kind: 'dquote', text: 'b' },
+    ])
+  })
+
+  it('큰따옴표 안의 \\" 도 literal 조각이다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo "\"x\""' => "x"
+    const ts = tokenize('echo "\\"x\\""')
+    expect(words(ts)[1]!.word).toEqual([
+      { kind: 'literal', text: '"' },
+      { kind: 'dquote', text: 'x' },
+      { kind: 'literal', text: '"' },
+    ])
+  })
+
+  it('큰따옴표 안의 \\\\ (이스케이프된 백슬래시) 도 literal 조각이다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo "a\\b"' => a\b
+    const ts = tokenize('echo "a\\\\b"')
+    expect(words(ts)[1]!.word).toEqual([
+      { kind: 'dquote', text: 'a' },
+      { kind: 'literal', text: '\\' },
+      { kind: 'dquote', text: 'b' },
+    ])
+  })
+
+  it('큰따옴표 안이 이스케이프된 \\$ 하나뿐이면 dquote 빈 조각이 남지 않는다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo "\$"' => $
+    const ts = tokenize('echo "\\$"')
+    expect(words(ts)[1]!.word).toEqual([{ kind: 'literal', text: '$' }])
+  })
+
   it('a2>b 는 단어 a2 뒤에 > 리다이렉트다 (2 앞에 글자가 이미 붙어 있으면 2>는 연산자가 아니다)', () => {
     // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo a2>b; cat b' => a2
     const ts = tokenize('a2>b')
