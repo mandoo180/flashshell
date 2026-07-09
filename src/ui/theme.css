@@ -2,7 +2,10 @@
   --phos-bg: #0b0e08;
   --phos-green: #4ee06a;
   --phos-amber: #ffb03a;
-  --phos-dim: #2e7a3f;
+  /* 원래 #2e7a3f 는 CRT 오버레이(주사선+비네팅) 합성 후 실측 대비가 1.6:1로
+     떨어져 3:1 기준을 못 채웠다(아래 .crt::after 참고). 판독성 기준을 채우기
+     위해 밝기를 올렸다 — 색상(green 계열)은 유지, 명도만 조정. */
+  --phos-dim: #6cc084;
   --phos-border: #2f4a24;   /* dim green rule/border */
   --phos-text: #b6e08a;     /* body copy on the HUD */
   --phos-body: #9fd47a;     /* body copy in the reveal sheet */
@@ -11,6 +14,15 @@
   --phos-panel-solid: rgba(11, 14, 8, 0.96); /* reveal sheet panel background, more opaque */
   --glow-green: 0 0 6px rgba(78, 224, 106, 0.55);
   --glow-amber: 0 0 7px rgba(255, 176, 58, 0.6);
+
+  /* 오답 글리치 전용 "아티팩트" 색 — 신호(정답/오답)를 뜻하는 두 색(녹/앰버)과는
+     다르다. 이 둘은 무엇이 옳고 그른지 말하지 않는다. 화면이 순간적으로
+     찢어지는 "고장" 자체를 표현하는 색맹채도수차(chromatic aberration)의
+     관습적인 두 색 — 빨강/시안 채널 분리 — 일 뿐이라 두 색 규율을 깨지 않는다.
+     "R, G, B" 콤마 목록으로 저장해 rgba(var(--glitch-r), alpha) 형태로 알파를
+     용도별로(주사선 찢김은 옅게, 색수차 그림자는 진하게) 다르게 쓸 수 있게 한다. */
+  --glitch-r: 255, 59, 59;
+  --glitch-c: 0, 229, 255;
 }
 
 /* 브라우저 기본 body 여백과 content-box가 100vh 박스를 뷰포트 밖으로 밀어내는 것을 막는다.
@@ -27,15 +39,19 @@ html, body { margin: 0; }
   overflow: hidden;
 }
 
-/* 주사선 + 비네팅. pointer-events:none 이라 클릭을 가로채지 않는다. */
+/* 주사선 + 비네팅. pointer-events:none 이라 클릭을 가로채지 않는다.
+   원래 값(비네팅 0.55, 주사선 0.22)은 텍스트 위에 곱연산처럼 겹쳐 보여서
+   --phos-green 실측 대비가 설계 의도보다 크게 어두워졌다(측정치는
+   task-17-report.md 참고). CRT 느낌(스캔라인 줄무늬, 가장자리 비네팅)은
+   남기되 두 겹 다 옅게 줄여 텍스트가 그 밑에서 눌리지 않게 한다. */
 .crt::after {
   content: "";
   position: absolute;
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, 0.55) 100%),
-    repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 2px);
+    radial-gradient(ellipse at center, transparent 62%, rgba(0, 0, 0, 0.38) 100%),
+    repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.07) 0 1px, transparent 1px 2px);
 }
 
 .terminal {
@@ -69,7 +85,7 @@ html, body { margin: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .crt::after { background: radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, 0.55) 100%); }
+  .crt::after { background: radial-gradient(ellipse at center, transparent 62%, rgba(0, 0, 0, 0.38) 100%); }
 }
 
 /* --- HUD / bottom sheet / level select ------------------------------- */
@@ -151,4 +167,72 @@ html, body { margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .sheet { animation: none; }
+}
+
+/* --- Dual Phosphor 시그널 ------------------------------------------------
+   밝기만으로 정오답을 말하지 않는다: 오답은 앰버 색(Terminal.tsx 의
+   tone-amber) + 이 글리치 + stderr 텍스트 자체, 셋 중 둘이 사라져도 나머지
+   하나가 뜻을 전달한다. 정답은 초록 인광이 한 번 타오르는 것으로 충분히
+   구분된다(색이 이미 앰버와 다르다). */
+
+/* 평소엔 보이지 않는다. 이 노드는 Crt.tsx 에서 항상 DOM에 있다 — 마운트를
+   오답 순간에 맞춰 했다면 애니메이션 시작이 한 프레임 늦었을 것이다.
+   aria-hidden 은 Crt.tsx 에서 지정하고, 여기서는 pointer-events:none 으로
+   이 장식 레이어가 클릭을 가로채지 않게 한다. */
+.crt-tear {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 4;
+  background: repeating-linear-gradient(
+    180deg,
+    transparent 0 3px,
+    rgba(var(--glitch-r), 0.10) 3px 4px,
+    transparent 4px 7px,
+    rgba(var(--glitch-c), 0.08) 7px 8px
+  );
+}
+
+/* 오답: 화면이 찢어지고 색수차로 흔들린다. --glitch-r/--glitch-c 는 정오답을
+   뜻하는 색이 아니라 "고장" 자체를 표현하는 아티팩트 색이라 두 색(녹/앰버)
+   규율을 깨지 않는다 — 신호는 여전히 앰버(색) + 이 글리치(이벤트) + stderr
+   텍스트, 세 갈래로만 전달된다. */
+.signal-wrong .crt-tear {
+  animation: tear 120ms steps(3, end) 1;
+}
+.signal-wrong .terminal {
+  animation: aberrate 120ms steps(3, end) 1;
+}
+
+@keyframes tear {
+  0%   { opacity: 0; transform: translateY(0); }
+  33%  { opacity: 1; transform: translateY(-3px); }
+  66%  { opacity: 1; transform: translateY(2px); }
+  100% { opacity: 0; transform: translateY(0); }
+}
+
+@keyframes aberrate {
+  0%   { transform: translateX(0); filter: none; }
+  33%  { transform: translateX(-2px); filter: drop-shadow(2px 0 0 rgba(var(--glitch-r), 0.55)); }
+  66%  { transform: translateX(2px);  filter: drop-shadow(-2px 0 0 rgba(var(--glitch-c), 0.45)); }
+  100% { transform: translateX(0); filter: none; }
+}
+
+/* 정답: 인광이 한 번 타오른다. */
+.signal-solved .terminal { animation: bloom 420ms ease-out 1; }
+
+@keyframes bloom {
+  0%   { text-shadow: var(--glow-green); }
+  25%  { text-shadow: 0 0 18px rgba(78, 224, 106, 0.95), 0 0 40px rgba(78, 224, 106, 0.45); }
+  100% { text-shadow: var(--glow-green); }
+}
+
+/* 전정 감각에 민감한 사용자에게는 화면 흔들림과 색수차가 해롭다.
+   글리치/블룸 애니메이션은 모두 끈다 — 색(앰버/초록)과 stderr 텍스트는
+   그대로 남으므로 오답/정답 정보는 손실되지 않는다. */
+@media (prefers-reduced-motion: reduce) {
+  .signal-wrong .crt-tear,
+  .signal-wrong .terminal,
+  .signal-solved .terminal { animation: none; }
 }
