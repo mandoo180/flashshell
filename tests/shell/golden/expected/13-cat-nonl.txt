@@ -1,0 +1,7 @@
+no-trailing-newline0 nonl.txt
+19 nonl.txt
+no-trailing-newlinealpha
+
+===STDERR===
+===EXIT===
+0

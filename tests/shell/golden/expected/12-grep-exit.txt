@@ -1,0 +1,7 @@
+apple
+apple
+0
+
+===STDERR===
+===EXIT===
+1
