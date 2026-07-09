@@ -65,3 +65,67 @@ html, body { margin: 0; }
 @media (prefers-reduced-motion: reduce) {
   .crt::after { background: radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, 0.55) 100%); }
 }
+
+/* --- HUD / bottom sheet / level select ------------------------------- */
+
+.hud {
+  position: absolute;
+  top: 1rem; left: 1rem; right: 1rem;
+  z-index: 2;
+  padding: 0.9rem 1.1rem;
+  background: rgba(10, 16, 8, 0.86);
+  border: 1px solid #2f4a24;
+  backdrop-filter: blur(3px);
+  color: var(--phos-green);
+}
+.hud-meta { display: flex; gap: 1rem; align-items: center; font-size: 0.65rem; letter-spacing: 0.24em; }
+.hud-diff { color: var(--phos-amber); }
+.hud-count { color: var(--phos-dim); margin-left: auto; }
+.hud-fold,
+.hud-exit { background: none; border: 1px solid #2f4a24; color: var(--phos-dim); font: inherit; padding: 0.15rem 0.5rem; cursor: pointer; }
+.hud-collapsed { padding-bottom: 0.55rem; }
+.hud-title { margin: 0.55rem 0 0.2rem; font-size: 1rem; text-shadow: var(--glow-green); }
+.hud-prompt { margin: 0; line-height: 1.55; color: #b6e08a; }
+.hud-hint { margin: 0.45rem 0 0; color: var(--phos-amber); text-shadow: var(--glow-amber); font-size: 0.9rem; }
+.hud-hint-button { margin-top: 0.7rem; background: none; border: 1px solid var(--phos-amber); color: var(--phos-amber); font: inherit; font-size: 0.7rem; letter-spacing: 0.18em; padding: 0.25rem 0.75rem; cursor: pointer; }
+
+.sheet {
+  position: absolute;
+  left: 1rem; right: 1rem; bottom: 0;
+  z-index: 3;
+  padding: 1rem 1.2rem 1.2rem;
+  background: rgba(10, 16, 8, 0.96);
+  border: 1px solid var(--phos-green);
+  border-bottom: 0;
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.7);
+  color: #9fd47a;
+  animation: sheet-rise 260ms ease-out;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+@keyframes sheet-rise { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+.sheet-header { color: var(--phos-green); text-shadow: var(--glow-green); letter-spacing: 0.24em; font-size: 0.75rem; }
+.sheet-label { color: var(--phos-dim); font-size: 0.65rem; letter-spacing: 0.2em; margin-top: 0.8rem; }
+.sheet-code { margin: 0.3rem 0 0; padding: 0.55rem 0.7rem; background: var(--phos-bg); border: 1px solid #2f4a24; color: var(--phos-green); overflow-x: auto; }
+.sheet-body { margin: 0.3rem 0 0; line-height: 1.65; }
+.sheet-next { margin-top: 1rem; background: none; border: 1px solid var(--phos-green); color: var(--phos-green); font: inherit; letter-spacing: 0.18em; padding: 0.3rem 1rem; cursor: pointer; }
+
+/* HUD가 터미널 상단을 가리므로 스크롤백에 여백을 준다 */
+.terminal { padding-top: 11rem; }
+
+.levels { position: relative; z-index: 2; max-width: 46rem; margin: 0 auto; padding: 4rem 1.5rem; color: var(--phos-green); }
+.levels-title { letter-spacing: 0.35em; text-shadow: var(--glow-green); }
+.levels-sub { color: var(--phos-dim); }
+.levels-list { list-style: none; padding: 0; display: grid; gap: 0.6rem; margin-top: 2rem; }
+.level { display: grid; grid-template-columns: 6rem 8rem 1fr auto; gap: 1rem; align-items: baseline; width: 100%; text-align: left; padding: 0.85rem 1rem; background: rgba(10, 16, 8, 0.8); border: 1px solid #2f4a24; color: var(--phos-green); font: inherit; cursor: pointer; }
+.level:hover:not(:disabled) { border-color: var(--phos-green); box-shadow: 0 0 14px rgba(78, 224, 106, 0.18); }
+.level-locked { color: var(--phos-dim); cursor: not-allowed; }
+.level-num { font-size: 0.7rem; letter-spacing: 0.2em; color: var(--phos-amber); }
+.level-locked .level-num { color: var(--phos-dim); }
+.level-topic { color: var(--phos-dim); font-size: 0.8rem; }
+.level-status { font-size: 0.7rem; letter-spacing: 0.12em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet { animation: none; }
+}
