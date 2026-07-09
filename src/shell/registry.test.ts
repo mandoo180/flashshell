@@ -55,8 +55,9 @@ describe('type', () => {
     expect((await run('cd')).stdout).toBe('cd is a shell builtin\n')
   })
 
-  // coreutils 표가 Task 8 시점엔 비어 있다. Task 9가 cat 을 등록하면 되살린다.
-  it.todo('coreutil 은 경로로 말한다')
+  it('coreutil 은 경로로 말한다', async () => {
+    expect((await run('cat')).stdout).toBe('cat is /usr/bin/cat\n')
+  })
 
   it('없는 명령은 실패한다', async () => {
     const out = await run('nope')
