@@ -1,0 +1,67 @@
+:root {
+  --phos-bg: #0b0e08;
+  --phos-green: #4ee06a;
+  --phos-amber: #ffb03a;
+  --phos-dim: #2e7a3f;
+  --glow-green: 0 0 6px rgba(78, 224, 106, 0.55);
+  --glow-amber: 0 0 7px rgba(255, 176, 58, 0.6);
+}
+
+/* 브라우저 기본 body 여백과 content-box가 100vh 박스를 뷰포트 밖으로 밀어내는 것을 막는다.
+   (없으면 .terminal의 padding이 height:100vh 위에 더해져 페이지가 스크롤되고,
+   마운트 시 scrollIntoView가 그 스크롤을 끝까지 밀어 첫 줄이 화면 밖으로 사라진다.) */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+
+.crt {
+  position: relative;
+  min-height: 100vh;
+  background: var(--phos-bg);
+  font-family: "Courier New", ui-monospace, monospace;
+  overflow: hidden;
+}
+
+/* 주사선 + 비네팅. pointer-events:none 이라 클릭을 가로채지 않는다. */
+.crt::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, 0.55) 100%),
+    repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 2px);
+}
+
+.terminal {
+  padding: 1rem;
+  color: var(--phos-green);
+  line-height: 1.6;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.tone-green { color: var(--phos-green); text-shadow: var(--glow-green); }
+.tone-amber { color: var(--phos-amber); text-shadow: var(--glow-amber); }
+.tone-dim   { color: var(--phos-dim); }
+
+.term-line { white-space: pre-wrap; word-break: break-all; }
+
+.term-inputline { display: flex; }
+.term-prompt { color: var(--phos-dim); white-space: pre; }
+
+/* caret-color가 인광색이어야 커서도 빛난다. */
+.term-input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--phos-green);
+  caret-color: var(--phos-green);
+  text-shadow: var(--glow-green);
+  font: inherit;
+  padding: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crt::after { background: radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, 0.55) 100%); }
+}
