@@ -67,6 +67,39 @@ describe('cd', () => {
     await run('cd', 'docs')
     expect(state.env.PWD).toBe('/home/player/docs')
   })
+  it('cd - 로 사라진 OLDPWD에 진입 시 실제 경로를 오류에 명시한다', async () => {
+    // /home/player/gone 에 cd 한 후 다시 나온 다음 디렉터리를 삭제
+    fs.mkdir('/home/player/gone')
+    await run('cd', '/home/player/gone')
+    await run('cd', '/home/player')
+    fs.rm('/home/player/gone', { recursive: true })
+    // cd - 시도: 오류에는 실제 경로 /home/player/gone 이 명시되어야 함
+    const out = await run('cd', '-')
+    expect(out.exitCode).toBe(1)
+    expect(out.stderr).toBe('cd: /home/player/gone: No such file or directory\n')
+    // cwd 는 변경되지 않아야 함
+    expect(state.cwd).toBe('/home/player')
+  })
+  it('cd nope 실패 시에는 여전히 raw 인자(nope)를 오류에 명시한다', async () => {
+    const out = await run('cd', 'nope')
+    expect(out.exitCode).toBe(1)
+    expect(out.stderr).toBe('cd: nope: No such file or directory\n')
+  })
+  it('cd - 로 파일이 된 OLDPWD에 진입 시 실제 경로를 오류에 명시한다', async () => {
+    // /home/player/wasdir 이라는 디렉터리 생성
+    fs.mkdir('/home/player/wasdir')
+    await run('cd', '/home/player/wasdir')
+    await run('cd', '/home/player')
+    // 이제 /home/player/wasdir 을 파일로 대체
+    fs.rm('/home/player/wasdir', { recursive: true })
+    fs.writeFile('/home/player/wasdir', 'now a file')
+    // cd - 시도: 오류에는 실제 경로 /home/player/wasdir 이 명시되어야 함
+    const out = await run('cd', '-')
+    expect(out.exitCode).toBe(1)
+    expect(out.stderr).toBe('cd: /home/player/wasdir: Not a directory\n')
+    // cwd 는 변경되지 않아야 함
+    expect(state.cwd).toBe('/home/player')
+  })
 })
 
 describe('pwd', () => {

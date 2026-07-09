@@ -10,7 +10,7 @@ export const cd: CommandFn = ({ args, fs, state }) => {
   else if (raw === '-') target = state.oldPwd
   else target = fs.resolve(raw, state.cwd)
 
-  const label = raw ?? target
+  const label = raw === '-' ? target : raw ?? target
   if (!fs.exists(target)) return fail(`cd: ${label}: ${errnoText(new VfsError('ENOENT', target))}\n`)
   if (!fs.isDir(target)) return fail(`cd: ${label}: ${errnoText(new VfsError('ENOTDIR', target))}\n`)
 
