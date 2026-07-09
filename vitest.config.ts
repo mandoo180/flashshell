@@ -8,7 +8,7 @@ export default defineConfig({
     projects: [
       {
         extends: true,
-        test: { name: 'shell', environment: 'node', include: ['src/shell/**/*.test.ts', 'tests/**/*.test.ts'] },
+        test: { name: 'shell', environment: 'node', include: ['src/shell/**/*.test.ts', 'src/game/**/*.test.ts', 'tests/**/*.test.ts'] },
       },
       {
         extends: true,
