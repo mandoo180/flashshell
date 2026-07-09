@@ -12,14 +12,22 @@ export function emptyProgress(): Progress {
   return { solved: [], hintsUsed: [] }
 }
 
+/**
+ * 배열이면서 모든 요소가 문자열인지 검증.
+ * 요소가 하나라도 문자가 아니면 전체 배열을 버린다.
+ */
+function validateStringArray(value: unknown): string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === 'string') ? value : []
+}
+
 export function loadProgress(): Progress {
   try {
     const raw = globalThis.localStorage?.getItem(STORAGE_KEY)
     if (!raw) return emptyProgress()
     const parsed = JSON.parse(raw) as Partial<Progress>
     return {
-      solved: Array.isArray(parsed.solved) ? parsed.solved : [],
-      hintsUsed: Array.isArray(parsed.hintsUsed) ? parsed.hintsUsed : [],
+      solved: validateStringArray(parsed.solved),
+      hintsUsed: validateStringArray(parsed.hintsUsed),
     }
   } catch {
     // 손상된 저장소나 localStorage 부재가 게임을 막아서는 안 된다.

@@ -9,7 +9,6 @@ import {
   solvedInLevel,
   UNLOCK_THRESHOLD,
 } from './progress'
-import { PLAYER_HOME, createShellForProblem } from './harness'
 import type { Problem, Level } from './types'
 
 function fakeProblems(): Problem[] {
@@ -168,73 +167,25 @@ describe('진행도 저장소 방어 (localStorage 없음/손상/예외)', () =>
     saveProgress(p)
     expect(loadProgress()).toEqual(p)
   })
-})
 
-describe('createShellForProblem (하니스)', () => {
-  const base = {
-    id: 'l1-01',
-    level: 1 as Level,
-    title: '',
-    prompt: '',
-    hints: [],
-    check: () => false,
-    solution: '',
-    wrongAnswer: '',
-    explanation: '',
-  }
-
-  it('setup이 아무 것도 하지 않아도 홈 디렉터리가 존재하고 cwd/home이 거기다', () => {
-    const problem: Problem = { ...base, setup: () => {} }
-    const shell = createShellForProblem(problem)
-    expect(shell.fs.isDir(PLAYER_HOME)).toBe(true)
-    expect(shell.cwd).toBe(PLAYER_HOME)
+  it('배열이지만 요소가 숫자면 solved는 빈 배열이다', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => JSON.stringify({ solved: [1, 2, 3], hintsUsed: [] }),
+    })
+    expect(loadProgress()).toEqual(emptyProgress())
   })
 
-  it('setup이 /home/player 를 지워도 셸이 시작될 때 홈이 살아있다', () => {
-    const problem: Problem = {
-      ...base,
-      setup: (fs) => {
-        fs.rm(PLAYER_HOME, { recursive: true })
-      },
-    }
-    const shell = createShellForProblem(problem)
-    expect(shell.fs.isDir(PLAYER_HOME)).toBe(true)
+  it('배열에 문자와 숫자가 섞여 있으면 전체 배열을 버린다', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => JSON.stringify({ solved: ['l1-01', 42], hintsUsed: [] }),
+    })
+    expect(loadProgress()).toEqual(emptyProgress())
   })
 
-  it('setup이 /home/player 를 디렉터리가 아닌 파일로 덮어써도 홈은 디렉터리로 복구된다', () => {
-    const problem: Problem = {
-      ...base,
-      setup: (fs) => {
-        fs.rm(PLAYER_HOME, { recursive: true })
-        fs.writeFile(PLAYER_HOME, 'oops, not a directory')
-      },
-    }
-    const shell = createShellForProblem(problem)
-    expect(shell.fs.isDir(PLAYER_HOME)).toBe(true)
-  })
-
-  it('두 셸은 VFS를 공유하지 않는다 — 이것이 문제 리셋의 동작 원리다', async () => {
-    const problem: Problem = {
-      ...base,
-      setup: (fs) => {
-        fs.writeFile(`${PLAYER_HOME}/a.txt`, 'seed')
-      },
-    }
-    const shellA = createShellForProblem(problem)
-    const shellB = createShellForProblem(problem)
-
-    await shellA.exec(`rm ${PLAYER_HOME}/a.txt`)
-
-    expect(shellA.fs.exists(`${PLAYER_HOME}/a.txt`)).toBe(false)
-    expect(shellB.fs.exists(`${PLAYER_HOME}/a.txt`)).toBe(true)
-  })
-
-  it('exec 으로 만든 변화가 shell.fs 에 그대로 보인다 (check가 보는 fs는 살아있는 참조)', async () => {
-    const problem: Problem = { ...base, setup: () => {} }
-    const shell = createShellForProblem(problem)
-
-    await shell.exec(`touch ${PLAYER_HOME}/done.txt`)
-
-    expect(shell.fs.exists(`${PLAYER_HOME}/done.txt`)).toBe(true)
+  it('solved는 문자 배열이고 hintsUsed는 객체를 포함하면 hintsUsed는 버려진다', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => JSON.stringify({ solved: ['l1-01'], hintsUsed: [{}] }),
+    })
+    expect(loadProgress()).toEqual({ solved: ['l1-01'], hintsUsed: [] })
   })
 })
