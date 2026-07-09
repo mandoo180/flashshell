@@ -1,4 +1,5 @@
 import type { Problem } from '../types'
 import { l1 } from './l1'
+import { l2 } from './l2'
 
-export const allProblems: Problem[] = [...l1]
+export const allProblems: Problem[] = [...l1, ...l2]
