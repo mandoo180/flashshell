@@ -152,6 +152,58 @@ describe('프롬프트와 자동완성', () => {
   })
 })
 
+describe('signalTick', () => {
+  it('초기 상태에서 0 이다', () => {
+    expect(get().signalTick).toBe(0)
+  })
+
+  it('getInitialState() 도 0 이다', () => {
+    expect(useGame.getInitialState().signalTick).toBe(0)
+  })
+
+  it('signal 을 쓸 때마다 증가한다 — wrong → wrong 재발도 포함해서', async () => {
+    get().startProblem('l1-01')
+    const afterStart = get().signalTick
+
+    await get().submit('cat nope.txt')
+    expect(get().signal).toBe('wrong')
+    const afterFirstWrong = get().signalTick
+    expect(afterFirstWrong).toBeGreaterThan(afterStart)
+
+    await get().submit('cat nope2.txt')
+    expect(get().signal).toBe('wrong') // 값은 그대로: wrong → wrong
+    const afterSecondWrong = get().signalTick
+    expect(afterSecondWrong).toBeGreaterThan(afterFirstWrong)
+  })
+
+  it('signal 을 건드리지 않는 쓰기(revealHint)는 증가시키지 않는다', () => {
+    get().startProblem('l1-01')
+    const before = get().signalTick
+    get().revealHint()
+    expect(get().signalTick).toBe(before)
+  })
+
+  it('clearSignal() 은 signal 을 쓰므로 증가시킨다', async () => {
+    get().startProblem('l1-01')
+    await get().submit('cat nope.txt')
+    expect(get().signal).toBe('wrong')
+    const before = get().signalTick
+
+    get().clearSignal()
+    expect(get().signal).toBe('idle')
+    expect(get().signalTick).toBeGreaterThan(before)
+  })
+
+  it('signal 이 이미 wrong 이 아니면 clearSignal() 은 아무것도 안 쓰므로 증가하지 않는다', () => {
+    get().startProblem('l1-01')
+    expect(get().signal).toBe('idle')
+    const before = get().signalTick
+
+    get().clearSignal()
+    expect(get().signalTick).toBe(before)
+  })
+})
+
 describe('다음 문제', () => {
   it('같은 레벨의 다음 문제로 넘어간다', async () => {
     get().startProblem('l1-01')

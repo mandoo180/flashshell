@@ -21,6 +21,7 @@ export interface GameStore {
   status: 'playing' | 'solved'
   hintsShown: number
   signal: Signal
+  signalTick: number
 
   openLevel(level: Level): void
   startProblem(id: string): void
@@ -49,6 +50,7 @@ export const useGame = create<GameStore>((set, get) => ({
   status: 'playing',
   hintsShown: 0,
   signal: 'idle',
+  signalTick: 0,
 
   openLevel: (level) => {
     const first = allProblems.find((p) => p.level === level)
@@ -58,7 +60,7 @@ export const useGame = create<GameStore>((set, get) => ({
   startProblem: (id) => {
     const problem = allProblems.find((p) => p.id === id)
     if (!problem) return
-    set({
+    set((s) => ({
       screen: 'play',
       problem,
       shell: createShellForProblem(problem),
@@ -67,7 +69,8 @@ export const useGame = create<GameStore>((set, get) => ({
       status: 'playing',
       hintsShown: 0,
       signal: 'idle',
-    })
+      signalTick: s.signalTick + 1,
+    }))
   },
 
   submit: async (line) => {
@@ -103,11 +106,11 @@ export const useGame = create<GameStore>((set, get) => ({
     if (solved) {
       const progress = markSolved(get().progress, problem.id)
       saveProgress(progress)
-      set({ status: 'solved', signal: 'solved', progress })
+      set((s) => ({ status: 'solved', signal: 'solved', progress, signalTick: s.signalTick + 1 }))
       return
     }
 
-    set({ signal: result.exitCode === 0 ? 'idle' : 'wrong' })
+    set((s) => ({ signal: result.exitCode === 0 ? 'idle' : 'wrong', signalTick: s.signalTick + 1 }))
   },
 
   revealHint: () => {
@@ -131,18 +134,19 @@ export const useGame = create<GameStore>((set, get) => ({
   resetProblem: () => {
     const { problem } = get()
     if (!problem) return
-    set({
+    set((s) => ({
       shell: createShellForProblem(problem),
       lines: [],
       history: [],
       status: 'playing',
       signal: 'idle',
-    })
+      signalTick: s.signalTick + 1,
+    }))
   },
 
   backToLevels: () => set({ screen: 'levels', problem: null, shell: null, lines: [] }),
 
-  clearSignal: () => set((s) => (s.signal === 'wrong' ? { signal: 'idle' } : s)),
+  clearSignal: () => set((s) => (s.signal === 'wrong' ? { signal: 'idle', signalTick: s.signalTick + 1 } : s)),
 
   completions: (partial) => {
     const { shell } = get()
