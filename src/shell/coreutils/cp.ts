@@ -79,8 +79,15 @@ export const cp: CommandFn = ({ args, fs, state }) => {
     // `cp s.txt s.txt` → "cp: 's.txt' and 's.txt' are the same file" exit 1.
     // 지금 이 시점엔 소스가 진짜 디렉터리(-r 없이)인 경우는 이미 위에서 걸러졌으므로,
     // 여기 도달했다면 파일/심볼릭 링크 또는 -r 붙은 디렉터리다.
+    //
+    // review finding 1: 여기 원래 `${dest}`(raw 인자)를 그대로 박아 넣었는데, dest 가
+    // 디렉터리면 GNU는 raw dest 가 아니라 계산된 target(dest/basename)을 문구에
+    // 쓴다 — 바로 아래 "into itself" 분기가 이미 displayTarget 을 쓰는 것과 같은
+    // 이유. docker debian:stable-slim coreutils 9.7 실측(LANG 비움, od -c 확인):
+    //   `cp a.txt .` → "cp: 'a.txt' and './a.txt' are the same file" exit 1
+    // (raw dest 였다면 "'a.txt' and '.'"가 됐을 텐데 실제로는 './a.txt'.)
     if (target === sourceAbs) {
-      stderr += `cp: '${source}' and '${dest}' are the same file\n`
+      stderr += `cp: '${source}' and '${displayTarget}' are the same file\n`
       exitCode = 1
       continue
     }

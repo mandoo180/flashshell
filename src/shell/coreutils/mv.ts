@@ -50,8 +50,16 @@ export const mv: CommandFn = ({ args, fs, state }) => {
     // 즉 "정확히 같은 경로"면 same-file 문구, "진짜 하위 경로(같지는 않음)"면
     // subdirectory 문구 — 순서가 중요하다(완전 일치를 먼저 검사해야
     // `mv sub .`가 subdirectory 문구로 잘못 빠지지 않는다).
+    //
+    // review finding 1: 문구엔 raw dest(`${dest}`)가 아니라 계산된
+    // displayTarget 을 써야 한다 — dest 가 디렉터리면 GNU는 dest/basename 을
+    // 보여준다(바로 아래 subdirectory 분기와 동일한 이유). docker
+    // debian:stable-slim coreutils 9.7 실측(LANG 비움, od -c 확인):
+    //   `mv sub .`     → "mv: 'sub' and './sub' are the same file" (raw '.' 아님)
+    //   `mv d/f.txt d` → "mv: 'd/f.txt' and 'd/f.txt' are the same file"
+    //                    (dest 가 디렉터리라 target 이 d/f.txt 로 되접힌다)
     if (target === sourceAbs) {
-      stderr += `mv: '${source}' and '${dest}' are the same file\n`
+      stderr += `mv: '${source}' and '${displayTarget}' are the same file\n`
       exitCode = 1
       continue
     }

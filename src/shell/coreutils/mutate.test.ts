@@ -50,6 +50,13 @@ describe('cp', () => {
     // 디렉터리가 아니면 실패한다")은 그대로 두고 실측 문구로 고쳤다.
     expect(r.stderr).toBe("cp: target 'b.txt': Not a directory\n")
   })
+  it('cp a.txt . 처럼 목적지가 디렉터리면 same-file 문구는 raw dest 가 아니라 계산된 target(dest/basename)을 쓴다 (task-11 review finding 1)', async () => {
+    // docker debian:stable-slim coreutils 9.7 실측(LANG 비움, 컨테이너 기본 환경):
+    //   `cp a.txt .` → "cp: 'a.txt' and './a.txt' are the same file" exit 1
+    const r = await sh.exec('cp a.txt .')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toBe("cp: 'a.txt' and './a.txt' are the same file\n")
+  })
 })
 
 describe('mv', () => {
@@ -158,12 +165,17 @@ describe('chmod', () => {
     await sh.exec('chmod +x a.txt')
     expect(fs.lstat('/w/a.txt')!.mode).toBe(0o755)
   })
-  it('숫자가 아니고 심볼도 아니면 실패한다', async () => {
+  it('숫자가 아니고 심볼도 아니면 실패한다 (task-11 review finding 3: GNU 둘째 줄까지)', async () => {
     const r = await sh.exec('chmod zzz a.txt')
     expect(r.exitCode).toBe(1)
-    // docker coreutils 9.7 실측: "chmod: invalid mode: 'zzz'"(둘째 줄 "Try 'chmod
-    // --help'..."는 이 태스크 기대 문구 밖이라 의도적으로 생략, chmod.ts 주석 참고).
-    expect(r.stderr).toBe("chmod: invalid mode: 'zzz'\n")
+    // docker debian:stable-slim coreutils 9.7 실측(od -c로 바이트까지 확인,
+    // task-11-report.md 참고): 실제로는 두 줄이다 —
+    //   chmod: invalid mode: 'zzz'
+    //   Try 'chmod --help' for more information.
+    // task-11 구현 당시엔 이 둘째 줄을 의도적으로 생략했었다(chmod.ts 주석 참고,
+    // 당시엔 이 태스크가 요구한 문구 밖이라 판단) — review finding 3 에서 GNU와
+    // 정확히 맞추라는 요구가 와서 둘째 줄을 추가하고 이 assertion을 실측에 맞게 고쳤다.
+    expect(r.stderr).toBe("chmod: invalid mode: 'zzz'\nTry 'chmod --help' for more information.\n")
   })
   it('= 는 해당 범위의 권한을 통째로 교체한다 (GNU에 있지만 브리프엔 없던 기능, 결정: 추가)', async () => {
     fs.chmod('/w/a.txt', 0o644)
@@ -185,6 +197,80 @@ describe('chmod', () => {
     expect(r.stderr).toContain('nope.txt')
     expect(fs.lstat('/w/x1.txt')!.mode).toBe(0o700)
     expect(fs.lstat('/w/y1.txt')!.mode).toBe(0o700)
+  })
+})
+
+describe('chmod — who 생략 시 umask(022)를 반영한다 (task-11 review finding 2)', () => {
+  // 컨테이너(debian:stable-slim) 기본 umask 는 022 — docker `umask` 실측.
+  // GNU chmod 는 who(u/g/o/a)를 생략한 심볼릭 연산(+/-/=)에서 umask 가 가리는
+  // 비트는 건드리지 않는다. who 를 명시하면(u+w, a+w, go-w 등) umask 를 전혀
+  // 참조하지 않는다 — 아래에서 둘 다 실측·검증한다.
+  it('+w: 644 에서 그대로다 (그룹/기타 쓰기 비트는 umask 022 가 가려서 안 켜진다)', async () => {
+    // docker 실측: `chmod 644 f; chmod +w f; stat -c %a f` → 644
+    fs.chmod('/w/a.txt', 0o644)
+    await sh.exec('chmod +w a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o644)
+  })
+  it('-w: 664 에서 464 가 된다 (그룹 쓰기 비트는 umask 가 가려서 안 지워진다)', async () => {
+    // docker 실측: `chmod 664 f; chmod -w f; stat -c %a f` → 464
+    fs.chmod('/w/a.txt', 0o664)
+    await sh.exec('chmod -w a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o464)
+  })
+  it('-w: 666 에서 466 이 된다', async () => {
+    // docker 실측: `chmod 666 f; chmod -w f; stat -c %a f` → 466
+    fs.chmod('/w/a.txt', 0o666)
+    await sh.exec('chmod -w a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o466)
+  })
+  it('+x: 644 에서 755 가 된다 (실행 비트는 umask 022 에 안 걸린다 — l2-08 퍼즐 정합성)', async () => {
+    // docker 실측: `chmod 644 f; chmod +x f; stat -c %a f` → 755. 이 결과는
+    // l2-08 퍼즐의 explanation("644 에서 시작하면 +x 로도 755 가 된다")과
+    // 정확히 일치한다 — umask 022 는 x 비트를 가리지 않기 때문이다.
+    fs.chmod('/w/a.txt', 0o644)
+    await sh.exec('chmod +x a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o755)
+  })
+  it('+r: 600 에서 644 가 된다 (읽기 비트는 umask 022 에 안 걸린다)', async () => {
+    // docker 실측: `chmod 600 f; chmod +r f; stat -c %a f` → 644
+    fs.chmod('/w/a.txt', 0o600)
+    await sh.exec('chmod +r a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o644)
+  })
+  it('-r: 666 에서 222 가 된다 (읽기 비트는 umask 에 안 걸리므로 전부 지워진다)', async () => {
+    // docker 실측: `chmod 666 f; chmod -r f; stat -c %a f` → 222
+    fs.chmod('/w/a.txt', 0o666)
+    await sh.exec('chmod -r a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o222)
+  })
+  it('=w: 644 에서 200 이 된다 (= 도 umask 를 반영한다 — 그룹/기타는 마스크된 비트를 그대로 둔다)', async () => {
+    // docker 실측: `chmod 644 f; chmod =w f; stat -c %a f` → 200.
+    // 소유자는 umask 가 안 가리므로 전부(rwx) 지운 뒤 w 만 세팅 → 2.
+    // 그룹/기타는 umask 가 쓰기 비트를 가려 그 비트는 손대지 않고(원래도 0),
+    // 안 가려진 읽기/실행 비트만 지운다(원래 있던 r 이 지워짐) → 0.
+    fs.chmod('/w/a.txt', 0o644)
+    await sh.exec('chmod =w a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o200)
+  })
+  it('who 를 명시하면(a+w) umask 를 전혀 참조하지 않는다', async () => {
+    // docker 실측: `chmod 644 f; chmod a+w f; stat -c %a f` → 666 (같은 조건의
+    // 위 bare `+w` 테스트는 umask 때문에 644 에 머물렀다 — 대비 확인).
+    fs.chmod('/w/a.txt', 0o644)
+    await sh.exec('chmod a+w a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o666)
+  })
+  it('who 를 명시하면(u+w) umask 를 전혀 참조하지 않는다 (이미 켜져 있어 무변화)', async () => {
+    // docker 실측: `chmod 644 f; chmod u+w f; stat -c %a f` → 644
+    fs.chmod('/w/a.txt', 0o644)
+    await sh.exec('chmod u+w a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o644)
+  })
+  it('who 를 명시하면(go-w) umask 를 전혀 참조하지 않는다', async () => {
+    // docker 실측: `chmod 666 f; chmod go-w f; stat -c %a f` → 644 (같은 조건의
+    // 위 bare `-w` 테스트는 umask 때문에 466 에 머물렀다 — 대비 확인).
+    fs.chmod('/w/a.txt', 0o666)
+    await sh.exec('chmod go-w a.txt')
+    expect(fs.lstat('/w/a.txt')!.mode).toBe(0o644)
   })
 })
 
@@ -330,11 +416,25 @@ describe('mv — trap 6: 같은 경로로 옮기기', () => {
     expect(r.stderr).toBe("mv: 'a.txt' and 'a.txt' are the same file\n")
     expect(fs.readFile('/w/a.txt')).toBe('alpha\n')
   })
-  it('디렉터리를 이미 그 자리(자기 자신인 디렉터리)로 옮기면 "same file"', async () => {
+  it('디렉터리를 이미 그 자리(자기 자신인 디렉터리)로 옮기면 "same file" (task-11 review finding 1)', async () => {
     // src 는 cwd(/w) 바로 아래 있으므로 `mv src .` 는 정확히 같은 경로가 된다.
+    // docker debian:stable-slim coreutils 9.7 실측(LANG 비움, od -c로 확인):
+    //   `mv sub .` → "mv: 'sub' and './sub' are the same file" exit 1
+    // 즉 문구는 raw dest('.')가 아니라 계산된 target('./sub', 여기선 './src')을
+    // 쓴다 — 예전 assertion은 raw dest를 그대로 넣은 결함을 그대로 굳혀놨었다.
     const r = await sh.exec('mv src .')
     expect(r.exitCode).toBe(1)
-    expect(r.stderr).toBe("mv: 'src' and '.' are the same file\n")
+    expect(r.stderr).toBe("mv: 'src' and './src' are the same file\n")
+  })
+  it('디렉터리 안의 파일을 그 디렉터리로 다시 옮기면(경로가 되접힌다) "same file" — mv d/f.txt d 형태 (task-11 review finding 1)', async () => {
+    // docker 실측: `mv d/f.txt d` → "mv: 'd/f.txt' and 'd/f.txt' are the same
+    // file" exit 1 — dest(d)가 이미 있는 디렉터리라 target이 d/basename으로
+    // 계산되고, 이게 d/f.txt로 되접혀 source와 같아진다. src/inner.txt 를
+    // src 로 옮기는 것으로 동일한 모양을 재현한다.
+    const r = await sh.exec('mv src/inner.txt src')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toBe("mv: 'src/inner.txt' and 'src/inner.txt' are the same file\n")
+    expect(fs.readFile('/w/src/inner.txt')).toBe('inner\n')
   })
   it('디렉터리를 자기 자신의 하위(이미 존재하는 자기 이름)로 옮기면 subdirectory 에러', async () => {
     const r = await sh.exec('mv src src')
