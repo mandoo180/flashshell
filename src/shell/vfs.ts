@@ -45,13 +45,32 @@ export class VFS {
 
   /** 심볼릭 링크를 따라가지 않고 노드를 찾는다. 중간 경로 요소가 링크면 그것은 따라간다. */
   lstat(abs: string): VNode | null {
+    return this.resolveLstat(abs, { hops: MAX_SYMLINK_HOPS })
+  }
+
+  /** 심볼릭 링크를 끝까지 따라간다. */
+  lookup(abs: string): VNode | null {
+    return this.resolveLookup(abs, { hops: MAX_SYMLINK_HOPS })
+  }
+
+  /**
+   * lstat과 lookup은 서로를 호출하는 상호재귀 구조다: 중간 경로 요소가 심볼릭 링크면
+   * lstat이 lookup을 부르고, lookup은 각 홉마다 lstat을 부른다. 두 함수가 각자 독립된
+   * 홉 카운터를 쓰면, 링크의 target이 그 링크 자신을 다시 중간 경로 요소로 거치는
+   * 경우 (예: symlink('/a/b', '/a') — '/a'가 자기 자신을 통해야 도달하는 '/a/b'를
+   * 가리킨다) 재귀할 때마다 카운터가 리셋되어 무한 재귀에 빠지고 RangeError로 죽는다.
+   * budget 객체를 참조로 공유해 lstat<->lookup 상호재귀 전체가 하나의 32홉 예산을
+   * 소비하도록 한다 — 예산이 바닥나면 어느 쪽에서든 즉시 null로 되돌아온다.
+   */
+  private resolveLstat(abs: string, budget: { hops: number }): VNode | null {
     const parts = this.split(abs)
     let node: VNode = this.root
     for (let i = 0; i < parts.length; i++) {
       const name = parts[i]!
       // 중간 경로 요소는 반드시 디렉터리여야 한다. 링크면 따라간다.
       if (node.kind === 'symlink') {
-        const resolved = this.lookup(node.target)
+        if (budget.hops <= 0) return null
+        const resolved = this.resolveLookup(node.target, budget)
         if (!resolved) return null
         node = resolved
       }
@@ -63,16 +82,16 @@ export class VFS {
     return node
   }
 
-  /** 심볼릭 링크를 끝까지 따라간다. */
-  lookup(abs: string): VNode | null {
+  private resolveLookup(abs: string, budget: { hops: number }): VNode | null {
     let current = abs
-    for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
-      const node = this.lstat(current)
+    while (budget.hops > 0) {
+      budget.hops--
+      const node = this.resolveLstat(current, budget)
       if (!node) return null
       if (node.kind !== 'symlink') return node
       current = node.target.startsWith('/') ? node.target : this.resolve(node.target, this.dirname(current))
     }
-    return null // 순환. ENOENT로 취급한다.
+    return null // 순환/예산 소진. ENOENT로 취급한다.
   }
 
   private dirname(abs: string): string {

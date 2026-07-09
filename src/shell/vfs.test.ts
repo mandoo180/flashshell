@@ -228,4 +228,38 @@ describe('VFS 트랩 검증', () => {
     fs.mkdir('/a')
     expect(() => fs.rename('/a', '/a/sub')).toThrow(VfsError)
   })
+
+  it('lstat과 lookup의 상호재귀는 하나의 홉 예산을 공유해야 한다 (자기 자신을 경유하는 링크)', () => {
+    // '/a' -> '/a/b': lookup('/a')가 lstat('/a/b')를 부르면, 'a/b'의 중간 요소 'a'는
+    // 다시 심볼릭 링크 '/a' 자신이라 lstat이 lookup을 부르고 그 lookup이 다시
+    // lstat('/a/b')를 부르는 식으로 서로가 서로를 무한히 되부른다. 두 함수가 독립된
+    // 홉 카운터를 쓰면 이 재귀는 절대 끝나지 않고 RangeError로 스택이 터진다.
+    fs.symlink('/a/b', '/a')
+    expect(fs.lookup('/a')).toBeNull()
+  })
+
+  it('자기 자신을 경유하는 링크는 exists/readFile 같은 공개 API에서도 크래시 없이 실패해야 한다', () => {
+    fs.symlink('/a/b', '/a')
+    expect(fs.exists('/a')).toBe(false)
+    expect(() => fs.readFile('/a')).toThrow(VfsError)
+  })
+
+  it('서로를 경유하는 두 링크도 무한 재귀 없이 ENOENT(null)로 끝나야 한다', () => {
+    fs.symlink('/b/x', '/a') // '/a' -> '/b/x'
+    fs.symlink('/a/y', '/b') // '/b' -> '/a/y'
+    expect(fs.lookup('/a')).toBeNull()
+  })
+
+  it('31단 심볼릭 링크 체인은 풀리고 32단 체인은 null이다 (공유 홉 예산의 경계)', () => {
+    fs.writeFile('/real', 'ok')
+    // L0 -> /real, L1 -> L0, ..., L30 -> L29  (실 파일까지 총 31개 링크)
+    for (let i = 0; i < 31; i++) {
+      fs.symlink(i === 0 ? '/real' : `/L${i - 1}`, `/L${i}`)
+    }
+    expect(fs.lookup('/L30')!.content).toBe('ok')
+
+    // L31 -> L30 을 추가하면 실 파일까지 총 32개 링크가 되어 예산을 넘긴다.
+    fs.symlink('/L30', '/L31')
+    expect(fs.lookup('/L31')).toBeNull()
+  })
 })
