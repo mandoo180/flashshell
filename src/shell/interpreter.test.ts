@@ -194,6 +194,75 @@ describe('리다이렉션 순서 (trap 4, docker 로 확인됨)', () => {
   })
 })
 
+describe('리다이렉션 open/read 분리 (task 9, docker 로 확인됨)', () => {
+  // docker: cd /tmp && printf "alpha\n" > a.txt && cat < a.txt > a.txt; echo "[$(cat a.txt)]"
+  //   → []  (bash는 명령을 돌리기 전에 모든 리다이렉션을 먼저 연다: `<` 는 열기만 하고,
+  //   내용은 `>` 가 같은 파일을 비운 *뒤에* 읽는다.)
+  it('cat < a.txt > a.txt 는 a.txt 를 비운다 (같은 파일을 열고-나서-비우고-나서-읽는다)', async () => {
+    const r = await sh.exec('cat < a.txt > a.txt')
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('')
+    expect(r.exitCode).toBe(0)
+    expect(fs.readFile('/home/player/a.txt')).toBe('')
+  })
+
+  it('회귀: cat > a.txt < a.txt (역순) 은 이미 비운 뒤라 그대로 비어있다', async () => {
+    // docker: cd /tmp && printf "alpha\n" > a.txt && cat > a.txt < a.txt; echo "[$(cat a.txt)]"
+    //   → []
+    const r = await sh.exec('cat > a.txt < a.txt')
+    expect(r.exitCode).toBe(0)
+    expect(fs.readFile('/home/player/a.txt')).toBe('')
+  })
+
+  it('회귀: cat < gone.txt > out.txt 는 gone.txt 를 못 열어서 out.txt 를 아예 만들지 않는다', async () => {
+    // docker: cd /tmp && cat < gone.txt > out.txt; echo exit=$?; ls out.txt
+    //   → exit=1, ls: cannot access 'out.txt': No such file or directory (out.txt 없음)
+    const r = await sh.exec('cat < gone.txt > out.txt')
+    expect(r.exitCode).toBe(1)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('gone.txt')
+    expect(fs.exists('/home/player/out.txt')).toBe(false)
+  })
+
+  it('회귀: cat < a.txt (단독, > 없음) 은 a.txt 내용을 그대로 읽는다', async () => {
+    const r = await sh.exec('cat < a.txt')
+    expect(r.stdout).toBe('alpha\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('< 로 없는 파일을 열면 확장된 원본 단어로 에러를 낸다 (해석된 절대경로 아님)', async () => {
+    // docker: cd /tmp && cat < nope.txt; echo exit=$?
+    //   → bash: line 1: nope.txt: No such file or directory (줄번호 접두는 bash -c 산물이라 뺀다)
+    const r = await sh.exec('cat < nope.txt')
+    expect(r.stderr).toBe('bash: nope.txt: No such file or directory\n')
+    expect(r.exitCode).toBe(1)
+    expect(r.stdout).toBe('')
+  })
+
+  it('ambiguous redirect 메시지에 대상 단어(글롭 원문)가 들어가고, 두 파일 다 건드리지 않는다', async () => {
+    // docker: cd /tmp && touch a.txt b.txt && echo hi > *.txt; echo exit=$?
+    //   → bash: line 1: *.txt: ambiguous redirect (a.txt/b.txt 내용 그대로)
+    const r = await sh.exec('echo hi > *.txt')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toBe('bash: *.txt: ambiguous redirect\n')
+    expect(fs.readFile('/home/player/a.txt')).toBe('alpha\n')
+    expect(fs.readFile('/home/player/b.txt')).toBe('beta\n')
+  })
+
+  it('회귀: > 은 여전히 쓰고, 없는 명령도 파일을 만들며 exit 127, 여러 > 는 마지막만 내용을 받는다', async () => {
+    await sh.exec('echo hi > out.txt')
+    expect(fs.readFile('/home/player/out.txt')).toBe('hi\n')
+
+    const r = await sh.exec('nosuchcmd > n.txt')
+    expect(r.exitCode).toBe(127)
+    expect(fs.exists('/home/player/n.txt')).toBe(true)
+
+    await sh.exec('echo hi > o1 > o2')
+    expect(fs.readFile('/home/player/o1')).toBe('')
+    expect(fs.readFile('/home/player/o2')).toBe('hi\n')
+  })
+})
+
 describe('파이프라인', () => {
   it('stdout 을 다음 명령의 stdin 으로 넘긴다', async () => {
     expect((await sh.exec('echo hi | cat')).stdout).toBe('hi\n')

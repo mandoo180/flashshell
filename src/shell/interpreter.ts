@@ -4,6 +4,18 @@ import { parse, type CommandNode, type ListNode, type PipelineNode } from './par
 import { expandWord, expandToSingle, type ExpandCtx } from './expand'
 import { lookupCommand, isKnownUnimplemented } from './registry'
 import type { CommandEnv, ExecResult, ShellState } from './types'
+import type { Word } from './lexer'
+
+/**
+ * 리다이렉션 대상 단어를 확장 전 원문 그대로 이어붙인다 (따옴표 문자 자체는 복원하지
+ * 않는다). expandToSingle 이 "0개 또는 2개 이상으로 펼쳐졌다"며 실패했을 때, bash는
+ * 펼쳐진 결과가 아니라 사용자가 쓴 단어 그대로를 메시지에 보여준다 — docker로 확인:
+ * `echo hi > *.txt`(a.txt,b.txt 매치) → "*.txt"(펼쳐진 "a.txt b.txt"가 아님),
+ * `X="a b"; echo hi > $X` → "$X"(펼쳐진 "a b"가 아님).
+ */
+function wordSourceText(word: Word): string {
+  return word.map((part) => part.text).join('')
+}
 
 /** 한 번의 exec 동안만 사는 실행 컨텍스트. */
 interface RunCtx {
@@ -49,7 +61,7 @@ function expandCtxFor(ctx: RunCtx): ExpandCtx {
   }
 }
 
-interface ResolvedRedir { fd: 0 | 1 | 2; op: '>' | '>>' | '<'; path: string }
+interface ResolvedRedir { fd: 0 | 1 | 2; op: '>' | '>>' | '<'; path: string; word: string }
 
 async function runCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promise<ExecResult> {
   spend(ctx)
@@ -87,17 +99,27 @@ async function runCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promis
     return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
   }
 
-  // 4~6. 리다이렉션을 텍스트에 나온 순서 그대로 왼쪽에서 오른쪽으로 처리한다. 실제 bash가
+  // 4~6. 리다이렉션을 텍스트에 나온 순서 그대로 왼쪽에서 오른쪽으로 "연다". 실제 bash가
   //    그렇게 하기 때문이다 — 대상 확장(ambiguous 여부)과 open()류 부작용(> 는 즉시 비우고,
-  //    < 는 즉시 읽고, >> 는 없으면 만듦)이 리다이렉션마다 함께 일어난다. 뒤의 리다이렉션이
-  //    실패해도 앞의 리다이렉션이 이미 만든 부작용(예: 파일 비움)은 되돌리지 않는다 —
-  //    docker로 확인: `> out < gone` 은 out 을 비운 뒤에 실패하고, `< gone > out` 은
-  //    out 을 건드리기도 전에 실패한다. 같은 fd 로 두 번 리다이렉션되면(`> a > b`) 전부
-  //    비워지지만 실제 내용은 마지막 것만 받는다 — 그래서 여기서는 "비우기/만들기"만 하고,
-  //    실제 출력 내용 쓰기는 명령 실행 후 9번 단계에서 fd 별 마지막 리다이렉션에만 한다.
+  //    >> 는 없으면 만들고, < 는 열 수 있는지만 확인한다)이 리다이렉션마다 함께 일어난다.
+  //    뒤의 리다이렉션이 실패해도 앞의 리다이렉션이 이미 만든 부작용(예: 파일 비움)은
+  //    되돌리지 않는다 — docker로 확인: `> out < gone` 은 out 을 비운 뒤에 실패하고,
+  //    `< gone > out` 은 out 을 건드리기도 전에 실패한다. 같은 fd 로 두 번 리다이렉션되면
+  //    (`> a > b`) 전부 비워지지만 실제 내용은 마지막 것만 받는다 — 그래서 여기서는
+  //    "비우기/만들기"만 하고, 실제 출력 내용 쓰기는 명령 실행 후 9번 단계에서 fd 별 마지막
+  //    리다이렉션에만 한다.
+  //
+  //    < 는 특히 "열기"와 "읽기"를 분리해야 한다: 커널이 그렇게 하듯, 여기서는 열 수
+  //    있는지(존재하고 읽을 수 있는지)만 확인하고 아직 내용을 읽지 않는다. 실제 내용은
+  //    루프가 전부 끝난 뒤(= 이 명령에 걸린 모든 리다이렉션의 open() 부작용이 다 반영된
+  //    뒤)에 읽는다. 그래야 `cat < f > f` 처럼 뒤에 나온 `>` 가 같은 파일을 비운 게
+  //    stdin에도 반영된다 — docker로 확인: `printf alpha > a; cat < a > a; echo [$(cat a)]`
+  //    → `[]` (a가 비어 있다). 왼→오로 즉시 읽어버리면 이 케이스에서 alpha가 그대로
+  //    살아남는 버그가 난다.
   const redirs: ResolvedRedir[] = []
   let input = stdin
   let inputFromFile = false
+  let stdinRedir: ResolvedRedir | null = null // 마지막 < 리다이렉션. 내용은 루프 종료 후 읽는다.
 
   for (const redir of node.redirs) {
     let word: string
@@ -105,14 +127,17 @@ async function runCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promis
       word = await expandToSingle(redir.target, expandCtx)
     } catch (e) {
       if (e instanceof ExecutionLimitError) throw e
-      return { stdout: '', stderr: `bash: ambiguous redirect\n`, exitCode: 1 }
+      // ambiguous redirect는 "펼쳐진 결과"가 아니라 사용자가 쓴 단어 원문을 보여준다.
+      return { stdout: '', stderr: `bash: ${wordSourceText(redir.target)}: ambiguous redirect\n`, exitCode: 1 }
     }
     const path = ctx.fs.resolve(word, ctx.state.cwd)
+    const resolved: ResolvedRedir = { fd: redir.fd, op: redir.op, path, word }
 
     try {
       if (redir.op === '<') {
-        input = ctx.fs.readFile(path)
-        inputFromFile = true
+        // 열 수 있는지만 확인한다 (없으면 ENOENT, 디렉터리면 EISDIR 등으로 여기서 던짐).
+        // 내용은 버리고, 진짜 읽기는 루프가 끝난 뒤에 한다.
+        ctx.fs.readFile(path)
       } else if (redir.op === '>') {
         ctx.fs.writeFile(path, '')
       } else {
@@ -121,10 +146,23 @@ async function runCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promis
         if (!ctx.fs.exists(path)) ctx.fs.writeFile(path, '')
       }
     } catch (e) {
-      return { stdout: '', stderr: `bash: ${path}: ${errnoText(e)}\n`, exitCode: 1 }
+      // 해석된 절대경로가 아니라 사용자가 쓴(확장까지는 된) 단어로 에러를 낸다 —
+      // docker로 확인: `cat < nope.txt` → "bash: nope.txt: ...", "/home/player/nope.txt"가 아님.
+      return { stdout: '', stderr: `bash: ${word}: ${errnoText(e)}\n`, exitCode: 1 }
     }
 
-    redirs.push({ fd: redir.fd, op: redir.op, path })
+    redirs.push(resolved)
+    if (redir.op === '<') { inputFromFile = true; stdinRedir = resolved }
+  }
+
+  // 모든 리다이렉션의 open() 부작용이 끝난 뒤에야 실제 stdin 내용을 읽는다 (위 주석 참고).
+  if (stdinRedir) {
+    try {
+      input = ctx.fs.readFile(stdinRedir.path)
+    } catch (e) {
+      // 루프 중 열기 확인을 통과했으므로 사실상 도달하지 않지만, 방어적으로 같은 형식을 지킨다.
+      return { stdout: '', stderr: `bash: ${stdinRedir.word}: ${errnoText(e)}\n`, exitCode: 1 }
+    }
   }
 
   // 7. 명령을 찾는다.
@@ -189,7 +227,8 @@ async function runCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promis
       if (redir.op === '>') ctx.fs.writeFile(redir.path, text)
       else ctx.fs.appendFile(redir.path, text)
     } catch (e) {
-      return { stdout: '', stderr: `bash: ${redir.path}: ${errnoText(e)}\n`, exitCode: 1 }
+      // 여기도 해석된 절대경로가 아니라 사용자가 쓴 단어로 에러를 낸다 (finding 2와 동일 원칙).
+      return { stdout: '', stderr: `bash: ${redir.word}: ${errnoText(e)}\n`, exitCode: 1 }
     }
     if (redir.fd === 1) stdout = ''
     else stderr = ''
