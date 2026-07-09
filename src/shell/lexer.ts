@@ -28,8 +28,15 @@ export function tokenize(input: string): Token[] {
   // 그래야 `echo ""` 가 빈 단어 하나를 만든다.
   const push = (kind: WordPart['kind'], text: string) => {
     const last = word[word.length - 1]
-    if (last && last.kind === kind) last.text += text
-    else word.push({ kind, text } as WordPart)
+    if (last && last.kind === kind) {
+      last.text += text
+    } else if (kind === 'literal') {
+      word.push({ kind, text })
+    } else if (kind === 'raw') {
+      word.push({ kind, text })
+    } else {
+      word.push({ kind, text })
+    }
   }
 
   while (i < input.length) {
@@ -89,19 +96,51 @@ export function tokenize(input: string): Token[] {
     }
 
     // $( ... ) 는 괄호 깊이를 세어 통째로 삼킨다. 안의 공백·연산자는 렉서가 건드리지 않는다.
+    // 단, 따옴표 안의 (/) 는 깊이에 반영하지 않는다 — 그래야 `$(echo ")")` 같은 입력이
+    // 따옴표 속 )에서 스캔이 멈추는 일이 없다.
     if (ch === '$' && input[i + 1] === '(') {
       let depth = 0
       let j = i + 1
-      for (; j < input.length; j++) {
-        if (input[j] === '(') depth++
-        else if (input[j] === ')') {
-          depth--
-          if (depth === 0) break
+      while (j < input.length) {
+        const c = input[j]!
+        if (c === '\\') {
+          j += 2
+          continue
         }
+        if (c === "'") {
+          const end = input.indexOf("'", j + 1)
+          if (end === -1) {
+            j = input.length
+            break
+          }
+          j = end + 1
+          continue
+        }
+        if (c === '"') {
+          let k = j + 1
+          while (k < input.length && input[k] !== '"') {
+            k += input[k] === '\\' ? 2 : 1
+          }
+          if (k >= input.length) {
+            j = input.length
+            break
+          }
+          j = k + 1
+          continue
+        }
+        if (c === '(') depth++
+        else if (c === ')') {
+          depth--
+          if (depth === 0) {
+            j++
+            break
+          }
+        }
+        j++
       }
       if (depth !== 0) throw new Error('unexpected EOF while looking for matching `)`')
-      push('raw', input.slice(i, j + 1))
-      i = j + 1
+      push('raw', input.slice(i, j))
+      i = j
       continue
     }
 

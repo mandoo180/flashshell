@@ -131,4 +131,56 @@ describe('tokenize', () => {
     expect(words(ts).map((t) => t.word)).toEqual([[{ kind: 'raw', text: 'a2' }], [{ kind: 'raw', text: 'b' }]])
     expect(ops(ts)).toEqual(['>'])
   })
+
+  it('$( ) 안 큰따옴표 속 )는 괄호 깊이를 끊지 않는다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo $(echo ")")' => )
+    const ts = tokenize('echo $(echo ")")')
+    expect(words(ts)).toHaveLength(2)
+    expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '$(echo ")")' }])
+  })
+
+  it('$( ) 안 큰따옴표 속 (는 괄호 깊이를 올리지 않는다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo $(echo "(")' => (
+    const ts = tokenize('echo $(echo "(")')
+    expect(words(ts)).toHaveLength(2)
+    expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '$(echo "(")' }])
+  })
+
+  it('$( ) 안 큰따옴표 속 )가 있어도 전체를 통째로 삼킨다 (grep 패턴 예시)', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c
+    //   'printf ")\n(\n" > file && echo $(grep ")" file)' => )
+    const ts = tokenize('echo $(grep ")" file)')
+    expect(words(ts)).toHaveLength(2)
+    expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '$(grep ")" file)' }])
+  })
+
+  it('$( ) 안 작은따옴표 속 )는 괄호 깊이를 끊지 않는다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c "echo \$(echo ')')" => )
+    const ts = tokenize("echo $(echo ')')")
+    expect(words(ts)).toHaveLength(2)
+    expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: "$(echo ')')" }])
+  })
+
+  it('$( ) 안 백슬래시로 이스케이프된 )는 괄호 깊이를 끊지 않는다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo $(echo \))' => )
+    const ts = tokenize('echo $(echo \\))')
+    expect(words(ts)).toHaveLength(2)
+    expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '$(echo \\))' }])
+  })
+
+  it('$( ) 안에 따옴표가 있어도 중첩 $( )는 여전히 동작한다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo $(echo $(echo hi))' => hi
+    const ts = tokenize('echo $(echo $(echo hi))')
+    expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '$(echo $(echo hi))' }])
+  })
+
+  it('$( 안에서 진짜로 닫히지 않으면 여전히 던진다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo $(ls' => unexpected EOF while looking for matching `)'
+    expect(() => tokenize('echo $(ls')).toThrow(/unexpected EOF/)
+  })
+
+  it('$( ) 안의 따옴표가 닫히지 않으면 던진다', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo $(echo "abc' => unexpected EOF while looking for matching `"'
+    expect(() => tokenize('echo $(echo "abc')).toThrow(/unexpected EOF/)
+  })
 })
