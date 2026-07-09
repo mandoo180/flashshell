@@ -1,0 +1,12 @@
+hello
+hello world
+$X
+a b
+a b
+hellos
+
+[]
+
+===STDERR===
+===EXIT===
+0

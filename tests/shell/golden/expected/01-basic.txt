@@ -1,0 +1,9 @@
+hello
+quoted string
+single quoted
+a b c
+/work
+
+===STDERR===
+===EXIT===
+0

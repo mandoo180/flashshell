@@ -1,0 +1,9 @@
+a.txt b.txt fruit.txt mixed.txt nums.txt
+project/docs project/src
+nope*
+one.txt
+two.txt
+
+===STDERR===
+===EXIT===
+0

@@ -9,7 +9,7 @@
     "noUnusedLocals": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
-    "types": ["vitest/globals"]
+    "types": ["vitest/globals", "node"]
   },
   "include": ["src", "tests", "e2e"]
 }

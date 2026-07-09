@@ -1,0 +1,8 @@
+
+===STDERR===
+ls: cannot access 'nope': No such file or directory
+cat: nope: No such file or directory
+cp: cannot stat 'nope': No such file or directory
+rmdir: failed to remove 'project': Directory not empty
+===EXIT===
+1

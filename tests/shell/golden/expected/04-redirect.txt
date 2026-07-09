@@ -1,0 +1,8 @@
+first
+second
+2
+alpha
+
+===STDERR===
+===EXIT===
+0

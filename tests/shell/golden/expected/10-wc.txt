@@ -1,0 +1,18 @@
+1 a.txt
+6 a.txt
+1 1 6 a.txt
+1 6 a.txt
+1 1 6
+1
+      1       1       6
+1
+ 1 a.txt
+ 1 b.txt
+ 2 total
+ 4  4 26 fruit.txt
+ 3  3  9 nums.txt
+ 7  7 35 total
+
+===STDERR===
+===EXIT===
+0

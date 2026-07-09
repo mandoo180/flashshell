@@ -1,0 +1,8 @@
+yes
+recovered
+1
+0
+
+===STDERR===
+===EXIT===
+0

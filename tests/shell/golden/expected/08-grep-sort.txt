@@ -1,0 +1,16 @@
+Hello
+hello
+Hello
+WORLD
+1:Hello
+2:hello
+9
+100
+10
+9
+10
+100
+
+===STDERR===
+===EXIT===
+0

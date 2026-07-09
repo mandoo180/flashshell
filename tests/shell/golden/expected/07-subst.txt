@@ -1,0 +1,8 @@
+nested
+alpha
+4
+a b
+
+===STDERR===
+===EXIT===
+0
