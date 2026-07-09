@@ -1,3 +1,5 @@
+import { matchSubstitutionEnd } from './subst'
+
 export type WordPart =
   | { kind: 'literal'; text: string } // 작은따옴표 안 / 이스케이프됨 → 확장 없음
   | { kind: 'raw'; text: string } // 따옴표 없음 → 확장 + 단어분할 + 글롭
@@ -97,48 +99,10 @@ export function tokenize(input: string): Token[] {
 
     // $( ... ) 는 괄호 깊이를 세어 통째로 삼킨다. 안의 공백·연산자는 렉서가 건드리지 않는다.
     // 단, 따옴표 안의 (/) 는 깊이에 반영하지 않는다 — 그래야 `$(echo ")")` 같은 입력이
-    // 따옴표 속 )에서 스캔이 멈추는 일이 없다.
+    // 따옴표 속 )에서 스캔이 멈추는 일이 없다. 짝 찾기는 subst.ts와 공유한다
+    // (unterminated 면 matchSubstitutionEnd가 던진다).
     if (ch === '$' && input[i + 1] === '(') {
-      let depth = 0
-      let j = i + 1
-      while (j < input.length) {
-        const c = input[j]!
-        if (c === '\\') {
-          j += 2
-          continue
-        }
-        if (c === "'") {
-          const end = input.indexOf("'", j + 1)
-          if (end === -1) {
-            j = input.length
-            break
-          }
-          j = end + 1
-          continue
-        }
-        if (c === '"') {
-          let k = j + 1
-          while (k < input.length && input[k] !== '"') {
-            k += input[k] === '\\' ? 2 : 1
-          }
-          if (k >= input.length) {
-            j = input.length
-            break
-          }
-          j = k + 1
-          continue
-        }
-        if (c === '(') depth++
-        else if (c === ')') {
-          depth--
-          if (depth === 0) {
-            j++
-            break
-          }
-        }
-        j++
-      }
-      if (depth !== 0) throw new Error('unexpected EOF while looking for matching `)`')
+      const j = matchSubstitutionEnd(input, i) + 1
       push('raw', input.slice(i, j))
       i = j
       continue
