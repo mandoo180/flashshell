@@ -70,7 +70,15 @@ export class VFS {
       // 중간 경로 요소는 반드시 디렉터리여야 한다. 링크면 따라간다.
       if (node.kind === 'symlink') {
         if (budget.hops <= 0) return null
-        const resolved = this.resolveLookup(node.target, budget)
+        // node는 parts[i-1]에서 찾은 노드이므로 그 자신의 절대경로는
+        // parts.slice(0, i)다. 상대 target은 "그 링크 자신이 있는 디렉터리"
+        // (그 경로의 dirname) 기준으로 풀어야 한다 — 루트 기준이 아니다.
+        // (resolveLookup이 마지막 구성요소에서 이미 하는 것과 동일한 규칙.)
+        const symlinkPath = '/' + parts.slice(0, i).join('/')
+        const targetAbs = node.target.startsWith('/')
+          ? node.target
+          : this.resolve(node.target, this.dirname(symlinkPath))
+        const resolved = this.resolveLookup(targetAbs, budget)
         if (!resolved) return null
         node = resolved
       }

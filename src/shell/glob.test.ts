@@ -147,4 +147,14 @@ describe('expandGlob', () => {
     fs.symlink('sub', '/w/link')
     expect(expandGlob('link/*.txt', '/w', fs)).toEqual(['link/d.txt'])
   })
+
+  it('상대 target 심볼릭 링크가 글롭 세그먼트 다음의 리터럴 세그먼트를 가릴 때도 매칭된다 (실제 bash와 동일)', () => {
+    // /w/link -> sub (상대 target). '/w/*/d.txt'는 'link'와 'sub' 둘 다 후보로
+    // 올리고, 각 후보 뒤에 리터럴 'd.txt'를 붙여 exists()로 확인한다. exists()가
+    // 중간 요소의 상대 심볼릭 링크를 링크 자신의 디렉터리 기준으로 풀지 못하면
+    // '/w/link/d.txt'는 거짓으로 존재하지 않는다고 보고되어 빠진다 — 실제 bash
+    // (`echo w/*/d.txt`)는 둘 다 반환한다.
+    fs.symlink('sub', '/w/link')
+    expect(expandGlob('/w/*/d.txt', '/', fs)).toEqual(['/w/link/d.txt', '/w/sub/d.txt'])
+  })
 })

@@ -263,3 +263,85 @@ describe('VFS 트랩 검증', () => {
     expect(fs.lookup('/L31')).toBeNull()
   })
 })
+
+// resolveLstat이 중간 경로 요소의 심볼릭 링크를 따라갈 때, 그 target이 상대경로면
+// "그 심볼릭 링크 자신이 있는 디렉터리" 기준으로 풀어야 한다 — 루트 기준이 아니다.
+// resolveLookup의 마지막 구성요소 처리는 이미 이렇게 하고 있었고 (this.dirname(current)
+// 사용), 중간 요소 처리만 target 원문 문자열을 그대로 resolveLookup에 넘겨 루트 기준으로
+// 오인했다. 아래는 그 회귀를 고정한다.
+describe('VFS 심볼릭 링크: 중간 요소의 상대 target', () => {
+  it('상대 target 심볼릭 링크가 중간 요소일 때 그 자신의 디렉터리 기준으로 풀린다', () => {
+    fs.mkdir('/w/sub', { recursive: true })
+    fs.writeFile('/w/sub/d.txt', 'hi')
+    fs.symlink('sub', '/w/link') // 상대 target — '/w' 기준으로 풀려야 한다 ('/'가 아니라)
+    expect(fs.exists('/w/link/d.txt')).toBe(true)
+    expect(fs.readFile('/w/link/d.txt')).toBe('hi')
+    expect(fs.lstat('/w/link/d.txt')!.kind).toBe('file')
+    expect(fs.lstat('/w/link/d.txt')!.content).toBe('hi')
+  })
+
+  it('.. 를 포함한 상대 target도 중간 요소에서 링크 자신의 디렉터리 기준으로 풀린다', () => {
+    fs.mkdir('/a/b', { recursive: true })
+    fs.mkdir('/a/other', { recursive: true })
+    fs.writeFile('/a/other/f', 'x')
+    fs.symlink('../other', '/a/b/link') // /a/b/link -> resolve('../other','/a/b') = /a/other
+    expect(fs.readFile('/a/b/link/f')).toBe('x')
+  })
+
+  it('절대 target 심볼릭 링크는 중간 요소에서도 그대로 동작한다 (회귀)', () => {
+    fs.mkdir('/w/sub', { recursive: true })
+    fs.writeFile('/w/sub/d.txt', 'hi')
+    fs.symlink('/w/sub', '/w/abslink')
+    expect(fs.readFile('/w/abslink/d.txt')).toBe('hi')
+  })
+
+  it('상대 target 심볼릭 링크가 마지막 구성요소일 때 동작은 그대로다 (회귀)', () => {
+    fs.mkdir('/w/sub', { recursive: true })
+    fs.writeFile('/w/sub/d.txt', 'hi')
+    fs.symlink('sub', '/w/link') // 디렉터리를 가리키는 상대 링크 — 마지막 구성요소
+    try {
+      fs.readFile('/w/link')
+      throw new Error('should have thrown')
+    } catch (e) {
+      expect((e as VfsError).code).toBe('EISDIR')
+    }
+
+    fs.writeFile('/w/f.txt', 'content')
+    fs.symlink('f.txt', '/w/flink') // 파일을 가리키는 상대 링크 — 마지막 구성요소
+    expect(fs.readFile('/w/flink')).toBe('content')
+  })
+
+  it('자기 자신을 경유하는 순환 링크는 여전히 크래시 없이 null/false로 끝난다 (회귀)', () => {
+    fs.symlink('/a/b', '/a')
+    expect(fs.lookup('/a')).toBeNull()
+    expect(fs.exists('/a')).toBe(false)
+    expect(() => fs.readFile('/a')).not.toThrow(RangeError)
+    expect(() => fs.readFile('/a')).toThrow(VfsError)
+  })
+
+  it('공유 홉 예산은 중간 요소 심볼릭 링크에도 적용된다: 31단 체인은 풀리고 32단은 null', () => {
+    // root의 'lnk' -> /R1, /R1의 'lnk' -> /R2, ..., /R(k-1)의 'lnk' -> /Rk 로 체인을
+    // 만들고 '/lnk/lnk/.../lnk/f' (lnk가 k개)를 찾는다. 각 'lnk'는 다음 세그먼트를
+    // 보기 위해 반드시 거쳐야 하는 "중간 요소"이고, target이 일반 디렉터리이므로
+    // resolveLookup 내부 while 루프가 정확히 1홉씩만 소비한다. budget이 resolveLstat의
+    // for 루프 전체에서 공유되지 않는다면(예: 매번 새 예산을 만들면) 이 경계는 절대
+    // 나타나지 않는다.
+    const buildChain = (target: VFS, k: number): void => {
+      target.mkdir('/R1')
+      target.symlink('/R1', '/lnk')
+      for (let i = 1; i < k; i++) {
+        target.mkdir(`/R${i + 1}`)
+        target.symlink(`/R${i + 1}`, `/R${i}/lnk`)
+      }
+      target.writeFile(`/R${k}/f`, 'ok')
+    }
+    const path = (k: number): string => '/' + Array(k).fill('lnk').join('/') + '/f'
+
+    buildChain(fs, 31)
+    expect(fs.lookup(path(31))!.content).toBe('ok')
+
+    const fs2 = new VFS()
+    buildChain(fs2, 32)
+    expect(fs2.lookup(path(32))).toBeNull()
+  })
+})
