@@ -15,6 +15,14 @@
   --glow-green: 0 0 6px rgba(78, 224, 106, 0.55);
   --glow-amber: 0 0 7px rgba(255, 176, 58, 0.6);
 
+  /* --phos-green(#4ee06a)의 "R, G, B" 콤마 트리플. --glitch-r/--glitch-c 와
+     같은 이유로 존재한다 — 이 색을 다른 알파로(hover 글로우는 옅게, bloom
+     정답 플래시는 진하게) 여러 군데서 합성해 쓰려면 rgba(var(--phos-green-rgb),
+     alpha) 형태의 토큰 참조가 필요하다. --phos-green 자체는 유지보수 시
+     #hex 값을 그대로 바꿀 수 있게 남겨두고, 이 트리플은 그 값의 RGB
+     분해값을 손으로 맞춰둔 것이다(둘이 어긋나면 안 된다). */
+  --phos-green-rgb: 78, 224, 106;
+
   /* 오답 글리치 전용 "아티팩트" 색 — 신호(정답/오답)를 뜻하는 두 색(녹/앰버)과는
      다르다. 이 둘은 무엇이 옳고 그른지 말하지 않는다. 화면이 순간적으로
      찢어지는 "고장" 자체를 표현하는 색맹채도수차(chromatic aberration)의
@@ -141,7 +149,7 @@ html, body { margin: 0; }
 .levels-sub { color: var(--phos-dim); }
 .levels-list { list-style: none; padding: 0; display: grid; gap: 0.6rem; margin-top: 2rem; }
 .level { display: grid; grid-template-columns: 6rem 8rem 1fr auto; gap: 1rem; align-items: baseline; width: 100%; text-align: left; padding: 0.85rem 1rem; background: var(--phos-panel-semi); border: 1px solid var(--phos-border); color: var(--phos-green); font: inherit; cursor: pointer; }
-.level:hover:not(:disabled) { border-color: var(--phos-green); box-shadow: 0 0 14px rgba(78, 224, 106, 0.18); }
+.level:hover:not(:disabled) { border-color: var(--phos-green); box-shadow: 0 0 14px rgba(var(--phos-green-rgb), 0.18); }
 .level-locked { color: var(--phos-dim); cursor: not-allowed; }
 .level-num { font-size: 0.7rem; letter-spacing: 0.2em; color: var(--phos-amber); }
 .level-locked .level-num { color: var(--phos-dim); }
@@ -219,12 +227,14 @@ html, body { margin: 0; }
   100% { transform: translateX(0); filter: none; }
 }
 
-/* 정답: 인광이 한 번 타오른다. */
+/* 정답: 인광이 한 번 타오른다. --phos-green-rgb 는 --phos-green(#4ee06a)의
+   RGB 분해값 — 이 애니메이션이 :root 밖에서 색을 새로 하드코딩하지 않도록
+   토큰을 거쳐 알파만 다르게(18%/95%/45%) 합성한다. */
 .signal-solved .terminal { animation: bloom 420ms ease-out 1; }
 
 @keyframes bloom {
   0%   { text-shadow: var(--glow-green); }
-  25%  { text-shadow: 0 0 18px rgba(78, 224, 106, 0.95), 0 0 40px rgba(78, 224, 106, 0.45); }
+  25%  { text-shadow: 0 0 18px rgba(var(--phos-green-rgb), 0.95), 0 0 40px rgba(var(--phos-green-rgb), 0.45); }
   100% { text-shadow: var(--glow-green); }
 }
 

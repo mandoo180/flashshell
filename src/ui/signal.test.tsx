@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { App } from './App'
 import { useGame } from './store'
+import { useSignal, GLITCH_MS } from './useSignal'
 
 // import.meta.url 은 vitest 트랜스폼 하에서 file: 스킴이 보장되지 않으므로
 // (가상 모듈 id 인 경우가 있다), 테스트 실행 위치(repo root) 기준 상대경로로 계산한다.
@@ -66,6 +67,34 @@ function allBlocksAfter(css: string, marker: string): string[] {
 // 있으므로, 소스 텍스트 검사는 항상 주석을 걷어낸 코드에 대해서만 한다.
 function stripComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
+// 특정 색(글리치 빨강/시안, bloom 초록)을 하나하나 grep 하는 대신 "채도가 있는
+// 색 리터럴" 자체를 찾는다 — 그래야 앞으로 추가되는 애니메이션/규칙이 새 색을
+// 하드코딩해도 반드시 걸린다. 유일한 예외는 문서화된 무채색 검정
+// (rgba(0, 0, 0, alpha)) — 비네팅(.crt::after)과 box-shadow(.sheet)가 쓰는
+// 값이고, 이번 태스크 범위 밖이다.
+const ACHROMATIC_BLACK = /^0\s*,\s*0\s*,\s*0\s*(,|$)/
+
+function findChromaticLiterals(css: string): string[] {
+  const found: string[] = []
+
+  // #rgb / #rrggbb (와 8자리 alpha 변형까지) 헥스 리터럴.
+  const hexMatches = css.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []
+  found.push(...hexMatches)
+
+  // rgb()/rgba()/hsl()/hsla() 함수 호출. rgba(var(--token), alpha) 처럼
+  // 첫 인자가 토큰 참조면 리터럴이 아니므로 통과시킨다.
+  const fnRegex = /\b(?:rgba?|hsla?)\(([^)]*)\)/g
+  for (const match of css.matchAll(fnRegex)) {
+    const full = match[0] ?? ''
+    const args = (match[1] ?? '').trim()
+    if (args.startsWith('var(')) continue
+    if (ACHROMATIC_BLACK.test(args)) continue
+    found.push(full)
+  }
+
+  return found
 }
 
 function removeRootBlock(css: string): string {
@@ -213,6 +242,47 @@ describe('시그널: crt 클래스', () => {
     expect(after).toBe(before - 1)
   })
 
+  it('회귀 가드: 언마운트 뒤 대기 중이던 글리치 타이머가 발화해도 에러 없이 조용하다', async () => {
+    // unmount() 가 타이머를 못 지웠다면, 이 시점 이후 GLITCH_MS 가 지날 때
+    // 그 콜백이 언마운트된 컴포넌트를 향한 상태 갱신을 시도해 React 경고나
+    // 예외를 던질 수 있다. console.error 를 감시해 "조용히 끝난다"를 못박는다.
+    vi.useFakeTimers()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { unmount } = render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+    await submitWithFireEvent('cat nope.txt')
+    expect(useGame.getState().signal).toBe('wrong')
+
+    unmount()
+    expect(() => {
+      act(() => { vi.advanceTimersByTime(GLITCH_MS + 100) })
+    }).not.toThrow()
+    expect(consoleError).not.toHaveBeenCalled()
+
+    consoleError.mockRestore()
+  })
+
+  it('무관한 스토어 변경은 글리치 창을 연장하지 않는다', () => {
+    // signal 을 건드리지 않는 set() 호출(예: hintsShown)이 있어도 이미 예약된
+    // wrong 타이머는 최초 실패 시점 기준 GLITCH_MS 에 그대로 만료돼야 한다.
+    // 리뷰가 지적한 버그: 예전 구현은 bare subscribe 가 "모든" set() 호출에
+    // 반응해 타이머를 매번 다시 예약했다 — 그러면 t=60 에 무관한 쓰기가 있을 때
+    // 만료 시점이 t=60+120=180 으로 밀린다. 이 테스트는 DOM/App 없이 스토어와
+    // 훅만 직접 구동한다(태스크 지시 — App 을 안 거쳐도 되는 테스트는 그렇게 한다).
+    vi.useFakeTimers()
+    useGame.setState({ signal: 'wrong' }) // t=0: 오답 발화
+    let signal: string | undefined
+    function Probe() { signal = useSignal(); return null }
+    render(<Probe />)
+
+    act(() => { vi.advanceTimersByTime(60) }) // t=60
+    useGame.setState({ hintsShown: 1 })       // signal 과 무관한 쓰기
+    act(() => { vi.advanceTimersByTime(60) }) // t=120 (최초 실패 기준)
+
+    expect(useGame.getState().signal).toBe('idle')
+    expect(signal).toBe('idle')
+  })
+
   it('.crt-tear 는 idle 상태에도 DOM에 항상 존재하고 aria-hidden 이다', async () => {
     const user = userEvent.setup()
     await goToLevel1(user)
@@ -226,19 +296,31 @@ describe('시그널: crt 클래스', () => {
 describe('시그널: CSS 규율 (jsdom 은 CSSOM 을 계산하지 않으므로 소스 텍스트를 검증한다)', () => {
   const css = stripComments(readFileSync(themeCssPath, 'utf-8'))
 
-  it('글리치 아티팩트 색(빨강/시안)은 토큰화되어 있고, :root 밖에는 리터럴로 새지 않는다', () => {
+  it('글리치/블룸 색 토큰은 :root 안에 정의돼 있고, 실제로 var() 로 참조된다', () => {
     const root = blockAfter(css, ':root')
     // #hex, rgb()/rgba() 함수, 혹은 rgba(var(--x), alpha) 로 쓰기 위한
     // "R, G, B" 콤마 트리플(숫자로 시작) 중 하나면 된다.
     expect(root).toMatch(/--glitch-r:\s*(#|rgba?\(|\d)/)
     expect(root).toMatch(/--glitch-c:\s*(#|rgba?\(|\d)/)
+    expect(root).toMatch(/--phos-green-rgb:\s*(#|rgba?\(|\d)/)
 
     const withoutRoot = removeRootBlock(css)
+    // 토큰이 정의만 되고 안 쓰이면(죽은 토큰) 의미가 없다 — 실제 참조를 못박는다.
     expect(withoutRoot).toContain('var(--glitch-r)')
     expect(withoutRoot).toContain('var(--glitch-c)')
-    // 브리프 원안의 리터럴 트리플이 토큰을 거치지 않고 그대로 남아있으면 실패.
-    expect(withoutRoot).not.toMatch(/255,\s*59,\s*59/)
-    expect(withoutRoot).not.toMatch(/0,\s*229,\s*255/)
+    expect(withoutRoot).toContain('var(--phos-green-rgb)')
+  })
+
+  it('CSS 규율: 채도가 있는 색 리터럴은 :root 밖으로 새지 않는다 (일반화된 검사)', () => {
+    // 이전 버전은 '255, 59, 59'/'0, 229, 255' 딱 두 문자열만 grep 했다 — 그
+    // 두 값만 안 쓰면 통과였으므로, bloom 이 --phos-green 의 RGB 트리플을
+    // 하드코딩(rgba(78, 224, 106, ...))했을 때도 이 테스트는 초록불이었다.
+    // 여기서는 "어떤 색이냐"가 아니라 "리터럴이냐 토큰이냐"만 본다: #hex,
+    // rgb()/rgba()/hsl()/hsla() 리터럴은 무엇이든 걸린다. 문서화된 예외는
+    // findChromaticLiterals 위 주석의 무채색 검정 하나뿐이다.
+    const withoutRoot = removeRootBlock(css)
+    const violations = findChromaticLiterals(withoutRoot)
+    expect(violations).toEqual([])
   })
 
   it('reduced-motion 에서는 글리치(tear/aberrate)와 블룸(bloom) 애니메이션이 모두 꺼진다', () => {
