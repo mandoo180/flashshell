@@ -47,6 +47,35 @@ describe('VFS 파일 조작', () => {
     expect(() => fs.mkdir('/a/b', { recursive: true })).not.toThrow()
   })
 
+  // Hang 3 회귀: 옛 구현은 재귀 mkdir에서 구성요소마다 this.lookup(current)와
+  // this.parentDir(current)를 새로 불렀는데 둘 다 루트부터 전체 경로를 다시 훑어
+  // O(N^2)이었다. 5000단은 O(N^2)이면 이미 눈에 띄게 느려지지만(약 25,000,000
+  // 단계 규모), O(N)이면 순식간에 끝난다. 실제 hang 재현(4만 단)보다 얕지만 테스트가
+  // 빠르게 끝나면서도 이차 시간이면 확연히 느려지는 지점으로 골랐다.
+  it('mkdir -p 로 깊은 경로를 올바르게 만들고, 비용이 선형이다 (O(n^2) 아님)', () => {
+    // 정확성: 깊은 경로가 전부 만들어지고 최종 노드 모드가 맞다.
+    const deep = '/' + Array(5000).fill('x').join('/')
+    fs.mkdir(deep, { recursive: true })
+    expect(fs.isDir(deep)).toBe(true)
+    expect(fs.lstat(deep)!.mode).toBe(0o755)
+
+    // 비용: 깊이를 4배로 늘리면 선형은 ~4배, O(n^2)는 ~16배가 든다.
+    // 하드웨어 속도와 무관하게 그 사이(8배)에서 자른다. 절대 임계값은
+    // 빠른 머신에서 O(n^2)를 놓칠 수 있어 점근 비율로 검증한다.
+    const measure = (depth: number): number => {
+      const local = new VFS()
+      const path = '/' + Array(depth).fill('y').join('/')
+      const start = performance.now()
+      local.mkdir(path, { recursive: true })
+      return performance.now() - start
+    }
+    // 워밍업으로 JIT/GC 초기 노이즈를 흡수한다.
+    measure(1000)
+    const small = Math.max(measure(2000), 0.5)
+    const large = measure(8000)
+    expect(large / small).toBeLessThan(8)
+  })
+
   it('비어있지 않은 디렉터리 rmdir은 ENOTEMPTY', () => {
     fs.mkdir('/a'); fs.writeFile('/a/f', '')
     try { fs.rmdir('/a') } catch (e) { expect((e as VfsError).code).toBe('ENOTEMPTY') }

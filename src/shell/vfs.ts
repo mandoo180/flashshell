@@ -188,17 +188,40 @@ export class VFS {
 
   mkdir(abs: string, opts: { recursive?: boolean } = {}): void {
     if (opts.recursive) {
+      // 이전 구현은 매 구성요소마다 this.lookup(current)와 this.parentDir(current)를
+      // 불렀는데, 둘 다 루트부터 전체 경로를 다시 훑는다 — N단 경로에 O(N^2). 여기서는
+      // "지금 서 있는 디렉터리 노드"(node)와 그 물리 절대경로(dirAbs)를 들고 다니며 한
+      // 구성요소씩 내려가므로 전체가 O(N)이다. 매 구성요소는 다시 lookup하지 않는다.
       const parts = this.split(abs)
+      let node: VNode = this.root
+      let dirAbs = '/'
       let current = ''
       for (let i = 0; i < parts.length; i++) {
         const part = parts[i]!
         current += '/' + part
-        const node = this.lookup(current)
-        if (node?.kind === 'dir') continue
+        const isFinal = i === parts.length - 1
+
+        let hit: VNode | null = node.children.get(part) ?? null
+        let hitPath = dirAbs === '/' ? `/${part}` : `${dirAbs}/${part}`
+        if (hit !== null && hit.kind === 'symlink') {
+          // lookup()과 동일하게: 이 구성요소가 심볼릭 링크면 끝까지 따라간다. 매
+          // 구성요소마다 새 홉 예산을 준다 — resolvePhysical의 다른 모든 호출부와
+          // 같은 계약("한 단계 해석은 순환/체인에도 무한루프하지 않는다")이다.
+          const targetAbs = hit.target.startsWith('/') ? hit.target : this.resolve(hit.target, dirAbs)
+          const resolved = this.resolvePhysical(targetAbs, { hops: MAX_SYMLINK_HOPS }, true)
+          hit = resolved ? resolved.node : null
+          hitPath = resolved ? resolved.path : hitPath
+        }
+
+        if (hit !== null && hit.kind === 'dir') { node = hit; dirAbs = hitPath; continue }
         // 마지막 구성요소가 디렉터리가 아닌 무언가로 이미 있으면 EEXIST,
         // 중간 구성요소가 막고 있으면 ENOTDIR (mkdir -p의 실제 errno와 동일).
-        if (node) throw new VfsError(i === parts.length - 1 ? 'EEXIST' : 'ENOTDIR', current)
-        this.parentDir(current).children.set(part, makeNode('dir', 0o755, this.tick()))
+        if (hit !== null) throw new VfsError(isFinal ? 'EEXIST' : 'ENOTDIR', current)
+
+        const created = makeNode('dir', 0o755, this.tick())
+        node.children.set(part, created)
+        node = created
+        dirAbs = hitPath
       }
       return
     }

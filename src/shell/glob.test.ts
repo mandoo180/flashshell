@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { VFS } from './vfs'
 import { matchSegment, expandGlob, hasGlob } from './glob'
+import { ExecutionLimitError } from './errors'
 
 describe('matchSegment', () => {
   it('* 는 아무 문자열에나 맞는다', () => {
@@ -74,6 +75,30 @@ describe('matchSegment', () => {
     expect(() => matchSegment('[z-a]', 'z')).not.toThrow()
     expect(matchSegment('[z-a]', 'z')).toBe(false)
     expect(matchSegment('[z-a]', 'a')).toBe(false)
+  })
+
+  // Hang 1 회귀: 정규식 기반 matchSegment(`toRegExp(pattern).test(name)`)는 'a*a*a*...*b'
+  // 같은 패턴을 all-'a' 문자열에 맞춰볼 때 V8에서 지수적으로 백트래킹해 탭이 멈춘다.
+  // 두 포인터 선형 매처는 O(이름 길이 × 패턴 길이)로 묶이므로 이 케이스가 빠르게(그리고
+  // 결과가 있든 없든) 끝나야 한다. 실제 bash(`ls a*a*a*a*a*a*a*a*b` on 100 a's, docker
+  // debian:stable-slim)로 확인: 매칭 없음.
+  it('a*a*...*b 패턴이 all-a 문자열에서 지수 백트래킹 없이 빠르게 끝난다', () => {
+    const name = 'a'.repeat(100)
+    const pattern = 'a*a*a*a*a*a*a*a*b'
+    const start = performance.now()
+    const result = matchSegment(pattern, name)
+    const elapsed = performance.now() - start
+    expect(result).toBe(false) // 'b'가 없으므로 매칭 안 함 — 실제 bash와 동일
+    expect(elapsed).toBeLessThan(200)
+  })
+
+  // 타이밍과 무관한 정확성 검증 (실제 bash로 확인: touch aaaaab aaaaac; echo a*a*a*b
+  // → aaaaab만 매칭).
+  it('별표가 여러 개인 패턴도 올바르게 맞춘다 (타이밍과 무관한 정확성)', () => {
+    expect(matchSegment('a*a*a*b', 'aaaaab')).toBe(true)
+    expect(matchSegment('a*a*a*b', 'aaaaac')).toBe(false)
+    expect(matchSegment('a*a*a*b', 'a'.repeat(50) + 'b')).toBe(true)
+    expect(matchSegment('a*a*a*b', 'a'.repeat(50) + 'c')).toBe(false)
   })
 })
 
@@ -169,5 +194,30 @@ describe('expandGlob', () => {
     fs.symlink('../R3', '/R2/lnk')
     fs.writeFile('/R3/f.txt', 'hi')
     expect(expandGlob('/R1/lnk/*/f.txt', '/', fs)).toEqual(['/R1/lnk/lnk/f.txt'])
+  })
+
+  // Hang 2 회귀: 루프 심볼릭 링크(d/a, d/b 모두 '.' 를 가리켜 d 자신으로 돌아온다) 위에서
+  // '*' 세그먼트를 거듭 통과시키면 frontier가 세그먼트마다 갑절이 된다 — 20개면 2^20.
+  // frontier가 상한을 넘으면 ExecutionLimitError를 던져야 하고, 그 결과 인터프리터
+  // 최상단에서 exit 130 + "실행 한도 초과" 메시지로 이어진다 (interpreter.ts run()).
+  // 이 테스트는 그 예외가 나오는지, 그리고 2^20 문자열을 실제로 만들지 않아 빠르게
+  // 끝나는지를 검증한다.
+  it('루프 심볼릭 링크로 frontier 가 지수적으로 불어나면 ExecutionLimitError 를 던진다', () => {
+    fs.mkdir('/d')
+    fs.symlink('.', '/d/a')
+    fs.symlink('.', '/d/b')
+    const pattern = '/d/' + Array(20).fill('*').join('/')
+    const start = performance.now()
+    expect(() => expandGlob(pattern, '/', fs)).toThrow(ExecutionLimitError)
+    expect(performance.now() - start).toBeLessThan(1000)
+  })
+
+  // 회귀: 평범한 다중 세그먼트 글롭(심볼릭 링크를 통과하는 기존 케이스)은 frontier
+  // 상한에 걸리지 않고 여전히 올바른 경로를 돌려준다 — frontier cap은 순수하게 "위쪽"
+  // 방어선일 뿐, 정상적인 결과/정렬/상대·절대경로 재조립을 바꾸지 않는다.
+  it('평범한 다중 세그먼트 글롭(심볼릭 링크 통과 포함)은 frontier cap에 걸리지 않는다', () => {
+    fs.symlink('sub', '/w/link')
+    expect(() => expandGlob('/w/*/d.txt', '/', fs)).not.toThrow()
+    expect(expandGlob('/w/*/d.txt', '/', fs)).toEqual(['/w/link/d.txt', '/w/sub/d.txt'])
   })
 })
