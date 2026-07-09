@@ -7,6 +7,7 @@
   --phos-text: #b6e08a;     /* body copy on the HUD */
   --phos-body: #9fd47a;     /* body copy in the reveal sheet */
   --phos-panel: rgba(11, 14, 8, 0.86);       /* HUD panel background (derived from --phos-bg) */
+  --phos-panel-semi: rgba(11, 14, 8, 0.8);   /* level select panel background */
   --phos-panel-solid: rgba(11, 14, 8, 0.96); /* reveal sheet panel background, more opaque */
   --glow-green: 0 0 6px rgba(78, 224, 106, 0.55);
   --glow-amber: 0 0 7px rgba(255, 176, 58, 0.6);
@@ -123,7 +124,7 @@ html, body { margin: 0; }
 .levels-title { letter-spacing: 0.35em; text-shadow: var(--glow-green); }
 .levels-sub { color: var(--phos-dim); }
 .levels-list { list-style: none; padding: 0; display: grid; gap: 0.6rem; margin-top: 2rem; }
-.level { display: grid; grid-template-columns: 6rem 8rem 1fr auto; gap: 1rem; align-items: baseline; width: 100%; text-align: left; padding: 0.85rem 1rem; background: rgba(10, 16, 8, 0.8); border: 1px solid var(--phos-border); color: var(--phos-green); font: inherit; cursor: pointer; }
+.level { display: grid; grid-template-columns: 6rem 8rem 1fr auto; gap: 1rem; align-items: baseline; width: 100%; text-align: left; padding: 0.85rem 1rem; background: var(--phos-panel-semi); border: 1px solid var(--phos-border); color: var(--phos-green); font: inherit; cursor: pointer; }
 .level:hover:not(:disabled) { border-color: var(--phos-green); box-shadow: 0 0 14px rgba(78, 224, 106, 0.18); }
 .level-locked { color: var(--phos-dim); cursor: not-allowed; }
 .level-num { font-size: 0.7rem; letter-spacing: 0.2em; color: var(--phos-amber); }
