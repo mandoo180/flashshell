@@ -935,3 +935,93 @@ describe('함수 / 브레이스 그룹 / return (task 7, docker debian:stable-sl
     expect(r.stdout).toBe('ia\np\naftr\nib\np\naftr\nend\n')
   })
 })
+
+describe('source / . (task 8, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('ARGS 가 $1.. 로 전달되고, 대입은 호출자에 남는다 (멀티라인 스크립트)', async () => {
+    // docker: printf "x=5\ny=$1\n" > conf.sh; source conf.sh arg1; echo $x $y → 5 arg1
+    fs.writeFile('/home/player/conf.sh', 'x=5\ny=$1\n')
+    expect((await sh.exec('source conf.sh arg1; echo $x $y')).stdout).toBe('5 arg1\n')
+  })
+
+  it('. (dot) 형태도 동일하게 동작한다', async () => {
+    fs.writeFile('/home/player/conf.sh', 'x=5\ny=$1\n')
+    expect((await sh.exec('. conf.sh arg1; echo $x $y')).stdout).toBe('5 arg1\n')
+  })
+
+  it('함수 정의가 호출자에 로드된다', async () => {
+    // docker: printf "hello() { echo hi; }\n" > lib.sh; source lib.sh; hello → hi
+    fs.writeFile('/home/player/lib.sh', 'hello() { echo hi; }\n')
+    expect((await sh.exec('source lib.sh; hello')).stdout).toBe('hi\n')
+  })
+
+  it('없는 파일은 exit 1, "bash: FILE: No such file or directory" (source:/​.: 라벨 없음 — docker 재확인)', async () => {
+    // docker: source nope.sh / . nope.sh → 둘 다 "bash: line N: nope.sh: No such file or
+    // directory"(라벨 없음, line N 은 우리 엔진이 줄번호를 추적하지 않아 생략)
+    const r1 = await sh.exec('source nope.sh')
+    expect(r1.exitCode).toBe(1)
+    expect(r1.stderr).toBe('bash: nope.sh: No such file or directory\n')
+
+    const r2 = await sh.exec('. nope.sh')
+    expect(r2.exitCode).toBe(1)
+    expect(r2.stderr).toBe('bash: nope.sh: No such file or directory\n')
+  })
+
+  it('인자 없이 부르면 "filename argument required" + usage, exit 2', async () => {
+    // docker: source → bash: source: filename argument required / source: usage: source filename [arguments], exit 2
+    const r1 = await sh.exec('source')
+    expect(r1.exitCode).toBe(2)
+    expect(r1.stderr).toBe('bash: source: filename argument required\nsource: usage: source filename [arguments]\n')
+
+    // docker: . → bash: .: filename argument required / .: usage: . filename [arguments], exit 2
+    const r2 = await sh.exec('.')
+    expect(r2.exitCode).toBe(2)
+    expect(r2.stderr).toBe('bash: .: filename argument required\n.: usage: . filename [arguments]\n')
+  })
+
+  it('return 은 source 만 벗어난다 — 이후 명령은 안 돈다, exit code 는 return 값', async () => {
+    // docker: printf "echo a\nreturn 3\necho b\n" > r.sh; source r.sh; echo $? → a\n3 (b 없음)
+    fs.writeFile('/home/player/r.sh', 'echo a\nreturn 3\necho b\n')
+    const r = await sh.exec('source r.sh; echo $?')
+    expect(r.stdout).toBe('a\n3\n')
+  })
+
+  it('source 의 return 경계는 함수 경계와 별개다 — 함수 안에서 source 해도 함수는 계속 돈다', async () => {
+    // docker: f() { source deep.sh; echo afterSource=$?; return 1; }; f; echo outerExit=$?
+    //   (deep.sh = echo insrc\nreturn 9\necho neverseen\n) → insrc\nafterSource=9\nouterExit=1
+    fs.writeFile('/home/player/deep.sh', 'echo insrc\nreturn 9\necho neverseen\n')
+    const r = await sh.exec('f() { source deep.sh; echo afterSource=$?; return 1; }; f; echo outerExit=$?')
+    expect(r.stdout).toBe('insrc\nafterSource=9\nouterExit=1\n')
+  })
+
+  it('ARGS 없이 source 하면 호출자의 positional 이 그대로 보인다', async () => {
+    // docker: printf "echo $1\n" > echoer.sh; f() { source echoer.sh; }; f callerarg → callerarg
+    fs.writeFile('/home/player/echoer.sh', 'echo $1\n')
+    expect((await sh.exec('f() { source echoer.sh; }; f callerarg')).stdout).toBe('callerarg\n')
+  })
+
+  it('ARGS 가 있으면 그 동안만 바뀌고 source 후 호출자의 positional 로 복원된다', async () => {
+    // docker: f() { source echoer.sh svcarg; echo after=$1; }; f callerarg → svcarg\nafter=callerarg
+    fs.writeFile('/home/player/echoer.sh', 'echo $1\n')
+    const r = await sh.exec('f() { source echoer.sh svcarg; echo after=$1; }; f callerarg')
+    expect(r.stdout).toBe('svcarg\nafter=callerarg\n')
+  })
+
+  it('source 는 루프-문맥 경계가 아니다 — 안의 bare break/continue 가 호출자 루프에 실제로 닿는다', async () => {
+    // docker: printf "break\n" > breaker.sh; for i in a b c; do echo $i; source breaker.sh; done; echo end
+    //   → a\nend (호출자 for 를 실제로 깬다 — 함수 호출과 다르다)
+    fs.writeFile('/home/player/breaker.sh', 'break\n')
+    const r1 = await sh.exec('for i in a b c; do echo $i; source breaker.sh; done; echo end')
+    expect(r1.stdout).toBe('a\nend\n')
+
+    // docker: printf "continue\n" > continuer.sh; for i in a b c; do echo $i; source continuer.sh; echo tail$i; done; echo end
+    //   → a\nb\nc\nend (tail$i 는 continue 로 인해 전혀 안 찍힌다)
+    fs.writeFile('/home/player/continuer.sh', 'continue\n')
+    const r2 = await sh.exec('for i in a b c; do echo $i; source continuer.sh; echo tail$i; done; echo end')
+    expect(r2.stdout).toBe('a\nb\nc\nend\n')
+  })
+
+  it('return 없이 끝나면 source 의 exit code 는 파일의 마지막 명령의 exit code', async () => {
+    fs.writeFile('/home/player/last.sh', 'true\nfalse\n')
+    expect((await sh.exec('source last.sh; echo $?')).stdout).toBe('1\n')
+  })
+})

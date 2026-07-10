@@ -179,6 +179,85 @@ async function callFunction(body: ListNode, argv: string[], ctx: RunCtx): Promis
   }
 }
 
+/**
+ * `source FILE [ARGS...]` / `. FILE [ARGS...]`. FILE 을 VFS 에서(cwd 기준 resolve) 읽어
+ * parse() 로 파싱(멀티라인 — Task 1/5b가 이미 처리)한 뒤 **현재 ctx**(env/functions 공유)
+ * 에서 실행한다. callFunction 과 달리 이 자리에 파일 내용을 그대로 붙여넣은 것에 가깝다
+ * (진짜 함수 호출이 아니다) — 그래서 세 군데가 callFunction 과 다르다:
+ *
+ *  - **loopDepth 를 건드리지 않는다.** source 는 루프-문맥 경계가 아니다 — docker로 확인:
+ *    `for i in a b c; do echo $i; source breaker.sh; done; echo end`(breaker.sh = `break`)
+ *    → `a\nend`(호출자의 for 를 실제로 깬다, `continuer.sh` = `continue` 도 마찬가지로
+ *    호출자의 다음 반복으로 넘어간다). loopDepth 를 그대로 두면 이 전파가 아무 특별
+ *    처리 없이 자연히 일어난다(BreakSignal/ContinueSignal 을 여기서 안 잡고 그대로
+ *    통과시키므로, runSimpleCommand 를 거쳐 결국 호출자의 runWhile/runFor 가 잡는다).
+ *  - **positional: ARGS 가 있을 때만 바꿔치기한다.** 없으면 호출자의 positional 을 그대로
+ *    둔다(함수 호출은 인자가 없어도 항상 argv.slice(1)([]) 로 바꾼다 — source 는 다르다).
+ *    docker 확인: `f() { source echoer.sh; }; f callerarg` → `callerarg`(echoer.sh 의 `$1`
+ *    이 호출자 f 의 $1 을 그대로 봄). ARGS 가 있으면(`source echoer.sh svcarg`) 그 동안만
+ *    바꾸고 끝나면 복원한다(`svcarg` 후 `after=callerarg`, docker 확인).
+ *  - **funcDepth 는 무조건 ++ 한다(호출자가 함수 안이든 최상위든 상관없이 항상 새 경계).**
+ *    source 는 return 이 유효한 경계다(return 빌트인의 "함수 또는 소스된 스크립트" 문구가
+ *    이를 반영). ReturnSignal 을 여기서 잡아 code→exit code, 실어온 stdout/stderr→source
+ *    출력으로 쓴다. docker 로 이 경계가 **함수 경계와 별개**임을 확인했다:
+ *    `f() { source deep.sh; echo afterSource=$?; return 1; }; f; echo outerExit=$?`
+ *    (deep.sh = `echo insrc\nreturn 9\necho neverseen\n`) → `insrc\nafterSource=9\nouterExit=1`
+ *    — deep.sh 안의 `return 9` 는 f 를 벗어나지 않고 source 만 벗어난다(f 는 계속 돌아
+ *    자기 `return 1` 로 끝난다). 최상위(함수 밖)에서도 source 자체는 여전히 return
+ *    경계다: `source r.sh; echo $?`(r.sh = `echo a\nreturn 3\necho b\n`) → `a\n3`(b 없음).
+ *
+ * 파일이 없으면 exit 1, stderr `bash: FILE: No such file or directory`(real bash 는
+ * `bash: line N: FILE: ...` 이고 "source:"/"​.:" 라벨이 전혀 없다 — 브리프의 추정과
+ * 달랐다, docker로 재확인: `source nope.sh` 와 `. nope.sh` 둘 다 라벨 없이 동일한 문구.
+ * "line N:" 은 우리 엔진이 스크립트 줄번호를 추적하지 않아 생략한다 — 리다이렉션 open
+ * 실패(`bash: ${word}: ${errnoText(e)}`)와 같은 기존 컨벤션과 일치시킨다).
+ *
+ * source 는 함수 호출과 같은 지점(리다이렉션/명령앞 대입 해석 전)에서 가로챈다 — `source
+ * f > log`, `VAR=x source f` 는 지원하지 않는다(Task 7 의 함수 호출과 같은 단순화, 드묾).
+ */
+async function runSource(argv: string[], ctx: RunCtx): Promise<ExecResult> {
+  const label = argv[0]! // 'source' 또는 '.'
+  const file = argv[1]
+  if (file === undefined) {
+    return {
+      stdout: '',
+      stderr: `bash: ${label}: filename argument required\n${label}: usage: ${label} filename [arguments]\n`,
+      exitCode: 2,
+    }
+  }
+
+  const path = ctx.fs.resolve(file, ctx.state.cwd)
+  let content: string
+  try {
+    content = ctx.fs.readFile(path)
+  } catch (e) {
+    return { stdout: '', stderr: `bash: ${file}: ${errnoText(e)}\n`, exitCode: 1 }
+  }
+
+  let ast: ListNode
+  try {
+    ast = parse(content)
+  } catch (e) {
+    return { stdout: '', stderr: `bash: ${e instanceof Error ? e.message : String(e)}\n`, exitCode: 2 }
+  }
+
+  const savedPositional = ctx.positional
+  const args = argv.slice(2)
+  if (args.length > 0) ctx.positional = args
+  ctx.funcDepth++
+  try {
+    return await runList(ast, ctx)
+  } catch (e) {
+    if (e instanceof ReturnSignal) {
+      return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code }
+    }
+    throw e // ExecutionLimitError / break/continue(LoopSignal) 등은 그대로 통과시킨다.
+  } finally {
+    ctx.positional = savedPositional
+    ctx.funcDepth--
+  }
+}
+
 async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promise<ExecResult> {
   spend(ctx)
   const expandCtx = expandCtxFor(ctx)
@@ -211,6 +290,14 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
   {
     const fnBody = ctx.functions.get(argv[0]!)
     if (fnBody) return callFunction(fnBody, argv, ctx)
+  }
+
+  // 2.6 source / . 특수 처리 — 함수 호출과 같은 지점(리다이렉션/명령앞 대입 해석 전)에서
+  //     가로챈다(같은 단순화: `source f > log`, `VAR=x source f` 미지원). 함수-호출 분기
+  //     보다 뒤에 두어, 사용자가 동명(`source`/`.`)의 함수를 정의했다면 그쪽이 먼저
+  //     채간다(bash 와 일치 — 함수가 빌트인을 가린다).
+  if (argv[0] === 'source' || argv[0] === '.') {
+    return runSource(argv, ctx)
   }
 
   // 3. 명령 앞의 대입은 이 명령의 환경에만 적용되고 사라진다.
