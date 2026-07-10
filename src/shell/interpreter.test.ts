@@ -1025,3 +1025,136 @@ describe('source / . (task 8, docker debian:stable-slim bash 5 로 확인됨)', 
     expect((await sh.exec('source last.sh; echo $?')).stdout).toBe('1\n')
   })
 })
+
+describe('shebang 스크립트 실행 ./script.sh (task 9, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('exec 비트가 있으면 실행되고 인자가 $1..로 전달된다', async () => {
+    // docker: printf "#!/bin/bash\necho deploying $1\n" > deploy.sh; chmod +x deploy.sh;
+    //   ./deploy.sh prod → deploying prod, exit 0
+    fs.writeFile('/home/player/deploy.sh', '#!/bin/bash\necho deploying $1\n', 0o755)
+    const r = await sh.exec('./deploy.sh prod')
+    expect(r.stdout).toBe('deploying prod\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('exec 비트가 없으면 exit 126 Permission denied', async () => {
+    // docker: chmod 644 deploy.sh; ./deploy.sh → "bash: ./deploy.sh: Permission denied", exit 126
+    fs.writeFile('/home/player/deploy.sh', '#!/bin/bash\necho deploying $1\n', 0o644)
+    const r = await sh.exec('./deploy.sh')
+    expect(r.exitCode).toBe(126)
+    expect(r.stderr).toBe('bash: ./deploy.sh: Permission denied\n')
+  })
+
+  it('없는 파일은 exit 127 No such file or directory', async () => {
+    // docker: ./nope.sh → "bash: ./nope.sh: No such file or directory", exit 127
+    const r = await sh.exec('./nope.sh')
+    expect(r.exitCode).toBe(127)
+    expect(r.stderr).toBe('bash: ./nope.sh: No such file or directory\n')
+  })
+
+  it('디렉터리를 실행하려 하면 exit 126 Is a directory', async () => {
+    // docker: mkdir adir; ./adir → "bash: ./adir: Is a directory", exit 126
+    fs.mkdir('/home/player/adir')
+    const r = await sh.exec('./adir')
+    expect(r.exitCode).toBe(126)
+    expect(r.stderr).toBe('bash: ./adir: Is a directory\n')
+  })
+
+  it('환경은 격리된다 — 스크립트 안 대입이 호출자에 새지 않는다', async () => {
+    // docker: printf "x=9\necho in=$x\n" > s.sh; chmod +x s.sh; ./s.sh; echo out=$x → in=9\nout=
+    fs.writeFile('/home/player/s.sh', 'x=9\necho in=$x\n', 0o755)
+    const r = await sh.exec('./s.sh; echo out=$x')
+    expect(r.stdout).toBe('in=9\nout=\n')
+  })
+
+  it('파일시스템 변경은 실제 부작용이라 호출자에도 남는다', async () => {
+    // docker: printf "mkdir made\n" > s2.sh; chmod +x s2.sh; ./s2.sh; ls -d made → made (존재)
+    fs.writeFile('/home/player/s2.sh', 'mkdir made\n', 0o755)
+    await sh.exec('./s2.sh')
+    expect(fs.isDir('/home/player/made')).toBe(true)
+  })
+
+  it('스크립트명 다음 인자가 $1..로 전달된다', async () => {
+    // docker: printf "echo $1 $2\n" > s3.sh; chmod +x s3.sh; ./s3.sh a b → a b
+    fs.writeFile('/home/player/s3.sh', 'echo $1 $2\n', 0o755)
+    expect((await sh.exec('./s3.sh a b')).stdout).toBe('a b\n')
+  })
+
+  it('#! 첫 줄은 주석으로 벗겨져 무시된다 — 있어도 없어도 결과가 같다', async () => {
+    fs.writeFile('/home/player/withShebang.sh', '#!/bin/bash\necho hi\n', 0o755)
+    fs.writeFile('/home/player/noShebang.sh', 'echo hi\n', 0o755)
+    const r1 = await sh.exec('./withShebang.sh')
+    const r2 = await sh.exec('./noShebang.sh')
+    expect(r1).toEqual(r2)
+    expect(r1.stdout).toBe('hi\n')
+  })
+
+  it('무한루프는 공유 예산에 걸려 exit 130 이지 hang/crash 가 아니다', async () => {
+    const tiny = createShell({ fs, cwd: '/home/player', home: '/home/player', stepBudget: 50 })
+    fs.writeFile('/home/player/loop.sh', 'while true; do :; done\n', 0o755)
+    const r = await tiny.exec('./loop.sh')
+    expect(r.exitCode).toBe(130)
+    expect(r.stderr).toContain('실행 한도 초과')
+  })
+
+  it('여러 줄 스크립트에서 함수 정의와 루프가 동작한다', async () => {
+    // docker: printf "greet() { echo hi $1; }\nfor n in a b; do greet $n; done\n" > s4.sh;
+    //   chmod +x s4.sh; ./s4.sh → hi a\nhi b
+    fs.writeFile('/home/player/s4.sh', 'greet() { echo hi $1; }\nfor n in a b; do greet $n; done\n', 0o755)
+    expect((await sh.exec('./s4.sh')).stdout).toBe('hi a\nhi b\n')
+  })
+
+  it('함수맵도 양방향으로 격리된다 — 호출자 함수가 스크립트 안에서 안 보이고, 스크립트 함수가 밖으로 안 샌다', async () => {
+    // docker: outer(){ echo x; }; printf "outer || echo not-visible\n" > f1.sh; chmod +x f1.sh; ./f1.sh
+    //   → "./f1.sh: line 1: outer: command not found" + "not-visible"
+    fs.writeFile('/home/player/f1.sh', 'outer || echo not-visible\n', 0o755)
+    const r1 = await sh.exec('outer() { echo called; }; ./f1.sh')
+    expect(r1.stdout).toBe('not-visible\n')
+
+    // docker: printf "inscript(){ echo hi; }\ninscript\n" > f2.sh; chmod +x f2.sh; ./f2.sh; inscript
+    //   → hi (스크립트 안), 그다음 command not found (호출자 쪽)
+    fs.writeFile('/home/player/f2.sh', 'inscript() { echo hi; }\ninscript\n', 0o755)
+    const r2 = await sh.exec('./f2.sh; inscript')
+    expect(r2.stdout).toBe('hi\n')
+    expect(r2.stderr).toBe('bash: inscript: command not found\n')
+  })
+
+  it('positional 은 (source 와 달리) ARGS 가 없어도 항상 덮어써 호출자의 $1 이 안 보인다', async () => {
+    // docker: set -- callerarg; printf "echo [$1]\n" > f3.sh; chmod +x f3.sh; ./f3.sh → []
+    fs.writeFile('/home/player/f3.sh', 'echo [$1]\n', 0o755)
+    const r = await sh.exec('./f3.sh')
+    expect(r.stdout).toBe('[]\n')
+  })
+
+  it('cd 는 스크립트 안에서만 유효하고 호출자 cwd 는 그대로다', async () => {
+    // docker: mkdir sub; printf "cd sub; pwd\n" > f5.sh; chmod +x f5.sh; pwd; ./f5.sh; pwd
+    //   → /tmp, /tmp/sub, /tmp
+    fs.mkdir('/home/player/sub')
+    fs.writeFile('/home/player/f5.sh', 'cd sub; pwd\n', 0o755)
+    const r = await sh.exec('./f5.sh')
+    expect(r.stdout).toBe('/home/player/sub\n')
+    expect(sh.cwd).toBe('/home/player')
+  })
+
+  it('명령앞 대입은 스크립트 환경에는 보이지만 호출자에는 안 샌다', async () => {
+    // docker: printf "echo VAR=$VAR\n" > pv.sh; chmod +x pv.sh; VAR=hello ./pv.sh; echo after=$VAR
+    //   → VAR=hello, after=
+    fs.writeFile('/home/player/pv.sh', 'echo VAR=$VAR\n', 0o755)
+    const r = await sh.exec('VAR=hello ./pv.sh; echo after=$VAR')
+    expect(r.stdout).toBe('VAR=hello\nafter=\n')
+  })
+
+  it('출력 리다이렉션이 스크립트 실행에도 그대로 적용된다', async () => {
+    fs.writeFile('/home/player/s5.sh', 'echo redirected\n', 0o755)
+    const r = await sh.exec('./s5.sh > out.txt')
+    expect(r.stdout).toBe('')
+    expect(fs.readFile('/home/player/out.txt')).toBe('redirected\n')
+  })
+
+  it('슬래시 없는 이름은 (exec 비트가 있어도) 여전히 command not found — PATH 가 없다', async () => {
+    // docker: script.sh(슬래시 없이) 는 PATH에 '.' 이 없는 한 실행되지 않는다.
+    fs.writeFile('/home/player/plain.sh', 'echo hi\n', 0o755)
+    const r = await sh.exec('plain.sh')
+    expect(r.exitCode).toBe(127)
+    expect(r.stderr).toBe('bash: plain.sh: command not found\n')
+  })
+})

@@ -61,15 +61,25 @@ function spend(ctx: RunCtx): void {
  * ctx 의 상태(cwd/env)만 독립된 복사본으로 뜬 자식 컨텍스트를 만든다. fs 와 budget 은
  * 그대로 공유한다 — 파일시스템 변경은 실제 부작용이라 서브프로세스도 공유해야 하고,
  * 스텝 예산은 무한루프 방어이므로 서브셸이라고 새로 채워지면 안 된다.
- * 명령치환(runSubshell)과, 2개 이상 단계인 파이프라인의 각 단계가 이 함수를 쓴다 —
- * 두 경우 모두 "이 실행이 바깥 셸의 cwd/env 를 못 바꾼다"는 같은 규칙이다.
+ * 명령치환(runSubshell)과, 2개 이상 단계인 파이프라인의 각 단계, 그리고 shebang 스크립트
+ * 실행(execScriptFile, Task 9)이 이 함수를 쓴다 — 세 경우 모두 "이 실행이 바깥 셸의
+ * cwd/env 를 못 바꾼다"는 같은 규칙이다.
  *
  * positional 도 (env 처럼) 얕은 복사 배열을 새로 뜬다 — 지금은 아무도 이 배열을
  * 바꾸지 않지만, Task 7(함수 호출)이 자식 컨텍스트 안에서 positional 을 통째로
  * 교체(swap)하게 될 때 부모 배열이 오염되면 안 된다. 참조를 공유하면 자식이
  * push/splice 로 부모 배열을 직접 건드릴 여지가 생기므로, 여기서 항상 새 배열을 만든다.
+ *
+ * @param opts.isolateFunctions true 면 함수맵도 **새 Map**(빈 상태)으로 뜬다. 기본값
+ *   false(공유)는 명령치환/파이프라인용 — bash 함수는 그 안에서 대체로 전역이라 공유가
+ *   맞다(위 `functions` 필드 주석 참고). shebang 스크립트(`./script.sh`)는 진짜 새
+ *   프로세스라 다르다 — docker 확인: 호출자에서 정의한 함수는 스크립트 안에서 안 보이고
+ *   (`outer(){ echo x; }; ./f1.sh` 안에서 `outer` 호출 → command not found), 스크립트
+ *   안에서 정의한 함수도 실행이 끝나면 호출자로 안 샌다(`inscript(){...}` 를 정의·호출만
+ *   하는 스크립트를 돌린 뒤 밖에서 `inscript` 호출 → command not found). 그래서
+ *   execScriptFile 만 `isolateFunctions: true` 를 넘긴다.
  */
-function childCtx(ctx: RunCtx): RunCtx {
+function childCtx(ctx: RunCtx, opts: { isolateFunctions?: boolean } = {}): RunCtx {
   return {
     fs: ctx.fs,
     state: { ...ctx.state, env: { ...ctx.state.env } },
@@ -79,8 +89,9 @@ function childCtx(ctx: RunCtx): RunCtx {
     // 루프를 벗어나면 안 되므로(bash 확인: `while ...; do echo $(break); done` 는 무한),
     // 루프 깊이를 0으로 리셋한다. 그러면 그 break 는 "루프 밖"으로 취급돼 경고 후 무시된다.
     loopDepth: 0,
-    // 함수 맵은 같은 참조를 공유한다(bash 함수는 대체로 전역, 위 주석 참고).
-    functions: ctx.functions,
+    // 함수 맵은 기본적으로 같은 참조를 공유한다(bash 함수는 대체로 전역, 위 주석 참고).
+    // isolateFunctions 가 true 면(shebang 스크립트) 새 빈 Map 을 떠 양방향 격리한다.
+    functions: opts.isolateFunctions ? new Map() : ctx.functions,
     // 함수 깊이도 0으로 리셋한다 — `$( )` 안의 return 은 치환 셸만 벗어나고 바깥 함수는
     // 안 벗어난다(bash 동작). 그래서 서브셸 안 return 은 "함수 밖"으로 취급돼 no-op 된다.
     funcDepth: 0,
@@ -258,6 +269,73 @@ async function runSource(argv: string[], ctx: RunCtx): Promise<ExecResult> {
   }
 }
 
+/**
+ * `./script.sh [ARGS...]` (경로에 `/`가 있는 임의 이름) 실행 — 셸이 자기 자신을
+ * fork/exec 하는 흉내. runSource 와 정반대 결정이다: source 는 호출자의 ctx 를 공유해
+ * 대입/함수정의가 새 나가지만, `./script.sh` 는 **진짜 새 프로세스**이므로 env/
+ * positional/함수맵이 전부 격리된 childCtx 에서 돈다(fs 와 budget 만 공유 — 파일시스템
+ * 변경은 실제 부작용이고, 스텝 예산은 무한루프 방어이므로 서브프로세스라고 새로 채워지면
+ * 안 된다. docker 확인: `while true; do :; done` 스크립트를 실행해도 공유 예산이 계속
+ * 깎여 결국 `run()`의 최상위 catch 가 exit 130 을 낸다 — 여기서 ExecutionLimitError 를
+ * 잡지 않고 그대로 위로 던지기만 하면 된다).
+ *
+ * `#!` 첫 줄은 렉서(Task 1)가 토큰 시작의 `#` 를 주석으로 벗겨내므로 따로 파싱하지
+ * 않는다 — 본문 전체를 그냥 parse()/runList 에 넘기면 `#!/bin/bash` 줄은 자연히
+ * 무시된다. 즉 `#!` 에 뭐라고 적혀 있든 항상 우리 셸 서브셋으로 실행한다(이 게임에서는
+ * 그게 맞는 동작 — 브리프 참고).
+ *
+ * dispatch 위치는 runSimpleCommand 의 "7. 명령을 찾는다"(lookupCommand 실패) 지점이다
+ * — source/함수 호출(2.5/2.6)보다 **뒤**, 리다이렉션(4~6)/명령앞 대입(3) 해석보다
+ * **뒤**라서 `./script.sh > out.txt`, `VAR=x ./script.sh` 가 자연히 지원된다: 이 함수는
+ * 일반 CommandFn 처럼 CommandEnv(e)를 받아 ExecResult 를 돌려주므로, 호출부(step 8/9)의
+ * 기존 출력 리다이렉션 적용/cwd·env 동기화 로직을 그대로 재사용한다(중복 없음).
+ * `VAR=x ./script.sh` 가 스크립트 안에서 VAR 를 보이게 하는 것도 docker 로 확인했다
+ * (`VAR=hello ./pv.sh` 안에서 `echo $VAR` → hello, 스크립트 밖에서는 다시 비어 있음) —
+ * 그래서 격리된 child 의 env 를 ctx.state.env 가 아니라 e.state.env(명령앞 대입이 이미
+ * 반영된 commandEnv)에서 복사해 뜬다.
+ *
+ * 존재하지 않으면 exit 127 `bash: ${name}: No such file or directory`, 디렉터리면 exit
+ * 126 `bash: ${name}: Is a directory`, exec 비트(mode & 0o111)가 없으면 exit 126
+ * `bash: ${name}: Permission denied` — 문구/exit code 모두 docker(debian:stable-slim,
+ * bash 5)로 확인했다("line N:" 접두는 우리가 스크립트 줄번호를 안 추적해 생략한다 —
+ * runSource 의 file-not-found 문구와 같은 기존 컨벤션). 심볼릭 링크는 lookup()(끝까지
+ * 따라감)으로 실제 대상의 kind/mode 를 본다 — 링크 자체 노드는 symlink() 가 항상 0o777
+ * 로 만들어서, lstat 의 mode 로 실행 가능 여부를 판정하면 늘 "실행 가능"이 되어버려
+ * 의미가 없다.
+ *
+ * positional 은 (source 와 달리, 함수 호출과 같이) ARGS 유무와 무관하게 **항상**
+ * 덮어쓴다 — docker 확인: 호출자가 `set -- callerarg` 상태에서 인자 없이 `./f3.sh` 를
+ * 돌리면 스크립트 안 `$1` 은 빈 문자열이다(호출자의 `$1` 이 절대 안 샌다). source 의
+ * "ARGS 없으면 호출자 걸 그대로 본다"와 정반대다.
+ */
+async function execScriptFile(ctx: RunCtx, e: CommandEnv): Promise<ExecResult> {
+  const label = e.name // argv[0], 사용자가 쓴 그대로(예: "./deploy.sh") — 에러 메시지에 그대로 쓴다
+  const path = e.fs.resolve(label, e.state.cwd)
+  const node = e.fs.lookup(path) // 심볼릭 링크는 끝까지 따라간다 (existence + kind + mode 모두 대상 기준)
+  if (!node) return { stdout: '', stderr: `bash: ${label}: No such file or directory\n`, exitCode: 127 }
+  if (node.kind === 'dir') return { stdout: '', stderr: `bash: ${label}: Is a directory\n`, exitCode: 126 }
+  if ((node.mode & 0o111) === 0) return { stdout: '', stderr: `bash: ${label}: Permission denied\n`, exitCode: 126 }
+
+  let ast: ListNode
+  try {
+    ast = parse(node.content)
+  } catch (err) {
+    return { stdout: '', stderr: `bash: ${err instanceof Error ? err.message : String(err)}\n`, exitCode: 2 }
+  }
+
+  const child = childCtx(ctx, { isolateFunctions: true })
+  child.state.env = { ...e.state.env } // 명령앞 대입(VAR=x ./script.sh)이 반영된 commandEnv 를 물려받는다
+  child.positional = e.args // 스크립트명 다음 인자들. ARGS 가 없어도 항상 덮어쓴다(함수 호출과 동일)
+
+  try {
+    return await runList(ast, child)
+  } catch (err) {
+    if (err instanceof ExecutionLimitError) throw err // 공유 예산 소진은 그대로 위로 던져 run()이 exit 130을 낸다.
+    if (err instanceof ControlSignal) return { stdout: err.stdout, stderr: err.stderr, exitCode: 0 }
+    throw err // 방어적: 위 두 경우 외에는 이 childCtx(loopDepth=0, funcDepth=0)에서 실질적으로 도달하지 않는다.
+  }
+}
+
 async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promise<ExecResult> {
   spend(ctx)
   const expandCtx = expandCtxFor(ctx)
@@ -377,9 +455,13 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
     }
   }
 
-  // 7. 명령을 찾는다.
+  // 7. 명령을 찾는다. name 에 '/'가 있으면(`./script.sh`, `path/to/x`) — bash 가 슬래시
+  //    있는 이름은 PATH 를 안 보고 그 경로를 직접 exec 하듯 — lookupCommand 가 실패했을 때
+  //    VFS 파일 실행(execScriptFile, Task 9)을 시도한다. 우리는 PATH 개념이 없어(빌트인/
+  //    coreutil 표만 있음) 슬래시 없는 이름(`script.sh`, `./` 없이)은 그런 표에 없으면
+  //    여전히 command not found 로 남는다 — bash 도 PATH 에 '.' 이 없으면 동일(확인됨).
   const name = argv[0]!
-  const fn = lookupCommand(name)
+  const fn = lookupCommand(name) ?? (name.includes('/') ? (e: CommandEnv) => execScriptFile(ctx, e) : undefined)
   if (!fn) {
     const message = isKnownUnimplemented(name)
       ? `flashshell: ${name}: 이 환경에는 없는 명령입니다\n`
