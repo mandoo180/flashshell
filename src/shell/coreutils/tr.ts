@@ -59,6 +59,24 @@ export const tr: CommandFn = (e) => {
   const del = flags.has('d')
   const squeeze = flags.has('s')
 
+  // 피연산자 개수 검증
+  if (del && squeeze) {
+    // -d -s: 2개 필요
+    if (rest.length < 2) {
+      return { stdout: '', stderr: 'tr: missing operand\n', exitCode: 1 }
+    }
+  } else if (del || squeeze) {
+    // -d 또는 -s만: 1개 필요
+    if (rest.length < 1) {
+      return { stdout: '', stderr: 'tr: missing operand\n', exitCode: 1 }
+    }
+  } else {
+    // 치환 모드: 2개 필요
+    if (rest.length < 2) {
+      return { stdout: '', stderr: 'tr: missing operand\n', exitCode: 1 }
+    }
+  }
+
   const set1 = rest[0] !== undefined ? expandSet(rest[0]) : []
   const set2 = rest[1] !== undefined ? expandSet(rest[1]) : []
 

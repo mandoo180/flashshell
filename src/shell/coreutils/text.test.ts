@@ -36,6 +36,14 @@ describe('tr', () => {
   it('-s 압축', async () => { expect(await out('echo aaabbbccc | tr -s abc')).toBe('abc\n') })
   it('문자 클래스', async () => { expect(await out('echo HeLLo | tr [:upper:] [:lower:]')).toBe('hello\n') })
   it('SET1 이 길면 SET2 마지막으로 채운다', async () => { expect(await out('echo abc | tr abc x')).toBe('xxx\n') })
+  it('translate mode: 하나의 피연산자만 있으면 exit 1', async () => {
+    const r = await run('echo abc | tr abc')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toContain('tr')
+  })
+  it('translate mode: 올바른 두 피연산자는 작동한다', async () => { expect(await out('echo abc | tr abc x')).toBe('xxx\n') })
+  it('-d mode: 하나의 피연산자는 유효하다', async () => { expect(await out('echo a1b | tr -d 0-9')).toBe('ab\n') })
+  it('-s mode: 하나의 피연산자는 유효하다', async () => { expect(await out('echo aabb | tr -s ab')).toBe('ab\n') })
 })
 
 describe('uniq', () => {
