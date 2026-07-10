@@ -18,9 +18,10 @@ import { chmod } from './chmod'
 import { cut } from './cut'
 import { tr } from './tr'
 import { uniq } from './uniq'
+import { sed } from './sed'
 
 export const coreutils: Record<string, CommandFn> = {
   ls, cat, head, tail, wc, stat, grep, sort,
   cp, mv, rm, mkdir, rmdir, touch, ln, chmod,
-  cut, tr, uniq,
+  cut, tr, uniq, sed,
 }

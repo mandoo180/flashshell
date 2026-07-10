@@ -55,3 +55,73 @@ describe('uniq', () => {
   it('-i 대소문자 무시', async () => { expect(await out('uniq -i Aa.txt')).toBe('A\n') })
   it('stdin 도 된다', async () => { expect(await out('cat dup.txt | uniq')).toBe('a\nb\nc\n') })
 })
+
+describe('sed', () => {
+  beforeEach(() => { fs.writeFile('/w/t.txt', 'hello world\nhello there\ngoodbye\n') })
+  it('s///g 전역 치환', async () => {
+    expect(await out("sed 's/hello/hi/g' t.txt")).toBe('hi world\nhi there\ngoodbye\n')
+  })
+  it('s/// 는 g 없으면 첫 매치만', async () => {
+    expect(await out("echo 'a a a' | sed 's/a/b/'")).toBe('b a a\n')
+  })
+  it('& 는 매치 전체', async () => {
+    expect(await out("echo abc | sed 's/b/[&]/'")).toBe('a[b]c\n')
+  })
+  it('-n Np 로 한 줄', async () => { expect(await out('sed -n 2p t.txt')).toBe('hello there\n') })
+  it('Nd 로 한 줄 삭제', async () => { expect(await out('sed 2d t.txt')).toBe('hello world\ngoodbye\n') })
+  it('/re/d 로 정규식 삭제', async () => { expect(await out('sed /hello/d t.txt')).toBe('goodbye\n') })
+  it('-n /re/p 로 정규식 인쇄', async () => { expect(await out('sed -n /good/p t.txt')).toBe('goodbye\n') })
+
+  // \1..\9 캡처 그룹, \& 리터럴
+  it('\\1 은 캡처 그룹 (패턴은 grep 과 같은 JS RegExp 문법 — 괄호에 이스케이프 없음)', async () => {
+    expect(await out("echo 'foo bar' | sed 's/(foo) (bar)/\\2 \\1/'")).toBe('bar foo\n')
+  })
+  it('\\& 는 리터럴 &', async () => {
+    expect(await out("echo abc | sed 's/b/[\\&]/'")).toBe('a[&]c\n')
+  })
+
+  // p (자동인쇄 + 명시인쇄) vs -n p (명시인쇄만) — Docker 로 재확인한 서브셋의 핵심 함정.
+  it("'p' 는 -n 없으면 각 줄을 두 번 낸다", async () => {
+    expect(await out('sed p t.txt')).toBe(
+      'hello world\nhello world\nhello there\nhello there\ngoodbye\ngoodbye\n',
+    )
+  })
+  it("'-n p' 는 각 줄을 한 번만 낸다", async () => {
+    expect(await out('sed -n p t.txt')).toBe('hello world\nhello there\ngoodbye\n')
+  })
+
+  // 파일 여러 개는 이어붙인 하나의 스트림처럼 줄 번호를 연속으로 센다(GNU 실측:
+  // `sed -n '3p' f1 f2` 는 f1 이 2줄이면 f2 의 1번째 줄, 즉 전체 3번째 줄을 낸다).
+  it('여러 파일은 줄 번호가 이어진다 (파일별로 리셋 안 함)', async () => {
+    fs.writeFile('/w/a2.txt', 'l1\nl2\n')
+    fs.writeFile('/w/b2.txt', 'l3\nl4\n')
+    expect(await out('sed -n 3p a2.txt b2.txt')).toBe('l3\n')
+  })
+
+  // 서브셋 밖: 단일 명령이 아닌 스크립트는 침묵하며 잘못 동작하지 말고 flashshell: 로 거부한다.
+  it("';' 로 이은 두 s 명령은 flashshell: 로 거부한다 (조용히 첫 명령만 적용하지 않는다)", async () => {
+    const r = await run("sed 's/a/b/;s/c/d/' t.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell:')
+  })
+  it("';' 로 이은 두 주소 명령도 flashshell: 로 거부한다", async () => {
+    const r = await run("sed '/hello/p;/goodbye/d' t.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell:')
+  })
+  it('-e 플래그는 미지원 — flashshell: 로 거부한다', async () => {
+    const r = await run("sed -e 's/a/b/' t.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell:')
+  })
+  it('알 수 없는 명령 문자는 flashshell: 로 거부한다', async () => {
+    const r = await run('sed z t.txt')
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell:')
+  })
+  it('s///p 처럼 지원하지 않는 플래그는 flashshell: 로 거부한다', async () => {
+    const r = await run("sed 's/a/b/p' t.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell:')
+  })
+})

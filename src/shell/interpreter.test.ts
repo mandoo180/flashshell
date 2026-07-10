@@ -32,9 +32,9 @@ describe('기본 실행', () => {
   })
 
   it('미구현 명령은 다른 메시지를 준다', async () => {
-    const r = await sh.exec('sed s/a/b/')
+    const r = await sh.exec('awk 1')
     expect(r.exitCode).toBe(127)
-    expect(r.stderr).toBe('flashshell: sed: 이 환경에는 없는 명령입니다\n')
+    expect(r.stderr).toBe('flashshell: awk: 이 환경에는 없는 명령입니다\n')
   })
 
   it('문법 오류는 exit 2', async () => {

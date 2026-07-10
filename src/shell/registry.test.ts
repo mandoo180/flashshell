@@ -13,9 +13,9 @@ describe('registry', () => {
   })
 
   it('진짜 리눅스에 있지만 우리가 안 만든 명령을 구별한다', () => {
-    expect(isKnownUnimplemented('sed')).toBe(true)
     expect(isKnownUnimplemented('awk')).toBe(true)
     expect(isKnownUnimplemented('find')).toBe(true)
+    expect(isKnownUnimplemented('tar')).toBe(true)
   })
 
   it('우리가 만든 명령은 미구현이 아니다', () => {
