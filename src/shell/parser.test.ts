@@ -312,4 +312,57 @@ describe('parse', () => {
       expect(ast.items[0]!.pipeline.commands[1]!.kind).toBe('command')
     })
   })
+
+  // --- for (task 5): for NAME in WORD*; do BODY; done
+  describe('for 파싱 (task 5)', () => {
+    it('for 를 ForNode 로 파싱한다: var/words/body', () => {
+      const cmd = parse('for x in a b c; do echo $x; done').items[0]!.pipeline.commands[0]!
+      expect(cmd.kind).toBe('for')
+      if (cmd.kind !== 'for') throw new Error('expected for')
+      expect(cmd.var).toBe('x')
+      expect(cmd.words).toEqual([raw('a'), raw('b'), raw('c')])
+      expect(cmd.body.kind).toBe('list')
+      expect(cmd.body.items[0]!.pipeline.commands[0]).toMatchObject({ words: [raw('echo'), [{ kind: 'raw', text: '$x' }]] })
+    })
+
+    it('빈 단어 목록도 파싱된다: for x in; do ...; done', () => {
+      const cmd = parse('for x in; do echo $x; done').items[0]!.pipeline.commands[0]!
+      if (cmd.kind !== 'for') throw new Error('expected for')
+      expect(cmd.words).toEqual([])
+    })
+
+    it('멀티라인 for 는 한 줄 세미콜론 버전과 같은 AST 를 만든다', () => {
+      // if/while 과 동일한 기존 한계(task 4 스캐폴딩): do/then 바로 뒤의 개행은 렉서가
+      // ';' 로 접어버려 그 다음 줄의 body 앞에 "군더더기 ;" 가 남는다 — 실제 bash는
+      // do/then 뒤 개행을 list_terminator 아닌 newline_list 로 따로 취급해 허용하지만,
+      // 우리 렉서는 개행과 세미콜론을 토큰화 단계에서 이미 구분 없이 합친다(둘 다 OP(';')).
+      // 그래서 실제 세미콜론(`do ; echo x`)은 bash도 문법 오류이고, 우리도 마찬가지로
+      // 오류인 채 남겨둔다(레이어가 다른 문제라 이 태스크에서 고치지 않는다) — 대신 여기
+      // 테스트는 body 를 키워드와 같은 줄에 둬 그 경로를 피한다(task 4 의 멀티라인 if
+      // 테스트와 동일한 스타일).
+      expect(parse('for x in a b\ndo echo $x\ndone')).toEqual(parse('for x in a b; do echo $x; done'))
+    })
+
+    it('예약어는 명령 위치에서만 예약어다: echo for/in 의 for/in 은 인자다', () => {
+      const cmd = parse('echo for in').items[0]!.pipeline.commands[0]!
+      expect(cmd.kind).toBe('command')
+      if (cmd.kind !== 'command') throw new Error('expected command')
+      expect(cmd.words).toEqual([raw('echo'), raw('for'), raw('in')])
+    })
+
+    it('in 없이 끝난 for 는 문법 오류다', () => {
+      expect(() => parse('for x a b c; do echo $x; done')).toThrow(/syntax error/)
+    })
+
+    it('done 없이 끝난 for 는 문법 오류다', () => {
+      expect(() => parse('for x in a b c; do echo $x')).toThrow(/syntax error/)
+    })
+
+    it('복합 명령도 파이프라인/리스트에 참여한다', () => {
+      const ast = parse('for x in a; do echo $x; done | cat')
+      expect(ast.items[0]!.pipeline.commands).toHaveLength(2)
+      expect(ast.items[0]!.pipeline.commands[0]!.kind).toBe('for')
+      expect(ast.items[0]!.pipeline.commands[1]!.kind).toBe('command')
+    })
+  })
 })

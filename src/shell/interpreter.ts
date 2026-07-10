@@ -1,6 +1,6 @@
 import { VFS } from './vfs'
 import { ExecutionLimitError, LoopSignal, BreakSignal, errnoText } from './errors'
-import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ListNode, type PipelineNode } from './parser'
+import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type ListNode, type PipelineNode } from './parser'
 import { expandWord, expandToSingle, type ExpandCtx } from './expand'
 import { lookupCommand, isKnownUnimplemented } from './registry'
 import type { CommandEnv, ExecResult, ShellState } from './types'
@@ -29,7 +29,7 @@ interface RunCtx {
    */
   positional: string[]
   /**
-   * 현재 몇 겹의 루프(while/until, 뒤엔 for) 안에서 실행 중인지. runWhile 이 본문 실행
+   * 현재 몇 겹의 루프(while/until/for) 안에서 실행 중인지. runWhile/runFor 가 본문 실행
    * 동안 ++/-- 한다. break/continue 빌트인은 이 값(>0 이면 루프 안)으로 신호를 던질지
    * 말지를 정한다 — 루프 밖에서는 던지지 않고 경고만 낸다(bash 동작). 서브셸 경계
    * (childCtx)에서는 0으로 리셋된다 — break/continue 는 서브셸/명령치환 밖으로 새지 않는다.
@@ -104,6 +104,7 @@ async function runCommand(node: Command, ctx: RunCtx, stdin: string): Promise<Ex
     case 'command': return runSimpleCommand(node, ctx, stdin)
     case 'if': return runIf(node, ctx)
     case 'while': return runWhile(node, ctx)
+    case 'for': return runFor(node, ctx)
   }
 }
 
@@ -368,6 +369,68 @@ async function runWhile(node: WhileNode, ctx: RunCtx): Promise<ExecResult> {
         }
         if (e instanceof BreakSignal) break
         continue // ContinueSignal → 다음 반복
+      }
+    }
+  } finally {
+    ctx.loopDepth--
+  }
+
+  return { stdout, stderr, exitCode }
+}
+
+/**
+ * `for NAME in WORDS; do BODY; done`. words 를 (명령의 인자와 똑같이) expandWord 로
+ * 한꺼번에 펼친다 — 단어분리(`for i in $x`)와 글롭(`for f in *.txt`)이 그 안에서 공짜로
+ * 딸려 온다, 여기서 따로 구현하지 않는다. 펼쳐진 값을 순서대로 var 에 대입하며 body 를
+ * 돈다. 반복 상단에서 spend(ctx) — for 자체는 유한 목록이라 무한루프가 될 수는 없지만,
+ * while 과 예산 소모 방식을 일관되게 맞춘다(빈 본문 반복도 예산을 쓴다). break/continue
+ * catch 는 runWhile 과 완전히 같은 패턴(부분 출력 회수, count>1 이면 바깥 루프로 전달) —
+ * 그래서 for/while 이 섞여 중첩돼도 break N 이 겹수만큼 정확히 올라간다.
+ * 목록이 비면(`for x in;`) body 를 한 번도 안 돌고 exit 0, var 도 건드리지 않는다(bash
+ * 확인: 빈 for 는 변수를 아예 set 하지 않는다). 반복 후엔 var 가 마지막 값으로 남는다
+ * (bash 확인: `for x in a b; do :; done; echo $x` → b) — 여기서 값을 되돌리지 않으므로
+ * 자연히 그렇게 된다.
+ */
+async function runFor(node: ForNode, ctx: RunCtx): Promise<ExecResult> {
+  let stdout = ''
+  let stderr = ''
+  let exitCode = 0
+
+  const expandCtx = expandCtxFor(ctx)
+  let values: string[]
+  try {
+    values = []
+    for (const word of node.words) values.push(...(await expandWord(word, expandCtx)))
+  } catch (e) {
+    if (e instanceof ExecutionLimitError) throw e
+    return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
+  }
+
+  ctx.loopDepth++
+  try {
+    for (const value of values) {
+      spend(ctx)
+      ctx.state.env[node.var] = value
+
+      try {
+        const b = await runList(node.body, ctx)
+        stdout += b.stdout
+        stderr += b.stderr
+        exitCode = b.exitCode
+      } catch (e) {
+        if (!(e instanceof LoopSignal)) throw e
+        // 신호가 실어온 부분 출력(break/continue 직전의 echo 등)을 회수한다.
+        stdout += e.stdout
+        stderr += e.stderr
+        // count>1 이면 바깥 루프로 전달한다(runWhile 과 동일 규칙 — 가장 바깥이면 클램프).
+        if (e.count > 1 && ctx.loopDepth > 1) {
+          e.count -= 1
+          e.stdout = stdout
+          e.stderr = stderr
+          throw e
+        }
+        if (e instanceof BreakSignal) break
+        continue // ContinueSignal → 다음 값
       }
     }
   } finally {

@@ -537,6 +537,56 @@ describe('제어문 break / continue (task 4, docker 로 확인됨)', () => {
   })
 })
 
+describe('제어문 for (task 5, docker 로 확인됨)', () => {
+  it('for 는 단어 목록을 순서대로 var 에 대입하며 body 를 돈다', async () => {
+    // docker: for x in a b c; do echo $x; done  →  a\nb\nc
+    expect((await sh.exec('for x in a b c; do echo $x; done')).stdout).toBe('a\nb\nc\n')
+  })
+
+  it('단어 목록은 글롭으로 펼쳐진다 (사전순 정렬)', async () => {
+    // docker: touch a.txt b.txt; for f in *.txt; do echo $f; done  →  a.txt\nb.txt
+    const r = await sh.exec('touch a.txt b.txt; for f in *.txt; do echo $f; done')
+    expect(r.stdout).toBe('a.txt\nb.txt\n')
+  })
+
+  it('단어 목록은 변수 확장 뒤 단어분리된다', async () => {
+    // docker: x='p q'; for i in $x; do echo $i; done  →  p\nq
+    expect((await sh.exec("x='p q'; for i in $x; do echo $i; done")).stdout).toBe('p\nq\n')
+  })
+
+  it('빈 목록이면 body 를 한 번도 안 돌고 exit 0', async () => {
+    // docker: for x in; do echo $x; done  →  (출력 없음), exit 0
+    const r = await sh.exec('for x in; do echo $x; done')
+    expect(r.stdout).toBe('')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('break 은 for 루프를 즉시 끝낸다', async () => {
+    // docker: for x in a b c; do echo $x; break; done  →  a
+    const r = await sh.exec('for x in a b c; do echo $x; break; done')
+    expect(r.stdout).toBe('a\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('continue 는 다음 값으로 건너뛴다', async () => {
+    // docker: for x in a b c; do if [ $x = b ]; then continue; fi; echo $x; done  →  a\nc
+    const r = await sh.exec('for x in a b c; do if [ $x = b ]; then continue; fi; echo $x; done')
+    expect(r.stdout).toBe('a\nc\n')
+  })
+
+  it('루프 변수는 루프가 끝난 뒤에도 마지막 값으로 남는다', async () => {
+    // docker: for x in a b; do :; done; echo $x  →  b
+    const r = await sh.exec('for x in a b; do :; done; echo $x')
+    expect(r.stdout).toBe('b\n')
+  })
+
+  it('중첩 for 는 안쪽/바깥쪽 변수를 독립적으로 순회한다', async () => {
+    // docker: for x in 1 2; do for y in a b; do echo $x$y; done; done  →  1a\n1b\n2a\n2b
+    const r = await sh.exec('for x in 1 2; do for y in a b; do echo $x$y; done; done')
+    expect(r.stdout).toBe('1a\n1b\n2a\n2b\n')
+  })
+})
+
 describe('registry 통합 — cat 이 등록되어 있다', () => {
   it('cat 으로 파일을 이어붙인다', async () => {
     expect((await sh.exec('cat a.txt b.txt')).stdout).toBe('alpha\nbeta\n')

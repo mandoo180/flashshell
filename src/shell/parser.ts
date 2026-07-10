@@ -31,10 +31,21 @@ export interface WhileNode {
 }
 
 /**
- * 파이프라인의 한 단계가 될 수 있는 명령. 단순 명령 + 복합 명령의 유니온이다.
- * `kind` 로 판별한다. Task 5(for)/6(case)/7(function)이 여기에 kind 를 더 추가한다.
+ * `for NAME in WORD*; do BODY; done`. words 는 (아직 확장 전) Word 배열 — runFor 가
+ * expandWord 로 각각 펼쳐(단어분리·글롭 포함) var 에 순서대로 대입하며 body 를 돈다.
  */
-export type Command = CommandNode | IfNode | WhileNode
+export interface ForNode {
+  kind: 'for'
+  var: string
+  words: Word[]
+  body: ListNode
+}
+
+/**
+ * 파이프라인의 한 단계가 될 수 있는 명령. 단순 명령 + 복합 명령의 유니온이다.
+ * `kind` 로 판별한다. Task 6(case)/7(function)이 여기에 kind 를 더 추가한다.
+ */
+export type Command = CommandNode | IfNode | WhileNode | ForNode
 
 export interface PipelineNode { kind: 'pipeline'; commands: Command[] }
 
@@ -55,24 +66,32 @@ function syntaxError(near: string): never {
  * bash 예약어. 여기 뒤 태스크(5/6/7)에서 for/in/case/esac/function 등이 더해진다.
  * 이 집합에 있는 단어만 "명령 위치의 bare 단어"일 때 예약어로 인정된다.
  */
-const RESERVED_WORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done'])
+const RESERVED_WORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done', 'for', 'in'])
+
+/**
+ * 단어가 "raw 조각 하나짜리 bare 단어"면 그 텍스트를, 아니면 null 을 준다. 따옴표가
+ * 섞이면(literal/dquote 조각) null — 렉서가 따옴표 없는 텍스트를 raw 조각 하나로
+ * 합치므로(같은 kind 끼리 병합), 따옴표 없이 이어진 단어만 이 형태가 된다.
+ * keywordOf(예약어 판정)와 parseFor(NAME 추출)가 공유하는 판정이다 — tryAssignment 가
+ * `word[0].kind === 'raw'` 로 NAME= 를 가리는 것과 같은 원리다.
+ */
+function bareWord(word: Word): string | null {
+  if (word.length !== 1) return null
+  const part = word[0]!
+  return part.kind === 'raw' ? part.text : null
+}
 
 /**
  * 단어가 bash 예약어인지 판정하고, 맞으면 그 텍스트를, 아니면 null 을 준다.
  *
- * 예약어는 (1) 명령 위치이고 (2) 따옴표 없이 통째로 그 예약어 텍스트일 때만 예약어다.
- * `echo if` 의 if(인자)나 `'if'`/`"if"`(따옴표)는 예약어가 아니다. 렉서는 따옴표 없는
- * 텍스트를 raw 조각 하나로 만들고(같은 kind 끼리 병합하므로 `if` 는 raw 한 조각), 따옴표는
- * literal(작은따옴표) / dquote(큰따옴표) 조각으로 만든다. 따라서 예약어는 "raw 조각
- * 하나짜리 단어"일 때만 성립한다 — tryAssignment 가 `word[0].kind === 'raw'` 로 NAME= 를
- * 가리는 것과 같은 원리다. "명령 위치"인지는 호출부가 책임진다(parseCommandOrCompound 와
- * parseList 의 각 아이템 첫 토큰에서만 keywordOf 를 본다).
+ * 예약어는 (1) 명령 위치이고 (2) bareWord 형태(따옴표 없이 통째로 그 예약어 텍스트)일
+ * 때만 예약어다. `echo if` 의 if(인자)나 `'if'`/`"if"`(따옴표)는 예약어가 아니다.
+ * "명령 위치"인지는 호출부가 책임진다(parseCommandOrCompound 와 parseList 의 각
+ * 아이템 첫 토큰, 그리고 parseFor 의 단어-목록 루프에서만 keywordOf 를 본다).
  */
 function keywordOf(word: Word): string | null {
-  if (word.length !== 1) return null
-  const part = word[0]!
-  if (part.kind !== 'raw') return null
-  return RESERVED_WORDS.has(part.text) ? part.text : null
+  const text = bareWord(word)
+  return text !== null && RESERVED_WORDS.has(text) ? text : null
 }
 
 /**
@@ -192,12 +211,13 @@ class Parser {
     return { kind: 'pipeline', commands }
   }
 
-  /** 첫 토큰이 bare 예약어(if/while/until)면 복합 명령, 아니면 단순 명령. */
+  /** 첫 토큰이 bare 예약어(if/while/until/for)면 복합 명령, 아니면 단순 명령. */
   private parseCommandOrCompound(): Command {
     switch (this.peekKeyword()) {
       case 'if': return this.parseIf()
       case 'while': return this.parseWhile(false)
       case 'until': return this.parseWhile(true)
+      case 'for': return this.parseFor()
       default: return this.parseCommand()
     }
   }
@@ -234,6 +254,37 @@ class Parser {
     const body = this.parseList(new Set(['done']))
     this.expectKeyword('done')
     return { kind: 'while', cond, body, until }
+  }
+
+  /**
+   * `for NAME in WORD*; do BODY; done`. NAME 은 raw 조각 하나짜리 bare 단어(keywordOf 와
+   * 같은 판정 원리)여야 한다. `in` 뒤의 단어 목록은 (단순 명령의 인자 목록과 달리) `do`
+   * 예약어를 만나면 멈춘다 — `;`/개행(렉서가 `;` 로 접어줌)이 있으면 그것도 소비하고
+   * 없어도(직접 `do` 로 이어져도) 멈춘다. body 는 기존 parseList(stopWords={done}) 를
+   * 그대로 재사용한다. positional 기반의 `for NAME; do ...`(in 생략)은 이 태스크
+   * 범위 밖이라 지원하지 않는다 — `in` 이 없으면 문법 오류.
+   */
+  private parseFor(): ForNode {
+    this.expectKeyword('for')
+
+    const nameTok = this.peek()
+    const varName = nameTok.type === 'WORD' ? bareWord(nameTok.word) : null
+    if (varName === null) syntaxError('for')
+    this.next()
+
+    this.expectKeyword('in')
+
+    const words: Word[] = []
+    while (this.peek().type === 'WORD' && this.peekKeyword() !== 'do') {
+      const t = this.next()
+      if (t.type === 'WORD') words.push(t.word)
+    }
+
+    if (this.atOp(';')) this.next()
+    this.expectKeyword('do')
+    const body = this.parseList(new Set(['done']))
+    this.expectKeyword('done')
+    return { kind: 'for', var: varName, words, body }
   }
 
   private parseCommand(): CommandNode {
