@@ -39,12 +39,14 @@ export const l3: Problem[] = [
       '전역(global) 치환 플래그는 g 입니다: s/.../.../g',
     ],
     check: (ctx) => {
-      const original = safeRead(ctx.fs, `${HOME}/config.txt`) ?? ''
-      const originalCount = original.split('localhost').length - 1
+      const original = safeRead(ctx.fs, `${HOME}/config.txt`)
       const updated = safeRead(ctx.fs, `${HOME}/config.new`)
-      if (updated === null || updated.includes('localhost')) return false
-      const newCount = updated.split('0.0.0.0').length - 1
-      return originalCount > 0 && newCount === originalCount
+      if (original === null || updated === null) return false
+      // config.txt 의 모든 localhost 를 0.0.0.0 으로 바꾼 결과와 정확히 일치해야 한다
+      // (나머지 문제처럼 정확-바이트 매치 — 개수만 맞춘 조작 내용은 통과하지 못하고,
+      // 파일을 실제로 읽어 치환한 정답만 통과한다). 원본에 localhost 가 남아 있어야
+      // 소스를 지워 우회하는 걸 막는다.
+      return original.includes('localhost') && updated === original.split('localhost').join('0.0.0.0')
     },
     solution: "sed 's/localhost/0.0.0.0/g' config.txt > config.new",
     wrongAnswer: "sed 's/localhost/0.0.0.0/' config.txt > config.new",
