@@ -141,8 +141,14 @@ html, body { margin: 0; }
 .sheet-body { margin: 0.3rem 0 0; line-height: 1.65; }
 .sheet-next { margin-top: 1rem; background: none; border: 1px solid var(--phos-green); color: var(--phos-green); font: inherit; letter-spacing: 0.18em; padding: 0.3rem 1rem; cursor: pointer; }
 
-/* HUD가 터미널 상단을 가리므로 스크롤백에 여백을 준다 */
-.terminal { padding-top: 11rem; }
+/* HUD가 터미널 상단을 가리므로 스크롤백에 여백을 준다. 11rem(176px)은
+   고정값이었는데, HUD는 절대 위치에 높이가 가변(한국어 prompt가 좁은
+   화면에서 줄바꿈되거나 힌트를 펼치면 자란다)이라 375px 폭에서는 176px로
+   부족해 HUD 하단이 입력 줄을 덮었다(M1 최종 리뷰 Important 결함). HudCard.tsx
+   가 ResizeObserver로 HUD의 실제 렌더 높이를 재서 --hud-height 에 써주므로
+   여기서는 그 값을 따라간다 — 11rem은 값이 아직 안 채워졌을 때(예: 최초
+   페인트 이전, ResizeObserver 미지원 환경)의 폴백으로만 남긴다. */
+.terminal { padding-top: var(--hud-height, 11rem); }
 
 .levels { position: relative; z-index: 2; max-width: 46rem; margin: 0 auto; padding: 4rem 1.5rem; color: var(--phos-green); }
 .levels-title { letter-spacing: 0.35em; text-shadow: var(--glow-green); }
