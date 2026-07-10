@@ -2,7 +2,7 @@
 // 서브셋: 단일 명령 스크립트. s/re/repl/[g], -n+p (Np, /re/p, p), Nd, /re/d.
 // -e / ; 로 여러 명령 잇기, hold space, 그 밖의 sed 언어 전체는 미지원.
 import type { CommandFn } from '../types'
-import { parseFlags, readSources, toLines } from './shared'
+import { errnoText, isDirectoryError, parseFlags, readSources, toLines } from './shared'
 
 type Op =
   | { kind: 'subst'; re: RegExp; repl: string; global: boolean }
@@ -139,7 +139,21 @@ export const sed: CommandFn = (e) => {
     return { stdout: '', stderr: `sed: -e expression #1, char 0: ${op.detail}\n`, exitCode: 1 }
   }
 
-  const { sources, stderr, failed } = readSources(e, rest.slice(1))
+  // GNU sed 의 파일 에러 문구·종료코드는 cat/head/grep 과 다르다. docker
+  // debian:stable-slim sed 4.9 실측:
+  //   `sed 's/a/b/' missing.txt` -> "sed: can't read missing.txt: No such file or directory" exit=2
+  //   `sed 's/a/b/' somedir`     -> "sed: read error on somedir: Is a directory" exit=4 (ENOENT 보다 우선)
+  // readSources 의 기본 포매터(`${e.name}: ${file}: ${msg}`)를 쓰면 문구도 종료코드도
+  // 다 틀린다 — sawDirError 로 실제로 EISDIR 을 만났는지 추적해 종료코드를 고른다.
+  let sawDirError = false
+  const formatReadError = (file: string, err: unknown): string => {
+    if (isDirectoryError(err)) {
+      sawDirError = true
+      return `sed: read error on ${file}: ${errnoText(err)}`
+    }
+    return `sed: can't read ${file}: ${errnoText(err)}`
+  }
+  const { sources, stderr, failed } = readSources(e, rest.slice(1), formatReadError)
   let stdout = ''
   let lineNo = 0
   for (const source of sources) {
@@ -157,5 +171,6 @@ export const sed: CommandFn = (e) => {
       }
     }
   }
-  return { stdout, stderr, exitCode: failed ? 1 : 0 }
+  const exitCode = failed ? (sawDirError ? 4 : 2) : 0
+  return { stdout, stderr, exitCode }
 }

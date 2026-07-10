@@ -124,4 +124,18 @@ describe('sed', () => {
     expect(r.exitCode).not.toBe(0)
     expect(r.stderr).toContain('flashshell:')
   })
+
+  // sed 의 파일 에러 문구·종료코드는 cat/head/grep 과 다르다(docker debian:stable-slim
+  // sed 4.9 실측 — 아래 두 테스트 참고).
+  it("없는 파일은 GNU 문구 그대로다 (\"can't read ...\"), exit 2", async () => {
+    const r = await run("sed 's/a/b/' nope.txt")
+    expect(r.stderr).toBe("sed: can't read nope.txt: No such file or directory\n")
+    expect(r.exitCode).toBe(2)
+  })
+  it('디렉터리를 파일로 주면 GNU 문구 그대로다 ("read error on ..."), exit 4', async () => {
+    fs.mkdir('/w/adir')
+    const r = await run("sed 's/a/b/' adir")
+    expect(r.stderr).toBe('sed: read error on adir: Is a directory\n')
+    expect(r.exitCode).toBe(4)
+  })
 })
