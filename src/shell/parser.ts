@@ -42,10 +42,23 @@ export interface ForNode {
 }
 
 /**
- * 파이프라인의 한 단계가 될 수 있는 명령. 단순 명령 + 복합 명령의 유니온이다.
- * `kind` 로 판별한다. Task 6(case)/7(function)이 여기에 kind 를 더 추가한다.
+ * `case WORD in [ [(] PATTERN [| PATTERN]* ) LIST ;; ]* esac`. word 는 확장 전 원본
+ * Word 하나 — runCase 가 case 전용 확장(단어분리·글롭 없음)으로 문자열 하나로 편다.
+ * 각 branch 의 patterns 도 Word[] 그대로 보존해(같은 case 전용 확장을 다시 태운 뒤)
+ * matchSegment 로 subject 와 맞춰본다. 첫 매치 branch 의 body 를 실행하고 멈춘다
+ * (`;&`/`;;&` fallthrough 는 구현하지 않는다).
  */
-export type Command = CommandNode | IfNode | WhileNode | ForNode
+export interface CaseNode {
+  kind: 'case'
+  word: Word
+  branches: { patterns: Word[]; body: ListNode }[]
+}
+
+/**
+ * 파이프라인의 한 단계가 될 수 있는 명령. 단순 명령 + 복합 명령의 유니온이다.
+ * `kind` 로 판별한다. Task 7(function)이 여기에 kind 를 더 추가한다.
+ */
+export type Command = CommandNode | IfNode | WhileNode | ForNode | CaseNode
 
 export interface PipelineNode { kind: 'pipeline'; commands: Command[] }
 
@@ -63,10 +76,12 @@ function syntaxError(near: string): never {
 }
 
 /**
- * bash 예약어. 여기 뒤 태스크(5/6/7)에서 for/in/case/esac/function 등이 더해진다.
+ * bash 예약어. 여기 뒤 태스크(7)에서 function 등이 더해진다.
  * 이 집합에 있는 단어만 "명령 위치의 bare 단어"일 때 예약어로 인정된다.
  */
-const RESERVED_WORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done', 'for', 'in'])
+const RESERVED_WORDS = new Set([
+  'if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done', 'for', 'in', 'case', 'esac',
+])
 
 /**
  * 단어가 "raw 조각 하나짜리 bare 단어"면 그 텍스트를, 아니면 null 을 준다. 따옴표가
@@ -117,6 +132,34 @@ function tryAssignment(word: Word): Assignment | null {
   if (restOfFirst.length > 0) value.push({ kind: 'raw', text: restOfFirst })
   value.push(...word.slice(1))
   return { name, value }
+}
+
+/**
+ * case 패턴의 선택적 여는 `(` 를 뗀다 — `(h*)` 처럼 렉서가 `(` 를 별도 토큰으로 안
+ * 내고(`(`/`)` 는 OPERATORS 에 없다 — 그냥 raw 글자로 흡수된다) 첫 raw 조각 맨 앞에
+ * 붙는다. 떼고 나서 그 조각이 비면 통째로 지운다(순수 `(` 하나뿐이던 토큰이었단 뜻 —
+ * 이땐 호출부가 다음 토큰을 진짜 첫 패턴으로 다시 읽는다). raw 가 아닌 조각으로
+ * 시작하면(따옴표) 손대지 않는다 — 여는 `(` 는 항상 따옴표 밖에 있다.
+ */
+function stripLeadingParen(word: Word): Word {
+  const first = word[0]
+  if (!first || first.kind !== 'raw' || !first.text.startsWith('(')) return word
+  const text = first.text.slice(1)
+  return text.length > 0 ? [{ kind: 'raw' as const, text }, ...word.slice(1)] : word.slice(1)
+}
+
+/**
+ * case 패턴의 닫는 `)` 를 뗀다. `)` 도 `(` 와 마찬가지로 별도 토큰이 아니라 마지막
+ * raw 조각 끝에 붙는다(예: `h*)`, `dog)`). 마지막 조각이 raw 이고 `)` 로 끝나면
+ * 떼어내고 hasParen=true. 그 외(따옴표로 끝나거나 `)` 가 없음)엔 손대지 않고
+ * hasParen=false — 호출부가 다음 토큰에서 alternation(`|`) 이나 단독 `)` 를 더 찾는다.
+ */
+function splitTrailingParen(word: Word): { core: Word; hasParen: boolean } {
+  const last = word[word.length - 1]
+  if (!last || last.kind !== 'raw' || !last.text.endsWith(')')) return { core: word, hasParen: false }
+  const text = last.text.slice(0, -1)
+  const core = text.length > 0 ? [...word.slice(0, -1), { kind: 'raw' as const, text }] : word.slice(0, -1)
+  return { core, hasParen: true }
 }
 
 class Parser {
@@ -172,11 +215,16 @@ class Parser {
    * (then/fi/do/done/elif/else 등)를 만나면 그 토큰을 소비하지 않고 멈춘다 — 복합 명령
    * 파서가 그 종료어를 이어서 처리한다. stopWords 가 비면(=top-level) 예전처럼 EOF 까지
    * 전부 소비하고, 남는 토큰이 있으면 문법 오류를 낸다.
+   *
+   * stopOps(task 6)는 종료 예약어와 같은 역할을 하되 OP 토큰(`;;`)을 본다 — case 문의
+   * branch body 는 `esac` 예약어뿐 아니라 `;;` 로도 끝날 수 있어서다. 기본값 `[]` 라
+   * 기존 호출부(if/while/for)는 동작이 전혀 안 바뀐다.
    */
-  parseList(stopWords?: Set<string>): ListNode {
+  parseList(stopWords?: Set<string>, stopOps: Operator[] = []): ListNode {
     const items: ListNode['items'] = []
     const stops = stopWords
     const atStop = (): boolean => {
+      if (stopOps.length > 0 && this.atOp(...stopOps)) return true
       if (!stops || stops.size === 0) return false
       const kw = this.peekKeyword()
       return kw !== null && stops.has(kw)
@@ -231,13 +279,14 @@ class Parser {
     return { kind: 'pipeline', commands }
   }
 
-  /** 첫 토큰이 bare 예약어(if/while/until/for)면 복합 명령, 아니면 단순 명령. */
+  /** 첫 토큰이 bare 예약어(if/while/until/for/case)면 복합 명령, 아니면 단순 명령. */
   private parseCommandOrCompound(): Command {
     switch (this.peekKeyword()) {
       case 'if': return this.parseIf()
       case 'while': return this.parseWhile(false)
       case 'until': return this.parseWhile(true)
       case 'for': return this.parseFor()
+      case 'case': return this.parseCase()
       default: return this.parseCommand()
     }
   }
@@ -311,6 +360,76 @@ class Parser {
     const body = this.parseList(new Set(['done']))
     this.expectKeyword('done')
     return { kind: 'for', var: varName, words, body }
+  }
+
+  /**
+   * `case WORD in [ [(] PATTERN [| PATTERN]* ) LIST ;; ]* esac`. WORD 는 단어 하나여야
+   * 한다(단순 명령의 인자처럼 여러 단어를 받지 않는다). branch 마다 patterns 를
+   * parseCasePatterns 로 얻고, body 는 `esac`(다음 branch 시작 없이 바로 끝) 또는
+   * `;;`(이 branch 종료, 다음 branch 로) 에서 멈추도록 parseList 에 stopOps=[';;']를
+   * 준다. 마지막 branch 의 `;;` 는 생략 가능 — 있으면 소비하고, 없으면(body 가 `esac`
+   * 에서 바로 멈췄으면) 아무것도 안 한다. `;;`/`esac` 뒤에 남는 개행-유래 `;`(예:
+   * `;;\nesac`)는 skipSeparators() 로 걷어낸다(task 5b 와 같은 관대함 원칙).
+   */
+  private parseCase(): CaseNode {
+    this.expectKeyword('case')
+    const wordTok = this.peek()
+    if (wordTok.type !== 'WORD') syntaxError('case')
+    this.next()
+    const word = wordTok.word
+
+    this.expectKeyword('in')
+    this.skipSeparators()
+
+    const branches: { patterns: Word[]; body: ListNode }[] = []
+    while (this.peekKeyword() !== 'esac') {
+      const patterns = this.parseCasePatterns()
+      this.skipSeparators()
+      const body = this.parseList(new Set(['esac']), [';;'])
+      if (this.atOp(';;')) this.next()
+      this.skipSeparators()
+      branches.push({ patterns, body })
+    }
+    this.expectKeyword('esac')
+    return { kind: 'case', word, branches }
+  }
+
+  /**
+   * 한 branch 의 `[(] PATTERN [| PATTERN]* )` 를 읽는다. `(`/`)` 는 렉서 연산자가
+   * 아니라(OPERATORS 에 없음) 인접한 WORD 의 raw 조각에 그냥 흡수돼 있으므로
+   * (`h*)` 는 통째로 raw 텍스트 "h*)"), 토큰 자체가 아니라 그 raw 텍스트를
+   * stripLeadingParen/splitTrailingParen 으로 까서 판정한다. `|` 는 (case 밖에서
+   * 파이프 연산자와 같은 렉서 토큰이지만) 이 자리에선 패턴 구분자로 읽는다 — 문법
+   * 위치로 구분되는 건 bash 도 동일하다.
+   */
+  private parseCasePatterns(): Word[] {
+    const patterns: Word[] = []
+    let first = true
+
+    for (;;) {
+      const t = this.next()
+      if (t.type !== 'WORD') syntaxError(t.type === 'OP' ? t.value : ')')
+      let word = t.word
+      if (first) {
+        word = stripLeadingParen(word)
+        first = false
+        // 토큰이 순수 '(' 하나뿐이었다(예: '(' 가 공백으로 떨어진 별도 토큰) — 다음
+        // 토큰이 진짜 첫 패턴이다.
+        if (word.length === 0) continue
+      }
+
+      const { core, hasParen } = splitTrailingParen(word)
+      if (core.length > 0) patterns.push(core)
+      if (hasParen) break
+
+      if (this.atOp('|')) { this.next(); continue }
+      const nt = this.peek()
+      if (nt.type === 'WORD' && bareWord(nt.word) === ')') { this.next(); break }
+      syntaxError(')')
+    }
+
+    if (patterns.length === 0) syntaxError(')')
+    return patterns
   }
 
   private parseCommand(): CommandNode {

@@ -424,4 +424,86 @@ describe('parse', () => {
       expect(inner.kind).toBe('if')
     })
   })
+
+  // --- case (task 6): case WORD in [(] PATTERN [| PATTERN]* ) LIST ;; ]* esac.
+  // `(`/`)` 는 렉서 연산자가 아니라(OPERATORS 에 없음) 인접 WORD 의 raw 조각에 그냥
+  // 흡수돼 있다(`h*)` 는 통째로 raw "h*)") — parseCasePatterns 가 그 raw 텍스트를
+  // stripLeadingParen/splitTrailingParen 으로 깐다. `|` 는 파이프와 같은 렉서 토큰이지만
+  // 이 자리에선 패턴 구분자로 읽는다.
+  describe('case 파싱 (task 6)', () => {
+    it('단일 branch 를 CaseNode 로 파싱한다: word/patterns/body', () => {
+      const cmd = parse('case hi in h*) echo H;; esac').items[0]!.pipeline.commands[0]!
+      expect(cmd.kind).toBe('case')
+      if (cmd.kind !== 'case') throw new Error('expected case')
+      expect(cmd.word).toEqual(raw('hi'))
+      expect(cmd.branches).toHaveLength(1)
+      expect(cmd.branches[0]!.patterns).toEqual([raw('h*')])
+      expect(cmd.branches[0]!.body.items[0]!.pipeline.commands[0]).toMatchObject({ words: [raw('echo'), raw('H')] })
+    })
+
+    it('여러 branch(catch-all 포함)를 순서대로 파싱한다', () => {
+      const cmd = parse('case hi in h*) echo H;; *) echo other;; esac').items[0]!.pipeline.commands[0]!
+      if (cmd.kind !== 'case') throw new Error('expected case')
+      expect(cmd.branches).toHaveLength(2)
+      expect(cmd.branches[0]!.patterns).toEqual([raw('h*')])
+      expect(cmd.branches[1]!.patterns).toEqual([raw('*')])
+      expect(cmd.branches[1]!.body.items[0]!.pipeline.commands[0]).toMatchObject({ words: [raw('echo'), raw('other')] })
+    })
+
+    it('`|` 로 이어진 alternation 은 patterns 배열에 여러 항목으로 들어간다', () => {
+      const cmd = parse('case cat in cat|dog) echo pet;; esac').items[0]!.pipeline.commands[0]!
+      if (cmd.kind !== 'case') throw new Error('expected case')
+      expect(cmd.branches[0]!.patterns).toEqual([raw('cat'), raw('dog')])
+    })
+
+    it('여는 `(` 는 선택적이고 무시된다: (h*)', () => {
+      const withParen = parse('case hi in (h*) echo H;; esac').items[0]!.pipeline.commands[0]!
+      const withoutParen = parse('case hi in h*) echo H;; esac').items[0]!.pipeline.commands[0]!
+      expect(withParen).toEqual(withoutParen)
+    })
+
+    it('마지막 branch 의 `;;` 는 생략 가능하다(단일 `;` 로 esac 직전 종료)', () => {
+      const withDoubleSemi = parse('case hi in h*) echo H;; esac')
+      const withSingleSemi = parse('case hi in h*) echo H; esac')
+      expect(withSingleSemi).toEqual(withDoubleSemi)
+    })
+
+    it('빈 body 도 허용한다: h*) ;; esac', () => {
+      const cmd = parse('case hi in h*) ;; esac').items[0]!.pipeline.commands[0]!
+      if (cmd.kind !== 'case') throw new Error('expected case')
+      expect(cmd.branches[0]!.body.items).toEqual([])
+    })
+
+    it('branch 가 하나도 없어도 파싱된다: case hi in esac', () => {
+      const cmd = parse('case hi in esac').items[0]!.pipeline.commands[0]!
+      if (cmd.kind !== 'case') throw new Error('expected case')
+      expect(cmd.branches).toEqual([])
+    })
+
+    it('예약어는 명령 위치에서만 예약어다: echo case in esac 의 각 단어는 인자다', () => {
+      const cmd = parse('echo case in esac').items[0]!.pipeline.commands[0]!
+      expect(cmd.kind).toBe('command')
+      if (cmd.kind !== 'command') throw new Error('expected command')
+      expect(cmd.words).toEqual([raw('echo'), raw('case'), raw('in'), raw('esac')])
+    })
+
+    it('esac 없이 끝난 case 는 문법 오류다', () => {
+      expect(() => parse('case hi in h*) echo H')).toThrow(/syntax error/)
+    })
+
+    it('멀티라인 case(패턴/본문/;;가 각각 다른 줄)는 한 줄 세미콜론 버전과 같은 AST 를 만든다', () => {
+      expect(parse('case hi in\n  h*)\n    echo H\n    ;;\nesac')).toEqual(parse('case hi in h*) echo H;; esac'))
+    })
+
+    it('복합 명령도 파이프라인/리스트에 참여한다', () => {
+      const ast = parse('case hi in h*) echo H;; esac | cat')
+      expect(ast.items[0]!.pipeline.commands).toHaveLength(2)
+      expect(ast.items[0]!.pipeline.commands[0]!.kind).toBe('case')
+      expect(ast.items[0]!.pipeline.commands[1]!.kind).toBe('command')
+    })
+
+    it('case 밖의 bare `;;` 는 문법 오류다 (실제 bash와 일치, docker 확인)', () => {
+      expect(() => parse('echo hi;; echo bye')).toThrow(/syntax error/)
+    })
+  })
 })

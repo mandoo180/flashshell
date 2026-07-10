@@ -7,12 +7,14 @@ export type WordPart =
 
 export type Word = WordPart[]
 
-export type Operator = '|' | '||' | '&&' | ';' | '>' | '>>' | '<' | '2>' | '2>>'
+export type Operator = '|' | '||' | '&&' | ';' | ';;' | '>' | '>>' | '<' | '2>' | '2>>'
 
 export type Token = { type: 'WORD'; word: Word } | { type: 'OP'; value: Operator } | { type: 'EOF' }
 
-// 긴 것부터. 앞선 것이 먼저 매칭된다.
-const OPERATORS: Operator[] = ['2>>', '2>', '>>', '&&', '||', '|', ';', '>', '<']
+// 긴 것부터. 앞선 것이 먼저 매칭된다. ';;' 는 ';' 보다 먼저 와야 한다 — 안 그러면
+// `;;` 의 첫 글자에서 이미 ';' 로 매칭되어 버려(둘 다 ';'로 시작) 두 번째 ';' 가
+// 별개의 ';' 토큰으로 새어나간다 (task 6: case 문의 `;;` 분기 종료자).
+const OPERATORS: Operator[] = ['2>>', '2>', '>>', '&&', '||', ';;', ';', '|', '>', '<']
 
 export function tokenize(input: string): Token[] {
   const tokens: Token[] = []

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { VFS } from './vfs'
 import { tokenize, type Word } from './lexer'
-import { expandWord, expandToSingle, type ExpandCtx } from './expand'
+import { expandWord, expandToSingle, expandForCase, type ExpandCtx } from './expand'
 
 function wordOf(source: string): Word {
   const tokens = tokenize(source)
@@ -210,6 +210,41 @@ describe('expandWord — 위치 매개변수 (task 3)', () => {
     ctx.positional = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11']
     expect(await expandWord(wordOf('${10}'), ctx)).toEqual(['10'])
     expect(await expandWord(wordOf('${11}'), ctx)).toEqual(['11'])
+  })
+})
+
+describe('expandForCase (task 6) — case 문의 WORD/PATTERN 전용 확장', () => {
+  // expandWord 와 달리 단어분리(IFS)도 파일시스템 글롭(expandGlob)도 하지 않는다 —
+  // 문자열 하나만 낸다(case 패턴은 matchSegment 로 별도 매칭한다).
+  it('변수 확장은 하지만 IFS 로 쪼개지 않는다 — 공백 포함 문자열 하나', async () => {
+    expect(await expandForCase(wordOf('$X'), ctx)).toBe('a b') // X='a b' (beforeEach)
+  })
+
+  it('따옴표 없는 글롭 메타문자를 파일시스템에 대해 펼치지 않는다 (expandWord 와의 핵심 차이)', async () => {
+    // ctx.cwd 인 /w 에는 a.txt/b.txt 가 있다 — expandWord 라면 ['a.txt','b.txt'] 로
+    // 펼쳐지지만(글롭 섹션 테스트 참고), case 패턴은 그 확장을 받으면 안 된다.
+    expect(await expandForCase(wordOf('*.txt'), ctx)).toBe('*.txt')
+  })
+
+  it('$var 안의 글롭 메타문자는 문자열로 살아남는다 (나중에 matchSegment 가 와일드카드로 해석) — docker 로 실제 bash 와 일치 확인', async () => {
+    // docker: p="a*"; case abc in $p) echo match;; *) echo no;; esac → match
+    ctx.env.P = 'a*'
+    expect(await expandForCase(wordOf('$P'), ctx)).toBe('a*')
+  })
+
+  it('따옴표는 제거되지만(quote removal) 글롭 메타 여부는 추적하지 않는다 (문서화된 단순화, 실제 bash와 다름)', async () => {
+    // docker: case xyz in "*") echo lit;; *) echo other;; esac → other (진짜 bash는
+    // 따옴표로 감싼 * 를 리터럴화한다). 우리는 quoted 여부를 안 실어서 여전히
+    // 와일드카드로 해석된다 — 브리프가 명시한 "keep it simple" 단순화.
+    expect(await expandForCase(wordOf(`"*"`), ctx)).toBe('*')
+  })
+
+  it('빈 단어는 빈 문자열이다 (미설정 변수라도 단어 자체가 사라지지 않는다)', async () => {
+    expect(await expandForCase(wordOf('$NOPE'), ctx)).toBe('')
+  })
+
+  it('명령치환도 그대로 지원한다', async () => {
+    expect(await expandForCase(wordOf('$(echo hi)'), ctx)).toBe('<echo hi>') // runSubshell 목 스텁 (beforeEach)
   })
 })
 

@@ -200,3 +200,40 @@ export async function expandToSingle(word: Word, ctx: ExpandCtx): Promise<string
   if (results.length !== 1) throw new Error('ambiguous redirect')
   return results[0]!
 }
+
+/**
+ * `case` 문의 WORD/PATTERN 전용 확장 (task 6). bash 매뉴얼: 둘 다 tilde·파라미터·
+ * 명령치환·산술확장·따옴표제거만 거치고, 단어분리(IFS)도 경로명확장(파일시스템 글롭)도
+ * 받지 않는다 — expandWord 는 이 둘을 다 하므로 여기 재사용할 수 없다(재사용하면
+ * `case *.txt in *.txt) ...` 의 패턴이 실제 파일 목록으로 바뀌어 버린다 — glob.ts의
+ * matchSegment 로 순수 fnmatch 매칭을 해야 하는데 미리 파일시스템에 물어버리는 꼴).
+ * expandWord 의 raw 조각 루프(tilde 확장 + expandDollar)만 그대로 따라가고
+ * splitFields/globPattern/expandGlob 단계를 건너뛴다 — 결과는 항상 문자열 하나
+ * (빈 단어 포함, `""` 나 `$NOPE` 도 그냥 빈 문자열이지 단어 자체가 사라지지 않는다 —
+ * case 에는 "인자가 사라진다" 개념이 없다).
+ *
+ * 알려진 단순화(브리프가 명시한 "keep it simple"): 패턴에 따옴표로 감싼 글롭
+ * 메타문자가 있어도(`case xyz in "*") ...`) quoted 여부를 추적하지 않고 field.text
+ * 를 그대로 matchSegment 에 넘기므로 여전히 와일드카드로 해석된다 — 진짜 bash 는
+ * 따옴표로 감싼 메타문자를 리터럴화한다(docker 확인: `case xyz in "*") echo lit;;
+ * *) echo other;; esac` → other, 우리 구현은 lit). 반대로 `$var` 안의 글롭 메타문자가
+ * 그대로 패턴에 살아남는 것(`p='a*'; case abc in $p) ...` → match)은 실제 bash와
+ * 일치한다(docker 확인) — 이건 단순화가 아니라 올바른 동작이다.
+ */
+export async function expandForCase(word: Word, ctx: ExpandCtx): Promise<string> {
+  const field = empty()
+  for (let index = 0; index < word.length; index++) {
+    const part = word[index]!
+
+    if (part.kind === 'literal') { append(field, part.text, true); continue }
+    if (part.kind === 'dquote') { await expandDollar(part.text, true, field, ctx); continue }
+
+    let text = part.text
+    if (index === 0 && text.startsWith('~') && (text.length === 1 || text[1] === '/')) {
+      append(field, ctx.home, true)
+      text = text.slice(1)
+    }
+    await expandDollar(text, false, field, ctx)
+  }
+  return field.text
+}

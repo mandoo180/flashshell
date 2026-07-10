@@ -1,7 +1,8 @@
 import { VFS } from './vfs'
 import { ExecutionLimitError, LoopSignal, BreakSignal, errnoText } from './errors'
-import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type ListNode, type PipelineNode } from './parser'
-import { expandWord, expandToSingle, type ExpandCtx } from './expand'
+import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type ListNode, type PipelineNode } from './parser'
+import { expandWord, expandToSingle, expandForCase, type ExpandCtx } from './expand'
+import { matchSegment } from './glob'
 import { lookupCommand, isKnownUnimplemented } from './registry'
 import type { CommandEnv, ExecResult, ShellState } from './types'
 import type { Word } from './lexer'
@@ -105,6 +106,7 @@ async function runCommand(node: Command, ctx: RunCtx, stdin: string): Promise<Ex
     case 'if': return runIf(node, ctx)
     case 'while': return runWhile(node, ctx)
     case 'for': return runFor(node, ctx)
+    case 'case': return runCase(node, ctx)
   }
 }
 
@@ -438,6 +440,50 @@ async function runFor(node: ForNode, ctx: RunCtx): Promise<ExecResult> {
   }
 
   return { stdout, stderr, exitCode }
+}
+
+/**
+ * `case WORD in PATTERN) BODY;; ... esac`. WORD 와 각 patterns 는 case 전용 확장
+ * (expandForCase — 단어분리·글롭 없음, expand.ts 참고)으로 문자열 하나씩으로 편다.
+ * branch 를 순서대로 보며, 그 branch 의 patterns 중 하나라도 matchSegment 로 subject 에
+ * 맞으면(최초 매치) 그 body 를 runList 로 실행하고 **그 자리에서 멈춘다** — bash 의
+ * `;;` 는 fallthrough 가 없다(`;&`/`;;&` 는 구현하지 않는다). 매치되는 branch 가
+ * 하나도 없으면 exit 0, 출력 없음(bash 확인).
+ *
+ * dotglob:true 로 matchSegment 를 호출한다 — case 패턴은 순수 fnmatch 라 경로명 글롭의
+ * "선행 점은 `*`/`?` 에 안 걸린다" 보호가 없다(docker 확인: `case .x in *) echo star;;
+ * esac` → star). find.ts 가 `-name` 에 이미 쓰는 것과 같은 옵션을 재사용한다.
+ *
+ * break/continue(LoopSignal)를 여기서 따로 안 잡는다 — runIf 와 같은 설계다: case 안의
+ * break 가 runList(branch.body, ctx) 를 뚫고 그대로 위로 새어나가면, 이 case 를 감싼
+ * runWhile/runFor 의 catch 가 (몇 겹을 거치든) 자연히 잡는다.
+ */
+async function runCase(node: CaseNode, ctx: RunCtx): Promise<ExecResult> {
+  const expandCtx = expandCtxFor(ctx)
+  let subject: string
+  try {
+    subject = await expandForCase(node.word, expandCtx)
+  } catch (e) {
+    if (e instanceof ExecutionLimitError) throw e
+    return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
+  }
+
+  for (const branch of node.branches) {
+    let matched = false
+    for (const patternWord of branch.patterns) {
+      let pattern: string
+      try {
+        pattern = await expandForCase(patternWord, expandCtx)
+      } catch (e) {
+        if (e instanceof ExecutionLimitError) throw e
+        return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
+      }
+      if (matchSegment(pattern, subject, { dotglob: true })) { matched = true; break }
+    }
+    if (matched) return runList(branch.body, ctx)
+  }
+
+  return { stdout: '', stderr: '', exitCode: 0 }
 }
 
 async function runPipeline(node: PipelineNode, ctx: RunCtx): Promise<ExecResult> {

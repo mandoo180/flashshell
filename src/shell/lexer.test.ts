@@ -29,6 +29,16 @@ describe('tokenize', () => {
     expect(ops(tokenize('a 2> b'))).toEqual(['2>'])
   })
 
+  it('`;;` 는 하나의 토큰이다 (`;` 두 개가 아니다) (task 6: case 분기 종료자)', () => {
+    expect(ops(tokenize('a;;b'))).toEqual([';;'])
+    expect(ops(tokenize('a ;; b'))).toEqual([';;'])
+  })
+
+  it('`;;` 는 `;` 보다 먼저 매칭된다 (longest-match-first)', () => {
+    expect(ops(tokenize('a;;;b'))).toEqual([';;', ';'])
+    expect(ops(tokenize('a;b'))).toEqual([';'])
+  })
+
   it('연산자에 공백이 없어도 나눈다', () => {
     expect(ops(tokenize('a|b'))).toEqual(['|'])
     expect(words(tokenize('a|b'))).toHaveLength(2)

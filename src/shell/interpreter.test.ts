@@ -643,6 +643,91 @@ describe('do/then/else/in 뒤 개행 (newline_list) 허용 — 실행 동작 (ta
   })
 })
 
+describe('제어문 case (task 6, docker 로 확인됨)', () => {
+  it('첫 매치 branch 의 body 를 실행한다', async () => {
+    // docker: case hi in h*) echo H;; *) echo other;; esac  →  H
+    expect((await sh.exec('case hi in h*) echo H;; *) echo other;; esac')).stdout).toBe('H\n')
+  })
+
+  it('매치되는 branch 가 없으면 출력 없이 exit 0', async () => {
+    // docker: case foo in a) echo a;; b) echo b;; esac  →  (출력 없음)
+    const r = await sh.exec('case foo in a) echo a;; b) echo b;; esac')
+    expect(r.stdout).toBe('')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('`|` 로 이어진 alternation 은 어느 한쪽만 맞아도 매치한다', async () => {
+    // docker: case cat in cat|dog) echo pet;; esac  →  pet
+    expect((await sh.exec('case cat in cat|dog) echo pet;; esac')).stdout).toBe('pet\n')
+  })
+
+  it('dotglob: `*` 가 선행 점에도 걸린다(경로명 글롭과 다르다)', async () => {
+    // docker: case .x in *) echo star;; esac  →  star (경로명 글롭이면 안 걸렸을 것)
+    expect((await sh.exec('case .x in *) echo star;; esac')).stdout).toBe('star\n')
+  })
+
+  it('`?` 는 글자 하나에 매치한다', async () => {
+    // docker: case abc in a?c) echo q;; esac  →  q
+    expect((await sh.exec('case abc in a?c) echo q;; esac')).stdout).toBe('q\n')
+  })
+
+  it('WORD 는 변수 확장 후 문자열 하나로 매치한다', async () => {
+    // docker: x=dog; case $x in cat) echo c;; dog) echo d;; esac  →  d
+    expect((await sh.exec('x=dog; case $x in cat) echo c;; dog) echo d;; esac')).stdout).toBe('d\n')
+  })
+
+  it('catch-all `*)` 은 마지막 안전망으로 동작한다', async () => {
+    // docker: case zzz in a) :;; *) echo default;; esac  →  default
+    expect((await sh.exec('case zzz in a) :;; *) echo default;; esac')).stdout).toBe('default\n')
+  })
+
+  it('멀티라인(패턴/본문/;;가 각각 다른 줄)도 한 줄 버전과 동일하게 동작한다', async () => {
+    // docker: case hi in\n  h*)\n    echo H\n    ;;\nesac  →  H
+    const r = await sh.exec('case hi in\n  h*)\n    echo H\n    ;;\nesac')
+    expect(r.stdout).toBe('H\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('마지막 branch 의 `;;` 는 생략 가능하다(단일 `;` 로 esac 직전 종료해도 동일 결과)', async () => {
+    // docker: case hi in h*) echo H;; esac → H ; case hi in h*) echo H; esac → H (동일)
+    const withDoubleSemi = await sh.exec('case hi in h*) echo H;; esac')
+    const withSingleSemi = await sh.exec('case hi in h*) echo H; esac')
+    expect(withSingleSemi).toEqual(withDoubleSemi)
+    expect(withSingleSemi.stdout).toBe('H\n')
+  })
+
+  it('여는 `(` 는 선택적이고 결과에 영향 없다', async () => {
+    // docker: case hi in (h*) echo H;; esac → H
+    expect((await sh.exec('case hi in (h*) echo H;; esac')).stdout).toBe('H\n')
+  })
+
+  it('첫 매치에서 멈춘다 — fallthrough 없음(뒤 branch 는 실행되지 않는다)', async () => {
+    const r = await sh.exec('case a in a) echo first;; a) echo second;; esac')
+    expect(r.stdout).toBe('first\n')
+  })
+
+  it('break/continue 는 바깥 루프까지 case 를 뚫고 전달된다', async () => {
+    // docker: for x in a b c; do case $x in b) continue;; esac; echo $x; done  →  a\nc
+    const r1 = await sh.exec('for x in a b c; do case $x in b) continue;; esac; echo $x; done')
+    expect(r1.stdout).toBe('a\nc\n')
+    // docker: while true; do case yes in yes) break;; esac; echo unreachable; done; echo after → after
+    const r2 = await sh.exec('while true; do case yes in yes) break;; esac; echo unreachable; done; echo after')
+    expect(r2.stdout).toBe('after\n')
+  })
+
+  it('branch 가 없어도(case WORD in esac) exit 0', async () => {
+    // docker: case hi in esac; echo ok=$?  →  ok=0
+    expect((await sh.exec('case hi in esac')).exitCode).toBe(0)
+  })
+
+  it('빈 body 도 허용한다: h*) ;; esac', async () => {
+    // docker: case hi in h*) ;; esac; echo ok=$?  →  ok=0
+    const r = await sh.exec('case hi in h*) ;; esac')
+    expect(r.stdout).toBe('')
+    expect(r.exitCode).toBe(0)
+  })
+})
+
 describe('registry 통합 — cat 이 등록되어 있다', () => {
   it('cat 으로 파일을 이어붙인다', async () => {
     expect((await sh.exec('cat a.txt b.txt')).stdout).toBe('alpha\nbeta\n')
