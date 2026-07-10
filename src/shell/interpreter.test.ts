@@ -32,10 +32,11 @@ describe('기본 실행', () => {
   })
 
   it('미구현 명령은 다른 메시지를 준다', async () => {
-    // find는 task-4에서 구현되어 이 목록에서 빠졌다 — 여전히 미구현인 다른 이름(diff)으로 검증한다.
-    const r = await sh.exec('diff 1')
+    // find/diff는 각각 task-4/task-5에서 구현되어 이 목록에서 빠졌다 — 여전히
+    // 미구현인 다른 이름(comm)으로 검증한다.
+    const r = await sh.exec('comm 1')
     expect(r.exitCode).toBe(127)
-    expect(r.stderr).toBe('flashshell: diff: 이 환경에는 없는 명령입니다\n')
+    expect(r.stderr).toBe('flashshell: comm: 이 환경에는 없는 명령입니다\n')
   })
 
   it('문법 오류는 exit 2', async () => {

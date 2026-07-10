@@ -114,3 +114,24 @@ describe('xargs', () => {
     expect(await out('cat items.txt | xargs')).toBe('x y\n')
   })
 })
+
+describe('diff', () => {
+  beforeEach(() => {
+    fs.writeFile('/w/x.txt', 'one\ntwo\nthree\n')
+    fs.writeFile('/w/y.txt', 'one\n2\nthree\n')
+    fs.writeFile('/w/z.txt', 'one\ntwo\nthree\n')
+  })
+  it('같으면 exit 0, 출력 없음', async () => {
+    const r = await sh.exec('diff x.txt z.txt'); expect(r.exitCode).toBe(0); expect(r.stdout).toBe(''); expect(r.stderr).toBe('')
+  })
+  it('-q 다르면 differ 한 줄, exit 1', async () => {
+    const r = await sh.exec('diff -q x.txt y.txt')
+    expect(r.exitCode).toBe(1); expect(r.stdout).toBe('Files x.txt and y.txt differ\n')
+  })
+  it('-q 같으면 출력 없음 exit 0', async () => {
+    const r = await sh.exec('diff -q x.txt z.txt'); expect(r.exitCode).toBe(0); expect(r.stdout).toBe('')
+  })
+  it('파일 없으면 exit 2', async () => {
+    const r = await sh.exec('diff x.txt nope.txt'); expect(r.exitCode).toBe(2); expect(r.stderr).toContain('diff')
+  })
+})

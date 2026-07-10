@@ -13,14 +13,15 @@ describe('registry', () => {
   })
 
   it('진짜 리눅스에 있지만 우리가 안 만든 명령을 구별한다', () => {
-    expect(isKnownUnimplemented('diff')).toBe(true)
+    expect(isKnownUnimplemented('comm')).toBe(true)
     expect(isKnownUnimplemented('tar')).toBe(true)
   })
 
-  it('우리가 만든 명령은 미구현이 아니다 (find/xargs는 task-4에서 구현되어 이 목록에서 빠졌다)', () => {
+  it('우리가 만든 명령은 미구현이 아니다 (find/xargs는 task-4, diff는 task-5에서 구현되어 이 목록에서 빠졌다)', () => {
     expect(isKnownUnimplemented('echo')).toBe(false)
     expect(isKnownUnimplemented('find')).toBe(false)
     expect(isKnownUnimplemented('xargs')).toBe(false)
+    expect(isKnownUnimplemented('diff')).toBe(false)
   })
 
   it('오타는 미구현이 아니라 그냥 없는 명령이다', () => {
