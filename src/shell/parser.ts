@@ -10,7 +10,33 @@ export interface CommandNode {
   redirs: Redir[]
 }
 
-export interface PipelineNode { kind: 'pipeline'; commands: CommandNode[] }
+/**
+ * `if COND; then BODY; [elif COND; then BODY;]* [else BODY;] fi`.
+ * cond/then/else 는 각각 완결된 ListNode 다 — 본문 실행 프리미티브(runList)를 그대로 재사용한다.
+ */
+export interface IfNode {
+  kind: 'if'
+  cond: ListNode
+  then: ListNode
+  elifs: { cond: ListNode; then: ListNode }[]
+  else?: ListNode
+}
+
+/** `while COND; do BODY; done` / `until COND; do BODY; done` (until 이면 조건 반전). */
+export interface WhileNode {
+  kind: 'while'
+  cond: ListNode
+  body: ListNode
+  until: boolean
+}
+
+/**
+ * 파이프라인의 한 단계가 될 수 있는 명령. 단순 명령 + 복합 명령의 유니온이다.
+ * `kind` 로 판별한다. Task 5(for)/6(case)/7(function)이 여기에 kind 를 더 추가한다.
+ */
+export type Command = CommandNode | IfNode | WhileNode
+
+export interface PipelineNode { kind: 'pipeline'; commands: Command[] }
 
 export interface ListNode {
   kind: 'list'
@@ -23,6 +49,30 @@ const ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s
 
 function syntaxError(near: string): never {
   throw new Error(`syntax error near \`${near}'`)
+}
+
+/**
+ * bash 예약어. 여기 뒤 태스크(5/6/7)에서 for/in/case/esac/function 등이 더해진다.
+ * 이 집합에 있는 단어만 "명령 위치의 bare 단어"일 때 예약어로 인정된다.
+ */
+const RESERVED_WORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done'])
+
+/**
+ * 단어가 bash 예약어인지 판정하고, 맞으면 그 텍스트를, 아니면 null 을 준다.
+ *
+ * 예약어는 (1) 명령 위치이고 (2) 따옴표 없이 통째로 그 예약어 텍스트일 때만 예약어다.
+ * `echo if` 의 if(인자)나 `'if'`/`"if"`(따옴표)는 예약어가 아니다. 렉서는 따옴표 없는
+ * 텍스트를 raw 조각 하나로 만들고(같은 kind 끼리 병합하므로 `if` 는 raw 한 조각), 따옴표는
+ * literal(작은따옴표) / dquote(큰따옴표) 조각으로 만든다. 따라서 예약어는 "raw 조각
+ * 하나짜리 단어"일 때만 성립한다 — tryAssignment 가 `word[0].kind === 'raw'` 로 NAME= 를
+ * 가리는 것과 같은 원리다. "명령 위치"인지는 호출부가 책임진다(parseCommandOrCompound 와
+ * parseList 의 각 아이템 첫 토큰에서만 keywordOf 를 본다).
+ */
+function keywordOf(word: Word): string | null {
+  if (word.length !== 1) return null
+  const part = word[0]!
+  if (part.kind !== 'raw') return null
+  return RESERVED_WORDS.has(part.text) ? part.text : null
 }
 
 /**
@@ -63,10 +113,41 @@ class Parser {
     return t.type === 'OP' && ops.includes(t.value)
   }
 
-  parseList(): ListNode {
+  /** 현재 토큰이 명령 위치의 bare 예약어면 그 텍스트, 아니면 null. */
+  private peekKeyword(): string | null {
+    const t = this.peek()
+    return t.type === 'WORD' ? keywordOf(t.word) : null
+  }
+
+  /** 다음 토큰이 정확히 이 예약어이길 요구하고 소비한다. 아니면 문법 오류. */
+  private expectKeyword(kw: string): void {
+    if (this.peekKeyword() !== kw) {
+      const t = this.peek()
+      syntaxError(t.type === 'EOF' ? kw : t.type === 'OP' ? t.value : (this.peekKeyword() ?? kw))
+    }
+    this.next()
+  }
+
+  /**
+   * 리스트를 파싱한다. stopWords 가 주어지면, 각 아이템 시작 지점에서 종료 예약어
+   * (then/fi/do/done/elif/else 등)를 만나면 그 토큰을 소비하지 않고 멈춘다 — 복합 명령
+   * 파서가 그 종료어를 이어서 처리한다. stopWords 가 비면(=top-level) 예전처럼 EOF 까지
+   * 전부 소비하고, 남는 토큰이 있으면 문법 오류를 낸다.
+   */
+  parseList(stopWords?: Set<string>): ListNode {
     const items: ListNode['items'] = []
+    const stops = stopWords
+    const atStop = (): boolean => {
+      if (!stops || stops.size === 0) return false
+      const kw = this.peekKeyword()
+      return kw !== null && stops.has(kw)
+    }
+
     const first = this.peek()
     if (first.type === 'EOF') return { kind: 'list', items }
+    // 종료 예약어로 시작하면 빈 본문이다 (예: `if true; then; fi` — bash 는 이걸 문법
+    // 오류로 보지만, 여기선 빈 리스트를 돌려주고 복합 파서가 종료어를 소비하게 둔다).
+    if (atStop()) return { kind: 'list', items }
     // 리스트/파이프라인 연결자로 시작하는 건 항상 문법 오류다 (`; ls`, `&& ls`, `| ls`).
     // 리다이렉션 연산자(`>`, `2>`, ...)로 시작하는 건 괜찮다 — bash 는 `> out` 처럼
     // 명령 없는 리다이렉션 단독도 유효한 단순 명령으로 받아들인다 (exit 0, 파일만 생성).
@@ -82,21 +163,77 @@ class Parser {
         if (op === ';') break // 후행 세미콜론은 허용
         syntaxError(op)
       }
+      // 세미콜론 뒤에 종료 예약어가 오면(정상: `true; then`, `echo x; done`) 여기서 멈추고
+      // 종료어를 복합 파서에게 넘긴다. `&&`/`||` 뒤의 종료어는 오른쪽 피연산자가 없어 오류.
+      if (atStop()) {
+        if (op === ';') break
+        syntaxError(op)
+      }
       items.push({ op, pipeline: this.parsePipeline() })
     }
 
-    if (this.peek().type !== 'EOF') syntaxError('unexpected token')
+    if (!stops || stops.size === 0) {
+      // top-level 리스트는 반드시 EOF 까지 소비해야 한다.
+      if (this.peek().type !== 'EOF') syntaxError('unexpected token')
+    } else if (!atStop()) {
+      // 하위 리스트는 반드시 자신의 종료 예약어에서 끝나야 한다 (fi/done 전에 EOF 면 미완성).
+      syntaxError(this.peek().type === 'EOF' ? 'unexpected EOF' : 'unexpected token')
+    }
     return { kind: 'list', items }
   }
 
   private parsePipeline(): PipelineNode {
-    const commands: CommandNode[] = [this.parseCommand()]
+    const commands: Command[] = [this.parseCommandOrCompound()]
     while (this.atOp('|')) {
       this.next()
       if (this.peek().type === 'EOF') syntaxError('|')
-      commands.push(this.parseCommand())
+      commands.push(this.parseCommandOrCompound())
     }
     return { kind: 'pipeline', commands }
+  }
+
+  /** 첫 토큰이 bare 예약어(if/while/until)면 복합 명령, 아니면 단순 명령. */
+  private parseCommandOrCompound(): Command {
+    switch (this.peekKeyword()) {
+      case 'if': return this.parseIf()
+      case 'while': return this.parseWhile(false)
+      case 'until': return this.parseWhile(true)
+      default: return this.parseCommand()
+    }
+  }
+
+  private parseIf(): IfNode {
+    this.expectKeyword('if')
+    const cond = this.parseList(new Set(['then']))
+    this.expectKeyword('then')
+    const thenList = this.parseList(new Set(['elif', 'else', 'fi']))
+
+    const elifs: { cond: ListNode; then: ListNode }[] = []
+    while (this.peekKeyword() === 'elif') {
+      this.expectKeyword('elif')
+      const elifCond = this.parseList(new Set(['then']))
+      this.expectKeyword('then')
+      const elifThen = this.parseList(new Set(['elif', 'else', 'fi']))
+      elifs.push({ cond: elifCond, then: elifThen })
+    }
+
+    let elseList: ListNode | undefined
+    if (this.peekKeyword() === 'else') {
+      this.expectKeyword('else')
+      elseList = this.parseList(new Set(['fi']))
+    }
+
+    this.expectKeyword('fi')
+    return { kind: 'if', cond, then: thenList, elifs, else: elseList }
+  }
+
+  private parseWhile(until: boolean): WhileNode {
+    this.expectKeyword(until ? 'until' : 'while')
+    const cond = this.parseList(new Set(['do']))
+    this.expectKeyword('do')
+    const body = this.parseList(new Set(['done']))
+    this.expectKeyword('done')
+    return { kind: 'while', cond, body, until }
   }
 
   private parseCommand(): CommandNode {

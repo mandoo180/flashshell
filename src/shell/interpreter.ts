@@ -1,6 +1,6 @@
 import { VFS } from './vfs'
-import { ExecutionLimitError, errnoText } from './errors'
-import { parse, type CommandNode, type ListNode, type PipelineNode } from './parser'
+import { ExecutionLimitError, LoopSignal, BreakSignal, errnoText } from './errors'
+import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ListNode, type PipelineNode } from './parser'
 import { expandWord, expandToSingle, type ExpandCtx } from './expand'
 import { lookupCommand, isKnownUnimplemented } from './registry'
 import type { CommandEnv, ExecResult, ShellState } from './types'
@@ -28,6 +28,13 @@ interface RunCtx {
    * 값이라 cwd/env처럼 "셸에 영구히 남는 상태"와 성격이 다르다.
    */
   positional: string[]
+  /**
+   * 현재 몇 겹의 루프(while/until, 뒤엔 for) 안에서 실행 중인지. runWhile 이 본문 실행
+   * 동안 ++/-- 한다. break/continue 빌트인은 이 값(>0 이면 루프 안)으로 신호를 던질지
+   * 말지를 정한다 — 루프 밖에서는 던지지 않고 경고만 낸다(bash 동작). 서브셸 경계
+   * (childCtx)에서는 0으로 리셋된다 — break/continue 는 서브셸/명령치환 밖으로 새지 않는다.
+   */
+  loopDepth: number
 }
 
 function spend(ctx: RunCtx): void {
@@ -52,6 +59,10 @@ function childCtx(ctx: RunCtx): RunCtx {
     state: { ...ctx.state, env: { ...ctx.state.env } },
     budget: ctx.budget,
     positional: [...ctx.positional],
+    // 서브셸/명령치환/파이프 단계는 새 루프 문맥이다 — 그 안의 break/continue 는 바깥
+    // 루프를 벗어나면 안 되므로(bash 확인: `while ...; do echo $(break); done` 는 무한),
+    // 루프 깊이를 0으로 리셋한다. 그러면 그 break 는 "루프 밖"으로 취급돼 경고 후 무시된다.
+    loopDepth: 0,
   }
 }
 
@@ -72,6 +83,9 @@ function expandCtxFor(ctx: RunCtx): ExpandCtx {
         return await runList(parse(script), child)
       } catch (e) {
         if (e instanceof ExecutionLimitError) throw e
+        // break/continue 는 명령치환(서브셸) 밖으로 새지 않는다. child 의 loopDepth 가
+        // 0으로 리셋돼 대개 여기까지 오지도 않지만, 도달하면 no-op 으로 흘려보낸다.
+        if (e instanceof LoopSignal) return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
         return { stdout: '', stderr: `bash: ${e instanceof Error ? e.message : String(e)}\n`, exitCode: 2 }
       }
     },
@@ -80,7 +94,20 @@ function expandCtxFor(ctx: RunCtx): ExpandCtx {
 
 interface ResolvedRedir { fd: 0 | 1 | 2; op: '>' | '>>' | '<'; path: string; word: string }
 
-async function runCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promise<ExecResult> {
+/**
+ * 파이프라인 한 단계를 실행하는 진입점. node.kind 로 단순/복합 명령을 가른다.
+ * 'command' 는 예전 그대로(runSimpleCommand). if/while 은 stdin 을 쓰지 않는다 —
+ * 본문/조건은 runList 로 돌고, 그 결과 ExecResult 를 파이프라인이 이어받는다.
+ */
+async function runCommand(node: Command, ctx: RunCtx, stdin: string): Promise<ExecResult> {
+  switch (node.kind) {
+    case 'command': return runSimpleCommand(node, ctx, stdin)
+    case 'if': return runIf(node, ctx)
+    case 'while': return runWhile(node, ctx)
+  }
+}
+
+async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promise<ExecResult> {
   spend(ctx)
   const expandCtx = expandCtxFor(ctx)
 
@@ -207,15 +234,21 @@ async function runCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promis
       try { return await runList(parse(line), ctx) }
       catch (e) {
         if (e instanceof ExecutionLimitError) throw e
+        // break/continue 는 이 하위 실행 경계 밖으로 새지 않는다 (no-op 취급).
+        if (e instanceof LoopSignal) return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
         return { stdout: '', stderr: `bash: ${e instanceof Error ? e.message : String(e)}\n`, exitCode: 2 }
       }
     },
+    loopDepth: ctx.loopDepth,
   }
   let result: ExecResult
   try {
     result = await fn(cmdEnv)
   } catch (e) {
     if (e instanceof ExecutionLimitError) throw e
+    // break/continue 신호는 얌전한 ExecResult 로 바꾸지 않고 그대로 위로 던져서
+    // 가장 가까운 runWhile 이 잡게 한다 (ExecutionLimitError 와 같은 특별 취급).
+    if (e instanceof LoopSignal) throw e
     return { stdout: '', stderr: `${name}: ${errnoText(e)}\n`, exitCode: 1 }
   }
 
@@ -264,6 +297,86 @@ async function runCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promis
   return { stdout, stderr, exitCode: result.exitCode }
 }
 
+/**
+ * if/elif/else. 조건(ListNode)을 runList 로 돌려 exitCode===0 이면 그 가지의 then 을
+ * 실행하고 반환한다. 참인 가지가 없고 else 도 없으면 exit 0 (bash 확인). 평가한 조건의
+ * 출력(stdout/stderr)은 모두 이어붙여 낸다 — bash 는 `if echo cond; then ...` 에서 cond
+ * 를 그대로 출력한다. then 안의 $? 는 조건의 exit code 를 본다 — runList(cond) 가
+ * lastExitCode 를 갱신한 뒤에 then 이 돌기 때문에 자연히 맞다.
+ */
+async function runIf(node: IfNode, ctx: RunCtx): Promise<ExecResult> {
+  let stdout = ''
+  let stderr = ''
+  const branches = [{ cond: node.cond, then: node.then }, ...node.elifs]
+
+  for (const branch of branches) {
+    const c = await runList(branch.cond, ctx)
+    stdout += c.stdout
+    stderr += c.stderr
+    if (c.exitCode === 0) {
+      const b = await runList(branch.then, ctx)
+      return { stdout: stdout + b.stdout, stderr: stderr + b.stderr, exitCode: b.exitCode }
+    }
+  }
+
+  if (node.else) {
+    const e = await runList(node.else, ctx)
+    return { stdout: stdout + e.stdout, stderr: stderr + e.stderr, exitCode: e.exitCode }
+  }
+  // 참인 가지도 else 도 없음 → exit 0. 바깥 runList 가 lastExitCode 를 이 0 으로 갱신한다.
+  return { stdout, stderr, exitCode: 0 }
+}
+
+/**
+ * while/until. 각 반복 상단에서 spend(ctx) 로 예산을 1 소모한다 — no-op 본문(`while
+ * true; do :; done`)도 무한루프 방어에 걸리게 하기 위함이다. 조건을 돌려(until 이면
+ * 반전) 참인 동안 본문을 실행한다. 본문에서 올라온 break/continue 신호를 여기서 잡는다.
+ * 반복 0회면 exit 0, 그 외엔 마지막으로 정상 완료된 본문의 exitCode (bash 확인).
+ */
+async function runWhile(node: WhileNode, ctx: RunCtx): Promise<ExecResult> {
+  let stdout = ''
+  let stderr = ''
+  let exitCode = 0
+
+  ctx.loopDepth++
+  try {
+    for (;;) {
+      spend(ctx)
+      const c = await runList(node.cond, ctx)
+      stdout += c.stdout
+      stderr += c.stderr
+      const proceed = node.until ? c.exitCode !== 0 : c.exitCode === 0
+      if (!proceed) break
+
+      try {
+        const b = await runList(node.body, ctx)
+        stdout += b.stdout
+        stderr += b.stderr
+        exitCode = b.exitCode
+      } catch (e) {
+        if (!(e instanceof LoopSignal)) throw e
+        // 신호가 실어온 부분 출력(break 직전의 echo 등)을 회수한다.
+        stdout += e.stdout
+        stderr += e.stderr
+        // count>1 이면 바깥 루프로 전달한다. 단 이 루프가 가장 바깥(loopDepth===1)이면
+        // 더 벗어날 루프가 없으므로 bash 처럼 여기서 클램프해 소비한다.
+        if (e.count > 1 && ctx.loopDepth > 1) {
+          e.count -= 1
+          e.stdout = stdout
+          e.stderr = stderr
+          throw e
+        }
+        if (e instanceof BreakSignal) break
+        continue // ContinueSignal → 다음 반복
+      }
+    }
+  } finally {
+    ctx.loopDepth--
+  }
+
+  return { stdout, stderr, exitCode }
+}
+
 async function runPipeline(node: PipelineNode, ctx: RunCtx): Promise<ExecResult> {
   // 실제 bash는 파이프라인의 모든 단계(마지막 단계 포함)를 서브셸에서 돌린다 — docker로
   // 확인: `cd /tmp; echo hi | cd /; pwd` → /tmp (안 바뀜), `X=orig; echo hi | X=1; echo
@@ -295,7 +408,19 @@ async function runList(node: ListNode, ctx: RunCtx): Promise<ExecResult> {
     if (item.op === '&&' && exitCode !== 0) continue
     if (item.op === '||' && exitCode === 0) continue
 
-    const result = await runPipeline(item.pipeline, ctx)
+    let result: ExecResult
+    try {
+      result = await runPipeline(item.pipeline, ctx)
+    } catch (e) {
+      // break/continue 신호가 이 리스트를 뚫고 올라간다. 지금까지 이 리스트가 낸 출력을
+      // 신호에 실어 runWhile 이 회수하게 한다 — 안 그러면 우리는 출력을 반환값으로만
+      // 넘기므로(스트리밍 아님) 중간에 던진 지점 이전의 출력이 통째로 유실된다.
+      if (e instanceof LoopSignal) {
+        e.stdout = stdout + e.stdout
+        e.stderr = stderr + e.stderr
+      }
+      throw e
+    }
     stdout += result.stdout
     stderr += result.stderr
     exitCode = result.exitCode
@@ -312,7 +437,7 @@ export async function run(
   stepBudget: number,
   positional: string[] = [],
 ): Promise<ExecResult> {
-  const ctx: RunCtx = { fs, state, budget: { remaining: stepBudget }, positional }
+  const ctx: RunCtx = { fs, state, budget: { remaining: stepBudget }, positional, loopDepth: 0 }
   let ast: ListNode
   try {
     ast = parse(line)
@@ -326,6 +451,12 @@ export async function run(
   } catch (e) {
     if (e instanceof ExecutionLimitError) {
       return { stdout: '', stderr: '^C  flashshell: 실행 한도 초과 — 무한 루프인가요?\n', exitCode: 130 }
+    }
+    // 루프 밖으로 새어 나온 break/continue (loopDepth 추적 때문에 대개 도달하지 않지만,
+    // break N 이 중첩 수를 초과하는 등의 경우 방어). bash 처럼 무해한 no-op(exit 0)으로
+    // 처리하되, 신호가 실어온 출력은 그대로 낸다.
+    if (e instanceof LoopSignal) {
+      return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
     }
     // 위에서 예상 가능한 실패 지점은 전부 자체적으로 ExecResult 로 바꾸지만, exec()는
     // 어떤 경우에도 reject 하면 안 된다는 계약을 지키기 위한 마지막 방어선이다.

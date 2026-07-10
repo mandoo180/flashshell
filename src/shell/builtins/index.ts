@@ -6,6 +6,7 @@ import { exportCmd } from './export'
 import { unset } from './unset'
 import { trueCmd, falseCmd, colon } from './truefalse'
 import { testCmd } from './test'
+import { breakCmd, continueCmd } from './loop'
 
 export const builtins: Record<string, CommandFn> = {
   cd, pwd, echo, unset,
@@ -15,4 +16,6 @@ export const builtins: Record<string, CommandFn> = {
   ':': colon,
   test: testCmd,
   '[': testCmd,
+  break: breakCmd,
+  continue: continueCmd,
 }

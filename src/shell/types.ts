@@ -28,6 +28,12 @@ export interface CommandEnv {
    * exec()가 절대 reject 안 하듯 이 콜백도 ExecResult 를 resolve 한다.
    */
   runLine?: (line: string) => Promise<ExecResult>
+  /**
+   * 현재 몇 겹의 루프(while/until/for) 안에서 실행 중인지. break/continue 빌트인이
+   * 이 값으로 "루프 안이면 신호를 던지고, 밖이면 경고만 하고 no-op" 을 가른다.
+   * 인터프리터가 주입한다(없으면 0으로 취급 = 루프 밖).
+   */
+  loopDepth?: number
 }
 
 export type CommandOutput = ExecResult
