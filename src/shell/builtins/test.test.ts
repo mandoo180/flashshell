@@ -221,16 +221,25 @@ describe('true/false 는 stdout 을 절대 만들지 않는다', () => {
   })
 })
 
-describe('-a / -o 결합자는 서브셋 밖 — 만나면 거부(절대 반쪽 구현 X)', () => {
-  it('3항에서 -a/-o 는 flashshell: 로 거부, exit 2', async () => {
-    const out = await runTest('1', '-a', '1')
-    expect(out.exitCode).toBe(2)
-    expect(out.stderr).toContain('flashshell:')
+describe('-a / -o: 2항은 단항, 3항 이상은 결합자로 거부 (docker 실측)', () => {
+  // docker: `[ -a FILE ]` 는 결합자가 아니라 파일 존재(-e) — `[ -a /etc/passwd ]`→0,
+  // `[ -a /nope ]`→1. `[ -o OPT ]` 는 셸 옵션 검사 — 꺼진/알 수 없는 옵션은 →1.
+  it('2항 -a FILE 은 파일 존재(-e)와 같다', async () => {
+    fs.writeFile('/home/player/f', 'x')
+    expect((await runTest('-a', 'f')).exitCode).toBe(0)    // 존재 → 0
+    expect((await runTest('-a', 'nope')).exitCode).toBe(1) // 없음 → 1
   })
-  it('-o 도 동일', async () => {
-    const out = await runTest('1', '-o', '0')
-    expect(out.exitCode).toBe(2)
-    expect(out.stderr).toContain('flashshell:')
+  it('2항 -o OPT 은 옵션 미모델링이라 항상 거짓(1)', async () => {
+    expect((await runTest('-o', 'errexit')).exitCode).toBe(1) // 꺼진 옵션 → 1
+    expect((await runTest('-o', 'zzz')).exitCode).toBe(1)     // 알 수 없는 옵션 → 1
+  })
+  it('3항 -a/-o (deprecated AND/OR 결합자)는 flashshell: 로 거부, exit 2', async () => {
+    const a = await runTest('1', '-a', '1')
+    expect(a.exitCode).toBe(2)
+    expect(a.stderr).toContain('flashshell:')
+    const o = await runTest('1', '-o', '0')
+    expect(o.exitCode).toBe(2)
+    expect(o.stderr).toContain('flashshell:')
   })
 })
 

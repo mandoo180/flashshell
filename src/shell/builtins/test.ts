@@ -7,8 +7,9 @@ import { ok, fail } from '../types'
  *   문자열: -z -n bare S1=S2 S1!=S2
  *   정수: -eq -ne -lt -le -gt -ge
  *   부정: ! EXPR
- * `-a`/`-o`(결합자)는 deprecated 라 서브셋 밖 — 만나면 flashshell: 로 거부한다(절대
- * 반쪽으로 -a 만 unary alias 로 흉내내지 않는다).
+ * 2-인자 `-a`/`-o` 는 결합자가 아니라 단항이다(bash): `-a FILE`=파일 존재(-e), `-o OPT`=
+ * 셸 옵션 검사 — `-a` 는 -e 로 구현, `-o` 는 옵션 미모델링이라 항상 거짓. 반면 3개 이상
+ * 인자의 `-a`/`-o` 는 deprecated AND/OR 결합자이며 서브셋 밖 — flashshell: 로 거부한다.
  *
  * 모든 exit code/문구는 docker debian:stable-slim bash 5.2.37 실측이다
  * (task-2-report.md 참고). bash 자신도 test/[ 오류를 "bash: <name>: ..." 프리픽스로
@@ -28,8 +29,9 @@ type Outcome = { kind: 'value'; truth: boolean } | { kind: 'error'; message: str
 const value = (truth: boolean): Outcome => ({ kind: 'value', truth })
 const error = (message: string): Outcome => ({ kind: 'error', message })
 
-/** bash 는 -a/-o 를 만나면 정상 평가하지만(deprecated 결합자), 우리 서브셋은 미구현이라
- *  절대 반쪽으로 흉내내지 않고 거부한다. */
+/** 3개 이상 인자의 -a/-o(deprecated AND/OR 결합자)를 거부한다. bash 는 정상 평가하지만
+ *  우리 서브셋은 미구현이라 절대 반쪽으로 흉내내지 않는다. (2-인자 단항 -a/-o 는 위
+ *  evalArgs 의 n===2 분기에서 따로 처리한다.) */
 const combinatorRejected = (e: CommandEnv): Outcome =>
   error(`flashshell: ${e.name}: -a/-o 결합자는 이 환경에서 지원하지 않습니다\n`)
 
@@ -118,7 +120,15 @@ function evalArgs(args: string[], e: CommandEnv): Outcome {
 
   if (n === 2) {
     const [op, operand] = args as [string, string]
-    if (op === '-a' || op === '-o') return combinatorRejected(e)
+    // bash 의 2-인자 -a/-o 는 "결합자"가 아니라 단항이다(docker 실측):
+    //   `-a FILE`    = 파일 존재(-e 의 동의어) → 0/1
+    //   `-o OPTNAME` = 셸 옵션 검사 → 0/1
+    // (-a/-o 의 deprecated 결합자 형태는 3개 이상 인자일 때만이며, 그건 아래에서 거부한다.)
+    if (op === '-a') return value(applyUnary('-e', operand, e))
+    // 셸 옵션을 모델링하지 않으므로 어떤 옵션도 미설정(거짓)으로 본다. docker: 옵션명이
+    // 아니거나 꺼진 옵션에 대해 `[ -o X ]` → 1 과 일치한다(기본-on 옵션은 어긋나지만
+    // L5 퍼즐에서 도달 불가).
+    if (op === '-o') return value(false)
     if (!UNARY_FILE_OPS.has(op) && !UNARY_STRING_OPS.has(op)) {
       return error(`bash: ${e.name}: ${op}: unary operator expected\n`)
     }
