@@ -33,7 +33,16 @@ export const xargs: CommandFn = async (e) => {
   if (!e.runLine) return { stdout: '', stderr: 'xargs: unavailable\n', exitCode: 1 }
   const args = [...e.args]
   let replace: string | undefined
-  if (args[0] === '-I') { replace = args[1]; args.splice(0, 2) }
+
+  // Handle -I flag: both -I REPL (separate) and -IREPL (attached) forms.
+  if (args[0] === '-I') {
+    replace = args[1]
+    args.splice(0, 2)
+  } else if (args[0]?.startsWith('-I') && args[0].length > 2) {
+    replace = args[0].slice(2)
+    args.splice(0, 1)
+  }
+
   const cmd = args.length > 0 ? args : ['echo']
 
   let stdout = ''

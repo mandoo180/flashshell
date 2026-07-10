@@ -11,16 +11,17 @@ beforeEach(() => {
   fs.writeFile('/w/b.log', 'bb\n')
   fs.writeFile('/w/sub/c.txt', 'ccc\n')
   fs.writeFile('/w/sub/d.log', 'd\n')
+  fs.writeFile('/w/items.txt', 'x\ny\n')
   sh = createShell({ fs, cwd: '/w', home: '/w' })
 })
 const out = async (line: string) => (await sh.exec(line)).stdout
 
 describe('find', () => {
   it('-name 글롭 (정렬해서 대조)', async () => {
-    expect(await out('find . -name "*.txt" | sort')).toBe('./a.txt\n./sub/c.txt\n')
+    expect(await out('find . -name "*.txt" | sort')).toBe('./a.txt\n./items.txt\n./sub/c.txt\n')
   })
   it('-type f', async () => {
-    expect(await out('find . -type f | sort')).toBe('./a.txt\n./b.log\n./sub/c.txt\n./sub/d.log\n')
+    expect(await out('find . -type f | sort')).toBe('./a.txt\n./b.log\n./items.txt\n./sub/c.txt\n./sub/d.log\n')
   })
   it('-type d', async () => { expect(await out('find . -type d | sort')).toBe('.\n./sub\n') })
   it('경로 인자', async () => { expect(await out('find sub | sort')).toBe('sub\nsub/c.txt\nsub/d.log\n') })
@@ -48,7 +49,7 @@ describe('find', () => {
     // docker: `find . -name "*"` 는 `.` 자신도 낸다 — bash 글롭(matchSegment)의
     // "선행 점은 * 에 안 걸림" 규칙과 다르다. find 는 dotglob 처럼 매치한다.
     expect(await out('find . -name "*" | sort')).toBe(
-      ['.', './a.txt', './b.log', './sub', './sub/c.txt', './sub/d.log'].sort().join('\n') + '\n',
+      ['.', './a.txt', './b.log', './items.txt', './sub', './sub/c.txt', './sub/d.log'].sort().join('\n') + '\n',
     )
   })
 
@@ -82,10 +83,10 @@ describe('find', () => {
 
 describe('xargs', () => {
   it('stdin 토큰을 명령 인자로', async () => {
-    expect(await out('find . -name "*.txt" | sort | xargs wc -l')).toBe('1 ./a.txt\n1 ./sub/c.txt\n2 total\n')
+    expect(await out('find . -name "*.txt" | sort | xargs wc -l')).toBe(' 1 ./a.txt\n 2 ./items.txt\n 1 ./sub/c.txt\n 4 total\n')
   })
   it('-I 로 줄마다 치환 실행', async () => {
-    expect(await out('find . -name "*.txt" | sort | xargs -I {} echo got {}')).toBe('got ./a.txt\ngot ./sub/c.txt\n')
+    expect(await out('find . -name "*.txt" | sort | xargs -I {} echo got {}')).toBe('got ./a.txt\ngot ./items.txt\ngot ./sub/c.txt\n')
   })
   it('CMD 생략 시 기본 echo', async () => {
     expect(await out('echo hi | xargs')).toBe('hi\n')
@@ -99,5 +100,17 @@ describe('xargs', () => {
   it('서브커맨드가 1~125 로 실패하면 xargs exit code 는 123 (GNU 실측)', async () => {
     const r = await sh.exec('echo hi | xargs false')
     expect(r.exitCode).toBe(123)
+  })
+  it('-I{} 붙인 형태로 줄마다 치환 실행 (GNU 와 동일)', async () => {
+    expect(await out('cat items.txt | xargs -I{} echo got {}')).toBe('got x\ngot y\n')
+  })
+  it('회귀: -I {} 띄어쓰기 형태도 계속 작동', async () => {
+    expect(await out('cat items.txt | xargs -I {} echo got {}')).toBe('got x\ngot y\n')
+  })
+  it('회귀: xargs echo 토큰 붙임', async () => {
+    expect(await out('cat items.txt | xargs echo')).toBe('x y\n')
+  })
+  it('회귀: xargs 기본 echo', async () => {
+    expect(await out('cat items.txt | xargs')).toBe('x y\n')
   })
 })
