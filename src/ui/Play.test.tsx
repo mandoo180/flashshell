@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, within, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { App } from './App'
@@ -54,6 +54,34 @@ describe('한 문제를 끝까지 푼다', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '문제 카드 펼치기' }))
     expect(screen.getByText('첫 접속')).toBeInTheDocument()
+  })
+})
+
+describe('NEXT 이후 포커스 (M1 최종 리뷰 Important 결함)', () => {
+  it('문제를 풀고 NEXT를 누르면 포커스가 터미널 입력으로 돌아온다', async () => {
+    // userEvent 대신 fireEvent 를 쓴다: startProblem/submit/nextProblem 은
+    // 세션 직렬화 큐를 통하는 비동기 함수라(signal.test.tsx 의 clickLevel1/
+    // submitWithFireEvent 주석 참고), fireEvent 로 동기 디스패치한 뒤
+    // act(async () => {}) 로 보류 중인 마이크로태스크를 확실히 다 돌려야
+    // 다음 단언 전에 스토어 갱신이 끝난다.
+    render(<App />)
+
+    fireEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+    await act(async () => {})
+
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'cat readme.txt' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await act(async () => {})
+
+    expect(await screen.findByRole('dialog', { name: '해설' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /NEXT/ }))
+    await act(async () => {})
+
+    // 다음 문제로 넘어간 뒤에도 role="textbox" 는 (리마운트가 아니라) 같은
+    // DOM 노드를 가리킨다 — 새로 얻은 참조로 다시 조회해 비교한다.
+    expect(document.activeElement).toBe(screen.getByRole('textbox'))
   })
 })
 

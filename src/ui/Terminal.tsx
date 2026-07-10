@@ -8,6 +8,12 @@ export interface TerminalProps {
   onSubmit(line: string): void
   completions?(partial: string): string[]
   disabled?: boolean
+  /**
+   * 현재 문제의 id. NEXT로 다음 문제로 넘어가는 것은 스토어만 바꿀 뿐
+   * Terminal을 리마운트하지 않으므로(autoFocus는 마운트 시 한 번만 발화),
+   * 이 값이 바뀔 때마다 아래 useEffect가 입력에 포커스를 되돌린다.
+   */
+  problemId?: string
 }
 
 function commonPrefix(items: string[]): string {
@@ -19,7 +25,7 @@ function commonPrefix(items: string[]): string {
   return prefix
 }
 
-export function Terminal({ lines, prompt, onSubmit, completions, disabled }: TerminalProps) {
+export function Terminal({ lines, prompt, onSubmit, completions, disabled, problemId }: TerminalProps) {
   const [value, setValue] = useState('')
   const [history, setHistory] = useState<string[]>([])
   const [cursor, setCursor] = useState(-1) // -1 = 히스토리 바깥, 편집 중
@@ -28,6 +34,14 @@ export function Terminal({ lines, prompt, onSubmit, completions, disabled }: Ter
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { bottomRef.current?.scrollIntoView() }, [lines, extra])
+
+  // NEXT로 다음 문제를 불러오는 것은 스토어 상태만 바꾸고 Terminal을
+  // 리마운트하지 않는다 — autoFocus는 최초 마운트 때 한 번만 발화하므로
+  // 그 뒤로는 이 useEffect가 문제 id가 바뀔 때마다 포커스를 되돌린다.
+  // startProblem은 status: 'playing'과 새 problem.id를 같은 set() 호출로
+  // 반영하므로, 이 effect가 실행되는 시점엔 input의 disabled가 이미
+  // 풀려 있다(비활성 상태에서 focus()를 부르면 조용히 no-op이 된다).
+  useEffect(() => { inputRef.current?.focus() }, [problemId])
 
   function handleKey(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Enter') {
