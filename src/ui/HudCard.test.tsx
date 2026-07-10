@@ -4,7 +4,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { App } from './App'
 import { useGame, setSessionFactory } from './store'
 import { LocalShellSession } from './session'
-import { HUD_CHROME_PX } from './HudCard'
 
 // jsdom 에는 ResizeObserver가 없다 — 최소 스텁으로 대체해 HudCard의 useEffect가
 // `new ResizeObserver(...)`를 부를 때 죽지 않게 하고, 콜백을 테스트가 직접
@@ -22,16 +21,26 @@ class ResizeObserverMock implements ResizeObserver {
     ResizeObserverMock.instances.push(this)
   }
 
-  // 실제 ResizeObserver가 레이아웃 변화를 감지해 부르는 콜백을, 테스트에서
-  // "높이 X로 리사이즈됐다"고 가정하고 수동으로 발화시킨다.
-  fire(height: number) {
-    const entry = { contentRect: { height } } as ResizeObserverEntry
+  // 실제 ResizeObserver가 레이아웃 변화를 감지해 부르는 콜백을 수동 발화시킨다.
+  // HudCard 의 measure()는 entry 가 아니라 hud 노드의 offsetTop/offsetHeight 를
+  // 직접 읽으므로, 여기서 넘기는 entry 는 형식만 맞춘 더미다(값은 무시된다).
+  fire() {
+    const entry = { contentRect: { height: 0 } } as ResizeObserverEntry
     this.callback([entry], this)
   }
 }
 
 function getHudHeightVar(): string {
   return document.documentElement.style.getPropertyValue('--hud-height')
+}
+
+// jsdom 은 레이아웃 엔진이 없어 offsetTop/offsetHeight 가 항상 0 이다. HudCard 의
+// measure() 가 이 둘을 읽어 합을 쓰는지 검증하려면 실제 렌더된 값을 흉내 내야 하므로,
+// .hud 노드에 직접 정의해 준다(실측 픽셀 값은 e2e 가 진짜 브라우저에서 검증한다).
+function setHudBox(offsetTop: number, offsetHeight: number) {
+  const hud = document.querySelector('.hud') as HTMLElement
+  Object.defineProperty(hud, 'offsetTop', { configurable: true, value: offsetTop })
+  Object.defineProperty(hud, 'offsetHeight', { configurable: true, value: offsetHeight })
 }
 
 beforeEach(() => {
@@ -66,30 +75,32 @@ describe('HudCard: --hud-height 측정', () => {
     expect(observer.observedTargets[0]).toBe(document.querySelector('.hud'))
   })
 
-  it('ResizeObserver 콜백이 발화하면 --hud-height를 실측값 + HUD 여백으로 쓴다', async () => {
+  it('콜백이 발화하면 --hud-height를 hud의 offsetTop+offsetHeight(실측 하단)로 쓴다', async () => {
     await goToLevel1()
-    const observer = ResizeObserverMock.instances[0]!
+    setHudBox(16, 150)
 
-    observer.fire(150)
+    ResizeObserverMock.instances[0]!.fire()
 
-    expect(getHudHeightVar()).toBe(`${150 + HUD_CHROME_PX}px`)
+    expect(getHudHeightVar()).toBe('166px') // 16 + 150
   })
 
   it('힌트를 펼쳐 카드가 자라면(다음 리사이즈 발화) --hud-height가 갱신된다', async () => {
     await goToLevel1()
     const observer = ResizeObserverMock.instances[0]!
 
-    observer.fire(150) // 힌트 펼치기 전 높이
+    setHudBox(16, 150)
+    observer.fire()
     const before = getHudHeightVar()
 
     await userEvent.click(screen.getByRole('button', { name: 'HINT' }))
     // 실제 브라우저라면 힌트 문단이 추가돼 레이아웃이 자라며 ResizeObserver가
-    // 스스로 재발화한다 — jsdom은 레이아웃이 없으므로 "더 커진 높이"로 다시
-    // 발화됐다고 가정하고 그 콜백을 수동으로 트리거한다.
-    observer.fire(200)
+    // 스스로 재발화한다 — jsdom은 레이아웃이 없으므로 "더 커진 높이"로 바꿔 놓고
+    // 그 콜백을 수동으로 트리거한다.
+    setHudBox(16, 200)
+    observer.fire()
     const after = getHudHeightVar()
 
-    expect(after).toBe(`${200 + HUD_CHROME_PX}px`)
+    expect(after).toBe('216px') // 16 + 200
     expect(after).not.toBe(before)
   })
 
