@@ -22,6 +22,12 @@ interface RunCtx {
   fs: VFS
   state: ShellState
   budget: { remaining: number }
+  /**
+   * $1..$9 / $@ / $* / $# 의 재료 (인덱스 0 = $1). state(cwd/env)와 달리 ShellState에
+   * 두지 않고 RunCtx에 둔다 — 함수 호출(Task 7)마다 통째로 교체되는 실행-국소적
+   * 값이라 cwd/env처럼 "셸에 영구히 남는 상태"와 성격이 다르다.
+   */
+  positional: string[]
 }
 
 function spend(ctx: RunCtx): void {
@@ -34,9 +40,19 @@ function spend(ctx: RunCtx): void {
  * 스텝 예산은 무한루프 방어이므로 서브셸이라고 새로 채워지면 안 된다.
  * 명령치환(runSubshell)과, 2개 이상 단계인 파이프라인의 각 단계가 이 함수를 쓴다 —
  * 두 경우 모두 "이 실행이 바깥 셸의 cwd/env 를 못 바꾼다"는 같은 규칙이다.
+ *
+ * positional 도 (env 처럼) 얕은 복사 배열을 새로 뜬다 — 지금은 아무도 이 배열을
+ * 바꾸지 않지만, Task 7(함수 호출)이 자식 컨텍스트 안에서 positional 을 통째로
+ * 교체(swap)하게 될 때 부모 배열이 오염되면 안 된다. 참조를 공유하면 자식이
+ * push/splice 로 부모 배열을 직접 건드릴 여지가 생기므로, 여기서 항상 새 배열을 만든다.
  */
 function childCtx(ctx: RunCtx): RunCtx {
-  return { fs: ctx.fs, state: { ...ctx.state, env: { ...ctx.state.env } }, budget: ctx.budget }
+  return {
+    fs: ctx.fs,
+    state: { ...ctx.state, env: { ...ctx.state.env } },
+    budget: ctx.budget,
+    positional: [...ctx.positional],
+  }
 }
 
 function expandCtxFor(ctx: RunCtx): ExpandCtx {
@@ -46,6 +62,7 @@ function expandCtxFor(ctx: RunCtx): ExpandCtx {
     home: ctx.state.home,
     fs: ctx.fs,
     lastExitCode: ctx.state.lastExitCode,
+    positional: ctx.positional,
     // 서브셸은 같은 VFS와 예산을 공유하되, cwd/env 변경은 밖으로 새지 않는다.
     runSubshell: async (script) => {
       const child = childCtx(ctx)
@@ -288,8 +305,14 @@ async function runList(node: ListNode, ctx: RunCtx): Promise<ExecResult> {
   return { stdout, stderr, exitCode }
 }
 
-export async function run(line: string, fs: VFS, state: ShellState, stepBudget: number): Promise<ExecResult> {
-  const ctx: RunCtx = { fs, state, budget: { remaining: stepBudget } }
+export async function run(
+  line: string,
+  fs: VFS,
+  state: ShellState,
+  stepBudget: number,
+  positional: string[] = [],
+): Promise<ExecResult> {
+  const ctx: RunCtx = { fs, state, budget: { remaining: stepBudget }, positional }
   let ast: ListNode
   try {
     ast = parse(line)

@@ -9,6 +9,8 @@ export interface ExpandCtx {
   home: string
   fs: VFS
   lastExitCode: number
+  /** $1..$9 / $@ / $* / $# 의 재료. 인덱스 0 = $1. Task 7(함수)·8(source)·9(shebang)가 세팅한다. */
+  positional: string[]
   runSubshell(script: string): Promise<{ stdout: string; stderr: string; exitCode: number }>
 }
 
@@ -28,6 +30,16 @@ function append(field: Field, text: string, quoted: boolean): void {
 }
 
 const IFS = [' ', '\t', '\n']
+
+/**
+ * $N / ${N} 하나를 읽는다. $0 은 스크립트/함수명 자리인데 지금은 항상 빈 문자열이다
+ * (Task 7/8/9가 실제 값을 채운다 — positional 배열과는 별개 개념이다). $1은
+ * positional[0], 배열 범위를 벗어나면(미설정) 빈 문자열 — 미설정 변수와 동일하게 취급한다.
+ */
+function positionalAt(ctx: ExpandCtx, n: number): string {
+  if (n === 0) return ''
+  return ctx.positional[n - 1] ?? ''
+}
 
 /** $VAR, ${VAR}, $?, $(...) 를 치환한다. protectedResult 면 결과 문자는 따옴표 보호를 받는다. */
 async function expandDollar(source: string, protectedResult: boolean, field: Field, ctx: ExpandCtx): Promise<void> {
@@ -59,19 +71,44 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
       continue
     }
 
-    // ${NAME}
+    // ${NAME} / ${N} (두 자리 이상 포함, 예: ${10})
     if (source[i + 1] === '{') {
       const close = source.indexOf('}', i + 2)
       if (close === -1) { append(field, ch, protectedResult); i++; continue }
       const name = source.slice(i + 2, close)
-      append(field, ctx.env[name] ?? '', protectedResult)
+      const value = /^[0-9]+$/.test(name) ? positionalAt(ctx, Number(name)) : (ctx.env[name] ?? '')
+      append(field, value, protectedResult)
       i = close + 1
       continue
     }
 
-    // $NAME — 위치 매개변수($1 등)는 M1 범위 밖이다. 이름 정규식이 숫자로 시작하는
-    // 것을 애초에 매치하지 않으므로 $1은 아래 "매치 실패" 경로로 빠져 리터럴 $1로
-    // 남는다. 크래시하지 않는다.
+    // $#, $@, $*, $0..$9 — 위치 매개변수. 이름 정규식(문자로 시작)보다 먼저 잡아야
+    // 한다. 안 그러면 숫자/기호로 시작하는 이 이름들은 아래 이름 regex를 통과 못 해
+    // 리터럴 $1 등으로 흘러버린다 (M1 시절 동작 — task 3부터 실제 확장 대상이다).
+    const posChar = source[i + 1]
+    if (posChar === '#') {
+      append(field, String(ctx.positional.length), protectedResult)
+      i += 2
+      continue
+    }
+    if (posChar === '@' || posChar === '*') {
+      // 기본형만 구현한다: 공백(IFS 첫 글자)으로 조인한 뒤, 그 결과를 기존
+      // append/splitFields 경로에 그대로 태운다 — 따옴표 없는 $@/$*는 자연히
+      // 인자별로 재분할되고(splitFields가 공백에서 쪼갠다), 따옴표 붙은 "$@"/"$*"는
+      // 둘 다 공백-조인 단일 필드가 된다. "$@"의 진짜 bash 동작(인자마다 개별
+      // 필드로 보존 — 인자 내부에 공백이 있어도 안 쪼개짐)은 여기 구현과 다르다.
+      // 이 정밀 동작은 M3/Layer-3로 미룬다 — 지금은 크래시 없이 기본형으로만 동작.
+      append(field, ctx.positional.join(IFS[0]!), protectedResult)
+      i += 2
+      continue
+    }
+    if (posChar !== undefined && posChar >= '0' && posChar <= '9') {
+      append(field, positionalAt(ctx, Number(posChar)), protectedResult)
+      i += 2
+      continue
+    }
+
+    // $NAME
     const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(i + 1))
     if (!match) { append(field, ch, protectedResult); i++; continue }
     append(field, ctx.env[match[0]] ?? '', protectedResult)

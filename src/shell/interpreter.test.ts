@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createShell } from './index'
+import { run } from './interpreter'
 import { VFS } from './vfs'
 import { VfsError } from './errors'
-import type { Shell } from './types'
+import type { Shell, ShellState } from './types'
 
 let fs: VFS
 let sh: Shell
@@ -393,6 +394,49 @@ describe('exec 은 절대 reject 하지 않는다 (trap 12)', () => {
     } finally {
       fs.readdir = original
     }
+  })
+})
+
+describe('위치 매개변수 (task 3) — run() 에 positional 을 직접 주입', () => {
+  // docker: debian:stable-slim bash -c 'set -- a b c; echo $1 $#; echo "$*"; echo $@'
+  //   => "a 3", "a b c", "a b c"
+  function freshState(): ShellState {
+    return { cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' }, lastExitCode: 0, home: '/home/player' }
+  }
+
+  it('$1 $2 가 인자로 치환된다', async () => {
+    const r = await run('echo $1 $2', fs, freshState(), 100_000, ['a', 'b'])
+    expect(r).toEqual({ stdout: 'a b\n', stderr: '', exitCode: 0 })
+  })
+
+  it('$# 는 위치 인자 개수', async () => {
+    const r = await run('echo $#', fs, freshState(), 100_000, ['a', 'b', 'c'])
+    expect(r.stdout).toBe('3\n')
+  })
+
+  it('"$*" 는 스페이스로 조인된 한 단어', async () => {
+    const r = await run('echo "$*"', fs, freshState(), 100_000, ['a', 'b'])
+    expect(r.stdout).toBe('a b\n')
+  })
+
+  it('$@ 는 따옴표 없이 쓰이면 인자별로 단어분할된다', async () => {
+    const r = await run('echo $@', fs, freshState(), 100_000, ['x', 'y'])
+    expect(r.stdout).toBe('x y\n')
+  })
+
+  it('${1}0 은 ${1} 확장 뒤 리터럴 0 이 그대로 이어붙는다', async () => {
+    const r = await run('echo ${1}0', fs, freshState(), 100_000, ['7'])
+    expect(r.stdout).toBe('70\n')
+  })
+
+  it('positional 이 빈 배열이면 $1 은 미설정 변수처럼 빈 문자열(단어가 사라져 빈 줄)', async () => {
+    const r = await run('echo $1', fs, freshState(), 100_000, [])
+    expect(r.stdout).toBe('\n')
+  })
+
+  it('positional 인자를 생략하면 기본값은 빈 배열 (5번째 인자는 선택)', async () => {
+    const r = await run('echo [$1]', fs, freshState(), 100_000)
+    expect(r.stdout).toBe('[]\n')
   })
 })
 

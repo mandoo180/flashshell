@@ -22,6 +22,7 @@ beforeEach(() => {
     home: '/home/player',
     fs,
     lastExitCode: 0,
+    positional: [],
     runSubshell: async (script) => ({ stdout: `<${script}>`, stderr: '', exitCode: 0 }),
   }
 })
@@ -46,8 +47,10 @@ describe('expandWord — 변수', () => {
   it('큰따옴표 안에서는 확장한다', async () => {
     expect(await expandWord(wordOf('"$NAME"'), ctx)).toEqual(['world'])
   })
-  it('$1 (positional, M1 범위 밖) 은 크래시 없이 리터럴 $1로 남는다', async () => {
-    expect(await expandWord(wordOf('$1'), ctx)).toEqual(['$1'])
+  it('$1 은 positional이 비어 있으면(M1 시절과 달리 이제는 실제 확장 대상) 미설정 변수처럼 빈 문자열 취급이라 단어가 사라진다 (task 3)', async () => {
+    // M1에서는 이름 regex가 숫자를 안 잡아 리터럴 $1로 남았다. task 3부터 $1은 실제
+    // 위치 매개변수로 확장된다 — positional이 비어 있으면 $NOPE와 동일하게 취급된다.
+    expect(await expandWord(wordOf('$1'), ctx)).toEqual([])
   })
   it('유효한 이름이 뒤따르지 않는 외로운 $ 는 리터럴로 남는다', async () => {
     expect(await expandWord(wordOf('a$'), ctx)).toEqual(['a$'])
@@ -169,6 +172,44 @@ describe('expandWord — 글롭', () => {
     // 내지만, 메커니즘은 다르다(brief는 애초에 글롭 시도조차 하지 않는다). 이 테스트는
     // 그 알려진 한계를 고정한다 — bash와 일치시키는 "수정"은 여기서 하지 않는다.
     expect(await expandWord(wordOf('"*"*'), ctx)).toEqual(['**'])
+  })
+})
+
+describe('expandWord — 위치 매개변수 (task 3)', () => {
+  // docker: debian:stable-slim bash -c 'set -- a b c; echo $1 $#; echo "$*"; echo $@' => a 3 / a b c / a b c
+  it('$1 $2 가 각 위치 인자로 치환된다', async () => {
+    ctx.positional = ['a', 'b']
+    expect(await expandWord(wordOf('$1'), ctx)).toEqual(['a'])
+    expect(await expandWord(wordOf('$2'), ctx)).toEqual(['b'])
+  })
+  it('${N} (두 자리 포함) 을 치환한다', async () => {
+    ctx.positional = ['7']
+    expect(await expandWord(wordOf('${1}0'), ctx)).toEqual(['70'])
+  })
+  it('"$*" 는 IFS 첫 글자(스페이스)로 조인된 단일 필드', async () => {
+    ctx.positional = ['a', 'b']
+    expect(await expandWord(wordOf('"$*"'), ctx)).toEqual(['a b'])
+  })
+  it('$@ 는 따옴표 없이 쓰이면 인자별로 단어분할된다 (splitFields 재사용)', async () => {
+    ctx.positional = ['x', 'y']
+    expect(await expandWord(wordOf('$@'), ctx)).toEqual(['x', 'y'])
+  })
+  it('$0 은 지금은 빈 문자열 (스크립트/함수명은 Task 7/8/9가 세팅)', async () => {
+    ctx.positional = ['a', 'b']
+    expect(await expandWord(wordOf('$0'), ctx)).toEqual([])
+  })
+  it('미설정 위치인자($1, positional=[])는 빈 문자열이고 단어가 사라진다', async () => {
+    ctx.positional = []
+    expect(await expandWord(wordOf('$1'), ctx)).toEqual([])
+  })
+  it('$# 는 정확한 개수 문자열을 낸다', async () => {
+    ctx.positional = ['a', 'b', 'c']
+    expect(await expandWord(wordOf('$#'), ctx)).toEqual(['3'])
+  })
+  it('${10} 은 10번째 위치 인자를 가리킨다', async () => {
+    ctx.positional = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11']
+    expect(await expandWord(wordOf('${10}'), ctx)).toEqual(['10'])
+    expect(await expandWord(wordOf('${11}'), ctx)).toEqual(['11'])
   })
 })
 
