@@ -766,3 +766,141 @@ describe('registry 통합 — cat 이 등록되어 있다', () => {
     expect((await sh.exec('echo hi | cat')).stdout).toBe('hi\n')
   })
 })
+
+describe('함수 / 브레이스 그룹 / return (task 7, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('함수 정의 후 호출: 위치인자가 $1 로 전달된다', async () => {
+    // docker: greet() { echo hi $1; }; greet bob → hi bob
+    expect((await sh.exec('greet() { echo hi $1; }; greet bob')).stdout).toBe('hi bob\n')
+  })
+
+  it('return N 은 함수의 exit code 가 된다', async () => {
+    // docker: f() { return 3; }; f; echo $? → 3
+    expect((await sh.exec('f() { return 3; }; f; echo $?')).stdout).toBe('3\n')
+  })
+
+  it('return 은 본문의 나머지를 건너뛴다 (return 뒤 명령은 안 돈다)', async () => {
+    // docker: f() { echo x; return; echo y; }; f → x (y 없음)
+    expect((await sh.exec('f() { echo x; return; echo y; }; f')).stdout).toBe('x\n')
+  })
+
+  it('echo 뒤 return 은 그 echo 출력을 보존하고 exit code 를 싣는다', async () => {
+    // docker: f() { echo x; return 2; echo y; }; f; echo end=$? → x\nend=2
+    expect((await sh.exec('f() { echo x; return 2; echo y; }; f; echo end=$?')).stdout).toBe('x\nend=2\n')
+  })
+
+  it('return 무인자는 함수 본문 마지막 명령의 exit code 를 쓴다', async () => {
+    // docker: f() { false; return; }; f; echo $? → 1
+    expect((await sh.exec('f() { false; return; }; f; echo $?')).stdout).toBe('1\n')
+  })
+
+  it('return 코드는 0..255 로 감싼다', async () => {
+    // docker: return 300 → 44, return -1 → 255
+    expect((await sh.exec('f() { return 300; }; f; echo $?')).stdout).toBe('44\n')
+    expect((await sh.exec('g() { return -1; }; g; echo $?')).stdout).toBe('255\n')
+  })
+
+  it('함수는 새 env 를 안 뜬다 — 함수 안의 대입이 호출자에게 남는다', async () => {
+    // docker: setx() { x=5; }; setx; echo $x → 5
+    expect((await sh.exec('setx() { x=5; }; setx; echo $x')).stdout).toBe('5\n')
+  })
+
+  it('위치인자는 호출 동안만 바뀌고 끝나면 복원된다', async () => {
+    // docker: f() { echo $1; }; f a; echo done$1 → a\ndone (밖 $1 은 빈 문자열)
+    expect((await sh.exec('f() { echo $1; }; f a; echo done$1')).stdout).toBe('a\ndone\n')
+  })
+
+  it('중첩 함수: 안쪽 호출이 자기 $1 을 보고, 바깥 $1 은 복원된다', async () => {
+    // docker: outer() { inner() { echo $1; }; inner z; echo $1; }; outer q → z\nq
+    expect((await sh.exec('outer() { inner() { echo $1; }; inner z; echo $1; }; outer q')).stdout).toBe('z\nq\n')
+  })
+
+  it('함수 안에서 정의한 함수는 전역이라 호출 후에도 보인다', async () => {
+    // docker: f() { g() { echo inner; }; }; f; g → inner
+    expect((await sh.exec('f() { g() { echo inner; }; }; f; g')).stdout).toBe('inner\n')
+  })
+
+  it('function 예약어 형태 (괄호 없이)', async () => {
+    // docker: function hi { echo yo; }; hi → yo
+    expect((await sh.exec('function hi { echo yo; }; hi')).stdout).toBe('yo\n')
+  })
+
+  it('function 예약어 + 괄호 형태', async () => {
+    // docker: function greet() { echo hi; }; greet → hi
+    expect((await sh.exec('function greet() { echo hi; }; greet')).stdout).toBe('hi\n')
+  })
+
+  it('NAME () (이름과 () 사이 공백) 형태', async () => {
+    // docker: greet ()  { echo spaced; }; greet → spaced
+    expect((await sh.exec('greet ()  { echo spaced; }; greet')).stdout).toBe('spaced\n')
+  })
+
+  it('NAME( ) (괄호 사이 공백) 형태', async () => {
+    // docker: greet( ) { echo p1; }; greet → p1
+    expect((await sh.exec('greet( ) { echo p1; }; greet')).stdout).toBe('p1\n')
+  })
+
+  it('멀티라인 함수 정의', async () => {
+    const r = await sh.exec('f() {\n  echo one\n  echo two\n}\nf')
+    expect(r.stdout).toBe('one\ntwo\n')
+  })
+
+  it('함수는 동명의 coreutil/빌트인을 가린다 (bash 우선순위)', async () => {
+    // docker: ls() { echo faked; }; ls → faked
+    expect((await sh.exec('ls() { echo faked; }; ls')).stdout).toBe('faked\n')
+  })
+
+  it('브레이스 그룹은 LIST 를 순서대로 실행한다', async () => {
+    // docker: { echo a; echo b; } → a\nb
+    expect((await sh.exec('{ echo a; echo b; }')).stdout).toBe('a\nb\n')
+  })
+
+  it('브레이스 그룹은 서브셸이 아니라 현재 env 를 공유한다', async () => {
+    // docker: { x=7; }; echo $x → 7
+    expect((await sh.exec('{ x=7; }; echo $x')).stdout).toBe('7\n')
+    // docker: x=1; { x=2; y=3; }; echo $x $y → 2 3
+    expect((await sh.exec('x=1; { x=2; y=3; }; echo $x $y')).stdout).toBe('2 3\n')
+  })
+
+  it('return 은 (함수 안) 브레이스 그룹을 뚫고 함수 전체를 벗어난다', async () => {
+    // docker: f() { echo a; { echo b; return; echo c; }; echo d; }; f → a\nb
+    expect((await sh.exec('f() { echo a; { echo b; return; echo c; }; echo d; }; f')).stdout).toBe('a\nb\n')
+  })
+
+  it('함수 밖 return 은 경고만 내고 리스트는 계속 진행한다 (exit 은 다음 명령이 결정)', async () => {
+    // docker: return 2; echo after → (stderr 경고) after, exit 0
+    const r = await sh.exec('return 2; echo after')
+    expect(r.stdout).toBe('after\n')
+    expect(r.exitCode).toBe(0)
+    expect(r.stderr).toContain("can only `return'")
+  })
+
+  it('함수 밖 return 단독은 exit 2 (bash 확인)', async () => {
+    // docker: return 5 → 경고, exit 2
+    const r = await sh.exec('return 5')
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toContain("can only `return'")
+  })
+
+  it('{ echo } (구분자 없음) 는 문법 오류다 (bash 도 unexpected EOF)', async () => {
+    const r = await sh.exec('{ echo }')
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toMatch(/syntax error/)
+  })
+
+  it('무한 재귀 함수는 스텝 예산을 소진해 exit 130 이지, JS 크래시가 아니다', async () => {
+    const tiny = createShell({ fs, cwd: '/home/player', home: '/home/player', stepBudget: 5000 })
+    const r = await tiny.exec('f() { f; }; f')
+    expect(r.exitCode).toBe(130)
+    expect(r.stderr).toContain('실행 한도 초과')
+  })
+
+  it('함수 재정의는 최신 정의로 덮어쓴다', async () => {
+    // docker: f() { echo one; }; f() { echo two; }; f → two
+    expect((await sh.exec('f() { echo one; }; f() { echo two; }; f')).stdout).toBe('two\n')
+  })
+
+  it('함수 안 루프의 break 는 그 루프만 벗어나고 함수는 정상 반환한다', async () => {
+    // docker: f() { for i in a b c; do echo $i; break; done; echo end; }; f → a\nend
+    expect((await sh.exec('f() { for i in a b c; do echo $i; break; done; echo end; }; f')).stdout).toBe('a\nend\n')
+  })
+})

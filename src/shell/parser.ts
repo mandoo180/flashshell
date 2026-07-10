@@ -55,10 +55,31 @@ export interface CaseNode {
 }
 
 /**
- * 파이프라인의 한 단계가 될 수 있는 명령. 단순 명령 + 복합 명령의 유니온이다.
- * `kind` 로 판별한다. Task 7(function)이 여기에 kind 를 더 추가한다.
+ * `NAME () { LIST; }` / `function NAME [()] { LIST; }`. 함수 정의는 실행 시점에 body 를
+ * 돌리지 않고 이름→body(ListNode)를 functions 맵에 등록만 한다(exit 0). body 는 브레이스
+ * 그룹의 내부 리스트다 — 정의 자체는 새 실행/파싱 프리미티브 없이 parseList 를 재사용한다.
  */
-export type Command = CommandNode | IfNode | WhileNode | ForNode | CaseNode
+export interface FunctionDefNode {
+  kind: 'funcdef'
+  name: string
+  body: ListNode
+}
+
+/**
+ * `{ LIST; }` 브레이스 그룹. 서브셸이 아니라 **현재 ctx** 에서 LIST 를 실행한다(env/cwd
+ * 변경이 그대로 남는다 — docker 확인: `{ x=7; }; echo $x` → 7). `( )` 서브셸 그룹은 3층
+ * 이라 이 태스크 범위 밖이다.
+ */
+export interface GroupNode {
+  kind: 'group'
+  body: ListNode
+}
+
+/**
+ * 파이프라인의 한 단계가 될 수 있는 명령. 단순 명령 + 복합 명령의 유니온이다.
+ * `kind` 로 판별한다.
+ */
+export type Command = CommandNode | IfNode | WhileNode | ForNode | CaseNode | FunctionDefNode | GroupNode
 
 export interface PipelineNode { kind: 'pipeline'; commands: Command[] }
 
@@ -81,7 +102,11 @@ function syntaxError(near: string): never {
  */
 const RESERVED_WORDS = new Set([
   'if', 'then', 'elif', 'else', 'fi', 'while', 'until', 'do', 'done', 'for', 'in', 'case', 'esac',
+  'function', '{', '}',
 ])
+
+// 함수 정의 이름으로 쓸 수 있는 식별자. `NAME`, `NAME(`, `NAME()` 판정에 공유한다.
+const FUNC_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 /**
  * 단어가 "raw 조각 하나짜리 bare 단어"면 그 텍스트를, 아니면 null 을 준다. 따옴표가
@@ -279,7 +304,11 @@ class Parser {
     return { kind: 'pipeline', commands }
   }
 
-  /** 첫 토큰이 bare 예약어(if/while/until/for/case)면 복합 명령, 아니면 단순 명령. */
+  /**
+   * 첫 토큰이 bare 예약어(if/while/until/for/case/function/`{`)면 복합 명령, 아니면 단순
+   * 명령. 단, `function` 예약어가 없어도 `NAME ()` 형태(첫 단어 뒤에 `()`)면 함수 정의로
+   * 분기한다 — matchFuncDefName 이 토큰을 소비하지 않고 앞을 훑어 판정한다.
+   */
   private parseCommandOrCompound(): Command {
     switch (this.peekKeyword()) {
       case 'if': return this.parseIf()
@@ -287,8 +316,100 @@ class Parser {
       case 'until': return this.parseWhile(true)
       case 'for': return this.parseFor()
       case 'case': return this.parseCase()
-      default: return this.parseCommand()
+      case 'function': return this.parseFunctionKeyword()
+      case '{': return this.parseGroup()
+      default: {
+        const fd = this.matchFuncDefName()
+        if (fd) {
+          for (let k = 0; k < fd.consume; k++) this.next()
+          return this.finishFunctionDef(fd.name)
+        }
+        return this.parseCommand()
+      }
     }
+  }
+
+  /**
+   * 현재 위치가 `NAME ()` (함수 정의 헤더)로 시작하는지 토큰을 소비하지 않고 앞을 훑어
+   * 판정한다. `(`/`)` 는 렉서 연산자가 아니라(OPERATORS 에 없음) 인접 raw 텍스트에
+   * 흡수되므로(task 6 의 case 패턴과 같은 문제), 공백 유무에 따라 갈라지는 여러 토큰
+   * 형태를 모두 받는다 — docker 로 전부 유효함을 확인했다:
+   *   `f()`     → 한 토큰 raw "f()"            (consume 1)
+   *   `f ()`    → raw "f", raw "()"            (consume 2)
+   *   `f( )`    → raw "f(", raw ")"            (consume 2)
+   *   `f ( )`   → raw "f", raw "(", raw ")"    (consume 3)
+   * 매치되면 {name, consume(토큰 수)} 를, 아니면 null 을 준다(→ 일반 단순 명령).
+   */
+  private matchFuncDefName(): { name: string; consume: number } | null {
+    const w0 = this.rawAt(0)
+    if (w0 === null) return null
+
+    // `NAME()` — 한 토큰 안에 `()` 까지 붙어 있음.
+    let m = /^([A-Za-z_][A-Za-z0-9_]*)\(\)$/.exec(w0)
+    if (m) return { name: m[1]!, consume: 1 }
+
+    // `NAME(` — 여는 괄호까지 붙고, 닫는 `)` 는 다음 토큰.
+    m = /^([A-Za-z_][A-Za-z0-9_]*)\($/.exec(w0)
+    if (m) return this.rawAt(1) === ')' ? { name: m[1]!, consume: 2 } : null
+
+    // 순수 `NAME` — `()` / `(` `)` 가 뒤따르는지 본다.
+    if (!FUNC_NAME_RE.test(w0)) return null
+    const w1 = this.rawAt(1)
+    if (w1 === '()') return { name: w0, consume: 2 }
+    if (w1 === '(') return this.rawAt(2) === ')' ? { name: w0, consume: 3 } : null
+    return null
+  }
+
+  /** pos+offset 토큰이 raw 조각 하나짜리 WORD 면 그 텍스트, 아니면 null. */
+  private rawAt(offset: number): string | null {
+    const t = this.tokens[this.pos + offset]
+    return t && t.type === 'WORD' ? bareWord(t.word) : null
+  }
+
+  /**
+   * `function` 예약어로 시작하는 함수 정의. bash 는 이 형태에서 `()` 를 생략할 수 있다
+   * (`function hi { ...; }`) — docker 확인. `()` 가 있으면(`function hi() { ...; }`)
+   * matchFuncDefName 이 이름과 함께 소비한다.
+   */
+  private parseFunctionKeyword(): FunctionDefNode {
+    this.expectKeyword('function')
+    const fd = this.matchFuncDefName()
+    let name: string
+    if (fd) {
+      name = fd.name
+      for (let k = 0; k < fd.consume; k++) this.next()
+    } else {
+      const nm = this.rawAt(0)
+      if (nm === null || !FUNC_NAME_RE.test(nm)) syntaxError('function')
+      name = nm
+      this.next()
+    }
+    return this.finishFunctionDef(name)
+  }
+
+  /**
+   * 함수 이름과 `()` 를 소비한 뒤(호출부 책임), body 브레이스 그룹을 읽어 노드를 만든다.
+   * `()` 와 `{` 사이의 개행-유래 `;`(예: `f()\n{ ... }`) 는 skipSeparators() 로 걷어낸다
+   * (docker 확인: 멀티라인 정의 유효). body 는 반드시 브레이스 그룹이어야 한다 — bash 는
+   * 다른 복합 명령도 body 로 받지만, 이 태스크는 `{ }` 그룹으로 한정한다.
+   */
+  private finishFunctionDef(name: string): FunctionDefNode {
+    this.skipSeparators()
+    if (this.peekKeyword() !== '{') syntaxError('{')
+    return { kind: 'funcdef', name, body: this.parseBraceGroupList() }
+  }
+
+  /** `{ LIST; }` 의 내부 LIST 를 읽는다(중괄호 소비 포함). 그룹/함수 body 가 공유한다. */
+  private parseBraceGroupList(): ListNode {
+    this.expectKeyword('{')
+    this.skipSeparators()
+    const body = this.parseList(new Set(['}']))
+    this.expectKeyword('}')
+    return body
+  }
+
+  private parseGroup(): GroupNode {
+    return { kind: 'group', body: this.parseBraceGroupList() }
   }
 
   private parseIf(): IfNode {

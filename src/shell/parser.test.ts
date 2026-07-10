@@ -507,3 +507,66 @@ describe('parse', () => {
     })
   })
 })
+
+describe('함수 정의 / 브레이스 그룹 (task 7)', () => {
+  function firstCompound(input: string) {
+    return parse(input).items[0]!.pipeline.commands[0]!
+  }
+
+  it('NAME() { LIST; } 를 funcdef 노드로 파싱한다', () => {
+    const c = firstCompound('greet() { echo hi; }')
+    expect(c.kind).toBe('funcdef')
+    if (c.kind !== 'funcdef') throw new Error('not funcdef')
+    expect(c.name).toBe('greet')
+    expect(c.body.items).toHaveLength(1)
+    expect(c.body.items[0]!.pipeline.commands[0]!.kind).toBe('command')
+  })
+
+  it('여러 () 스페이싱 형태가 모두 같은 funcdef AST 를 만든다', () => {
+    const canonical = parse('f() { echo hi; }')
+    expect(parse('f () { echo hi; }')).toEqual(canonical)
+    expect(parse('f( ) { echo hi; }')).toEqual(canonical)
+    expect(parse('f ( ) { echo hi; }')).toEqual(canonical)
+  })
+
+  it('function 예약어 형태(괄호 유무 둘 다)를 파싱한다', () => {
+    const c1 = firstCompound('function hi { echo yo; }')
+    expect(c1.kind).toBe('funcdef')
+    if (c1.kind === 'funcdef') expect(c1.name).toBe('hi')
+    const c2 = firstCompound('function hi() { echo yo; }')
+    expect(c2.kind).toBe('funcdef')
+    if (c2.kind === 'funcdef') expect(c2.name).toBe('hi')
+  })
+
+  it('멀티라인 함수 정의는 한 줄 버전과 같은 AST 다', () => {
+    expect(parse('f() {\n  echo one\n  echo two\n}')).toEqual(parse('f() { echo one; echo two; }'))
+  })
+
+  it('{ LIST; } 를 group 노드로 파싱한다', () => {
+    const c = firstCompound('{ echo a; echo b; }')
+    expect(c.kind).toBe('group')
+    if (c.kind !== 'group') throw new Error('not group')
+    expect(c.body.items).toHaveLength(2)
+  })
+
+  it('body 브레이스가 없으면 문법 오류다', () => {
+    expect(() => parse('f() echo hi')).toThrow(/syntax error/)
+  })
+
+  it('닫는 브레이스가 없으면 문법 오류다', () => {
+    expect(() => parse('{ echo a')).toThrow(/syntax error/)
+  })
+
+  it('{echo (스페이스 없음) 는 그룹이 아니라 일반 명령이다', () => {
+    // bash: `{echo` 는 예약어 `{` 가 아니라 명령 이름 `{echo` — 그룹이 아니다.
+    const c = firstCompound('{echo hi; }')
+    // 첫 단계는 group 이 아니라 명령(이름 `{echo`)이어야 한다.
+    expect(c.kind).toBe('command')
+  })
+
+  it('funcdef/group 도 파이프라인/리스트에 참여한다', () => {
+    const ast = parse('{ echo a; } | cat')
+    expect(ast.items[0]!.pipeline.commands).toHaveLength(2)
+    expect(ast.items[0]!.pipeline.commands[0]!.kind).toBe('group')
+  })
+})

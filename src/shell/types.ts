@@ -34,6 +34,14 @@ export interface CommandEnv {
    * 인터프리터가 주입한다(없으면 0으로 취급 = 루프 밖).
    */
   loopDepth?: number
+  /**
+   * 현재 몇 겹의 함수 호출 안에서 실행 중인지. return 빌트인이 이 값으로 "함수 안이면
+   * ReturnSignal 을 던지고, 밖이면 경고만 하고 no-op(exit 2)" 을 가른다 — break/continue
+   * 가 loopDepth 로 판정하는 것과 같은 원리다. 인터프리터가 주입한다(없으면 0 = 함수 밖).
+   * 서브셸/명령치환(childCtx) 안에서는 0으로 리셋된다 — bash 는 `$( )` 안의 return 을
+   * "함수 밖"으로 본다(치환 셸에서 벗어날 뿐 바깥 함수를 벗어나지 않는다).
+   */
+  funcDepth?: number
 }
 
 export type CommandOutput = ExecResult

@@ -1,6 +1,6 @@
 import { VFS } from './vfs'
-import { ExecutionLimitError, LoopSignal, BreakSignal, errnoText } from './errors'
-import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type ListNode, type PipelineNode } from './parser'
+import { ExecutionLimitError, ControlSignal, LoopSignal, BreakSignal, ReturnSignal, errnoText } from './errors'
+import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ListNode, type PipelineNode } from './parser'
 import { expandWord, expandToSingle, expandForCase, type ExpandCtx } from './expand'
 import { matchSegment } from './glob'
 import { lookupCommand, isKnownUnimplemented } from './registry'
@@ -36,6 +36,21 @@ interface RunCtx {
    * (childCtx)에서는 0으로 리셋된다 — break/continue 는 서브셸/명령치환 밖으로 새지 않는다.
    */
   loopDepth: number
+  /**
+   * 정의된 셸 함수(이름 → body ListNode). bash 에서 함수는 대체로 전역이라(정의 시점 이후
+   * 어디서나 보임, 함수 안에서 정의해도 바깥으로 남음 — docker 확인) 이 맵은 childCtx 를
+   * 거쳐도 **같은 참조를 공유**한다. 단순화: bash 는 `$( )` 서브셸 안에서 정의된 함수를
+   * 바깥으로 흘리지 않지만(subshell-local), 우리는 맵을 공유해 그 비-누수를 재현하지
+   * 않는다 — 필수 케이스에 영향이 없고 훨씬 단순하다(설계 메모 참고).
+   */
+  functions: Map<string, ListNode>
+  /**
+   * 현재 몇 겹의 함수 호출 안에서 실행 중인지. callFunction 이 body 실행 동안 ++/-- 한다.
+   * return 빌트인은 이 값(>0 이면 함수 안)으로 ReturnSignal 을 던질지 말지를 정한다 —
+   * loopDepth/break 와 완전히 같은 원리다. childCtx(서브셸/명령치환)에서는 0으로 리셋된다:
+   * bash 는 `$( )` 안의 return 을 "치환 셸을 벗어날 뿐, 바깥 함수는 안 벗어남" 으로 본다.
+   */
+  funcDepth: number
 }
 
 function spend(ctx: RunCtx): void {
@@ -64,6 +79,11 @@ function childCtx(ctx: RunCtx): RunCtx {
     // 루프를 벗어나면 안 되므로(bash 확인: `while ...; do echo $(break); done` 는 무한),
     // 루프 깊이를 0으로 리셋한다. 그러면 그 break 는 "루프 밖"으로 취급돼 경고 후 무시된다.
     loopDepth: 0,
+    // 함수 맵은 같은 참조를 공유한다(bash 함수는 대체로 전역, 위 주석 참고).
+    functions: ctx.functions,
+    // 함수 깊이도 0으로 리셋한다 — `$( )` 안의 return 은 치환 셸만 벗어나고 바깥 함수는
+    // 안 벗어난다(bash 동작). 그래서 서브셸 안 return 은 "함수 밖"으로 취급돼 no-op 된다.
+    funcDepth: 0,
   }
 }
 
@@ -84,9 +104,10 @@ function expandCtxFor(ctx: RunCtx): ExpandCtx {
         return await runList(parse(script), child)
       } catch (e) {
         if (e instanceof ExecutionLimitError) throw e
-        // break/continue 는 명령치환(서브셸) 밖으로 새지 않는다. child 의 loopDepth 가
-        // 0으로 리셋돼 대개 여기까지 오지도 않지만, 도달하면 no-op 으로 흘려보낸다.
-        if (e instanceof LoopSignal) return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
+        // break/continue/return 은 명령치환(서브셸) 밖으로 새지 않는다. child 의
+        // loopDepth/funcDepth 가 0으로 리셋돼 대개 여기까지 오지도 않지만(신호를 아예
+        // 안 던짐), 도달하면 no-op 으로 흘려보낸다(실어온 부분 출력은 그대로 낸다).
+        if (e instanceof ControlSignal) return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
         return { stdout: '', stderr: `bash: ${e instanceof Error ? e.message : String(e)}\n`, exitCode: 2 }
       }
     },
@@ -107,6 +128,45 @@ async function runCommand(node: Command, ctx: RunCtx, stdin: string): Promise<Ex
     case 'while': return runWhile(node, ctx)
     case 'for': return runFor(node, ctx)
     case 'case': return runCase(node, ctx)
+    // 함수 정의: body 를 돌리지 않고 이름→body 를 등록만 한다(exit 0).
+    case 'funcdef': return runFuncDef(node, ctx)
+    // 브레이스 그룹: 서브셸이 아니라 현재 ctx 에서 LIST 를 실행한다(env 공유).
+    case 'group': return runList(node.body, ctx)
+  }
+}
+
+/** `NAME() { ... }` — 정의를 functions 맵에 등록한다. 이미 있으면 덮어쓴다. exit 0. */
+function runFuncDef(node: FunctionDefNode, ctx: RunCtx): ExecResult {
+  ctx.functions.set(node.name, node.body)
+  return { stdout: '', stderr: '', exitCode: 0 }
+}
+
+/**
+ * 셸 함수를 호출한다. 서브셸이 아니라 **현재 ctx** 에서 body 를 돌린다 — env 를 공유하므로
+ * 함수 안의 `x=5` 가 호출자에게 그대로 남는다(우리는 아직 `local` 이 없다, M3). positional
+ * ($1..)만 인자로 바꿔치기하고 finally 에서 되돌린다. $0 은 건드리지 않는다(bash 는 함수
+ * 안에서도 $0 을 스크립트/셸 이름 그대로 둔다). funcDepth 를 ++ 해 body 안의 return 이
+ * ReturnSignal 을 던질 수 있게 하고, ReturnSignal 을 여기서 잡아 그 code 를 함수의 exit
+ * code 로, 실어온 부분 출력을 함수의 출력으로 쓴다(`echo x; return 3` → x 출력 + exit 3).
+ *
+ * ExecutionLimitError 는 잡지 않고 그대로 위로 던진다 — 그래서 무한 재귀(`f(){ f; }; f`)는
+ * 매 호출마다 runSimpleCommand 의 spend(ctx) 로 예산을 깎다가 결국 예산 초과로 exit 130 이
+ * 되지, JS 스택 오버플로로 크래시하지 않는다(await 경계마다 콜스택이 풀리므로).
+ */
+async function callFunction(body: ListNode, argv: string[], ctx: RunCtx): Promise<ExecResult> {
+  const savedPositional = ctx.positional
+  ctx.positional = argv.slice(1)
+  ctx.funcDepth++
+  try {
+    return await runList(body, ctx)
+  } catch (e) {
+    if (e instanceof ReturnSignal) {
+      return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code }
+    }
+    throw e // ExecutionLimitError / LoopSignal 등은 함수 경계를 그대로 통과한다.
+  } finally {
+    ctx.positional = savedPositional
+    ctx.funcDepth--
   }
 }
 
@@ -133,6 +193,15 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
   } catch (e) {
     if (e instanceof ExecutionLimitError) throw e
     return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
+  }
+
+  // 2.5 함수 호출 분기. lookupCommand(빌트인/coreutil)보다 **먼저** 본다 — bash 는 함수가
+  //     동명의 빌트인/coreutil 을 가린다(docker 확인: `ls() { echo faked; }; ls` → faked).
+  //     함수는 현재 ctx 에서(env 공유) 돌리고 positional 만 인자로 바꾼다. 리다이렉션/명령앞
+  //     대입은 함수 호출에는 적용하지 않는다(드묾, 이 태스크 범위 밖 — 설계 메모 참고).
+  {
+    const fnBody = ctx.functions.get(argv[0]!)
+    if (fnBody) return callFunction(fnBody, argv, ctx)
   }
 
   // 3. 명령 앞의 대입은 이 명령의 환경에만 적용되고 사라진다.
@@ -237,21 +306,23 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
       try { return await runList(parse(line), ctx) }
       catch (e) {
         if (e instanceof ExecutionLimitError) throw e
-        // break/continue 는 이 하위 실행 경계 밖으로 새지 않는다 (no-op 취급).
-        if (e instanceof LoopSignal) return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
+        // break/continue/return 은 이 하위 실행 경계 밖으로 새지 않는다 (no-op 취급).
+        if (e instanceof ControlSignal) return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
         return { stdout: '', stderr: `bash: ${e instanceof Error ? e.message : String(e)}\n`, exitCode: 2 }
       }
     },
     loopDepth: ctx.loopDepth,
+    funcDepth: ctx.funcDepth,
   }
   let result: ExecResult
   try {
     result = await fn(cmdEnv)
   } catch (e) {
     if (e instanceof ExecutionLimitError) throw e
-    // break/continue 신호는 얌전한 ExecResult 로 바꾸지 않고 그대로 위로 던져서
-    // 가장 가까운 runWhile 이 잡게 한다 (ExecutionLimitError 와 같은 특별 취급).
-    if (e instanceof LoopSignal) throw e
+    // break/continue/return 신호는 얌전한 ExecResult 로 바꾸지 않고 그대로 위로 던져서
+    // 가장 가까운 경계(runWhile/runFor/callFunction)가 잡게 한다 (ExecutionLimitError 와
+    // 같은 특별 취급).
+    if (e instanceof ControlSignal) throw e
     return { stdout: '', stderr: `${name}: ${errnoText(e)}\n`, exitCode: 1 }
   }
 
@@ -521,10 +592,11 @@ async function runList(node: ListNode, ctx: RunCtx): Promise<ExecResult> {
     try {
       result = await runPipeline(item.pipeline, ctx)
     } catch (e) {
-      // break/continue 신호가 이 리스트를 뚫고 올라간다. 지금까지 이 리스트가 낸 출력을
-      // 신호에 실어 runWhile 이 회수하게 한다 — 안 그러면 우리는 출력을 반환값으로만
-      // 넘기므로(스트리밍 아님) 중간에 던진 지점 이전의 출력이 통째로 유실된다.
-      if (e instanceof LoopSignal) {
+      // break/continue/return 신호가 이 리스트를 뚫고 올라간다. 지금까지 이 리스트가 낸
+      // 출력을 신호에 실어 경계(runWhile/runFor/callFunction)가 회수하게 한다 — 안 그러면
+      // 우리는 출력을 반환값으로만 넘기므로(스트리밍 아님) 중간에 던진 지점 이전의 출력이
+      // 통째로 유실된다.
+      if (e instanceof ControlSignal) {
         e.stdout = stdout + e.stdout
         e.stderr = stderr + e.stderr
       }
@@ -546,7 +618,10 @@ export async function run(
   stepBudget: number,
   positional: string[] = [],
 ): Promise<ExecResult> {
-  const ctx: RunCtx = { fs, state, budget: { remaining: stepBudget }, positional, loopDepth: 0 }
+  const ctx: RunCtx = {
+    fs, state, budget: { remaining: stepBudget }, positional,
+    loopDepth: 0, functions: new Map(), funcDepth: 0,
+  }
   let ast: ListNode
   try {
     ast = parse(line)
@@ -561,10 +636,10 @@ export async function run(
     if (e instanceof ExecutionLimitError) {
       return { stdout: '', stderr: '^C  flashshell: 실행 한도 초과 — 무한 루프인가요?\n', exitCode: 130 }
     }
-    // 루프 밖으로 새어 나온 break/continue (loopDepth 추적 때문에 대개 도달하지 않지만,
-    // break N 이 중첩 수를 초과하는 등의 경우 방어). bash 처럼 무해한 no-op(exit 0)으로
-    // 처리하되, 신호가 실어온 출력은 그대로 낸다.
-    if (e instanceof LoopSignal) {
+    // 경계 밖으로 새어 나온 break/continue/return (loopDepth/funcDepth 추적 때문에 대개
+    // 도달하지 않지만, break N 이 중첩 수를 초과하는 등의 경우 방어). bash 처럼 무해한
+    // no-op(exit 0)으로 처리하되, 신호가 실어온 출력은 그대로 낸다.
+    if (e instanceof ControlSignal) {
       return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
     }
     // 위에서 예상 가능한 실패 지점은 전부 자체적으로 ExecResult 로 바꾸지만, exec()는
