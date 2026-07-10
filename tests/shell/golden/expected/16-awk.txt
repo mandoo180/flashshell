@@ -1,0 +1,13 @@
+alice
+bob
+carol
+90
+b
+e
+bob 25
+alice
+carol
+
+===STDERR===
+===EXIT===
+0

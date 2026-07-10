@@ -1,0 +1,24 @@
+a
+d
+b:c
+e:f
+a:b
+d:e
+ALICE 30
+BOB 25
+CAROL 35
+a-b-c
+d-e-f
+a
+b
+c
+      2 a
+      1 b
+      2 c
+a
+c
+b
+
+===STDERR===
+===EXIT===
+0

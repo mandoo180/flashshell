@@ -1,4 +1,4 @@
-a.txt b.txt fruit.txt mixed.txt nums.txt
+a.txt adj.txt b.txt colon.txt diffA.txt diffB.txt diffC.txt fruit.txt mixed.txt nums.txt pairs.txt
 project/docs project/src
 nope*
 one.txt

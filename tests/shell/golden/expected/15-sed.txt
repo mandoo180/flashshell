@@ -1,0 +1,16 @@
+alice 30
+b0b 25
+car0l 35
+Alice 30
+bob 25
+cArol 35
+bob 25
+bob 25
+alice 30
+carol 35
+alice 30
+bob 25
+
+===STDERR===
+===EXIT===
+0

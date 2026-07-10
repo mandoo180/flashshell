@@ -21,6 +21,16 @@ function seedVfs(): VFS {
   fs.writeFile('/work/fruit.txt', 'banana\napple\ncherry\napple\n')
   fs.writeFile('/work/nums.txt', '10\n9\n100\n')
   fs.writeFile('/work/mixed.txt', 'Hello\nhello\nWORLD\n')
+  fs.mkdir('/work/tree/sub', { recursive: true })
+  fs.writeFile('/work/pairs.txt', 'alice 30\nbob 25\ncarol 35\n')
+  fs.writeFile('/work/colon.txt', 'a:b:c\nd:e:f\n')
+  fs.writeFile('/work/adj.txt', 'a\na\nb\nc\nc\n')
+  fs.writeFile('/work/tree/one.txt', '1\n')
+  fs.writeFile('/work/tree/two.log', '2\n')
+  fs.writeFile('/work/tree/sub/three.txt', '3\n')
+  fs.writeFile('/work/diffA.txt', 'hello\nworld\n')
+  fs.writeFile('/work/diffB.txt', 'hello\nworld\n')
+  fs.writeFile('/work/diffC.txt', 'hello\nWORLD\n')
   return fs
 }
 

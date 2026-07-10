@@ -1,0 +1,9 @@
+0
+Files diffA.txt and diffC.txt differ
+1
+2
+
+===STDERR===
+diff: diff-missing.txt: No such file or directory
+===EXIT===
+0
