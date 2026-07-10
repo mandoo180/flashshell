@@ -332,14 +332,10 @@ describe('parse', () => {
     })
 
     it('멀티라인 for 는 한 줄 세미콜론 버전과 같은 AST 를 만든다', () => {
-      // if/while 과 동일한 기존 한계(task 4 스캐폴딩): do/then 바로 뒤의 개행은 렉서가
-      // ';' 로 접어버려 그 다음 줄의 body 앞에 "군더더기 ;" 가 남는다 — 실제 bash는
-      // do/then 뒤 개행을 list_terminator 아닌 newline_list 로 따로 취급해 허용하지만,
-      // 우리 렉서는 개행과 세미콜론을 토큰화 단계에서 이미 구분 없이 합친다(둘 다 OP(';')).
-      // 그래서 실제 세미콜론(`do ; echo x`)은 bash도 문법 오류이고, 우리도 마찬가지로
-      // 오류인 채 남겨둔다(레이어가 다른 문제라 이 태스크에서 고치지 않는다) — 대신 여기
-      // 테스트는 body 를 키워드와 같은 줄에 둬 그 경로를 피한다(task 4 의 멀티라인 if
-      // 테스트와 동일한 스타일).
+      // do 뒤 개행이 body 앞에 "군더더기 ;" 를 남기던 한계(task 4/5 스캐폴딩)는
+      // task 5b의 skipSeparators() 로 고쳐졌다 — 아래 '개행 (newline_list) 허용
+      // (task 5b)' describe 블록이 그 케이스(개행이 do 뒤에 오는 경우 포함)를
+      // 전담해서 검증한다. 이 테스트는 원래 형태(개행이 word-list 뒤/do 앞)만 유지한다.
       expect(parse('for x in a b\ndo echo $x\ndone')).toEqual(parse('for x in a b; do echo $x; done'))
     })
 
@@ -363,6 +359,69 @@ describe('parse', () => {
       expect(ast.items[0]!.pipeline.commands).toHaveLength(2)
       expect(ast.items[0]!.pipeline.commands[0]!.kind).toBe('for')
       expect(ast.items[0]!.pipeline.commands[1]!.kind).toBe('command')
+    })
+  })
+
+  // --- task 5b: do/then/else/in 바로 뒤의 개행은 newline_list(허용, 무시)지 명령
+  // 분리자(;)가 아니다. 렉서는 개행을 무조건 ; 로 접기 때문에(task 1), 이 자리의
+  // 개행이 ;로 둔갑해 본문 parseList가 선행 ;를 문법 오류로 거부했다 — 이 버그를
+  // skipSeparators()로 고친다. 실제 bash로 대조 확인(docker debian:stable-slim bash):
+  //   for f in a b; do\necho $f\ndone       → a\nb (실제 bash: 정상)
+  //   while true; do\necho x\nbreak\ndone   → x   (실제 bash: 정상)
+  //   if true; then\necho hi\nfi            → hi  (실제 bash: 정상)
+  //   if false; then\n:\nelse\necho no\nfi  → no  (실제 bash: 정상)
+  //   for f in\na b\ndo\necho $f\ndone      → 실제 bash는 여기서 문법 오류
+  //     (`in` 뒤 개행은 bash 문법에서 별도 취급 안 됨) — 그래도 우리는 관대하게
+  //     받아준다(브리프 지시: do/then/else/in 뒤 개행은 전부 관대히 허용).
+  //   for f in a b; do; echo x; done        → 실제 bash는 `do;`에서 문법 오류
+  //     (list_terminator 뒤에 또 다른 list_terminator는 안 됨) — 우리는 관대하게
+  //     받아준다(개행이 접힌 ;와 진짜 ;를 렉서가 구분 못 하므로 동일하게 처리).
+  describe('do/then/else/in 뒤 개행 (newline_list) 허용 (task 5b)', () => {
+    it('멀티라인 for 본문(개행이 do 뒤에)은 세미콜론 버전과 같은 AST 를 만든다', () => {
+      expect(parse('for f in a b; do\necho $f\ndone')).toEqual(parse('for f in a b; do echo $f; done'))
+    })
+
+    it('멀티라인 while 본문(개행이 do 뒤에)은 세미콜론 버전과 같은 AST 를 만든다', () => {
+      expect(parse('while true; do\necho x\nbreak\ndone')).toEqual(parse('while true; do echo x; break; done'))
+    })
+
+    it('멀티라인 if 본문(개행이 then 뒤에)은 세미콜론 버전과 같은 AST 를 만든다', () => {
+      expect(parse('if true; then\necho hi\nfi')).toEqual(parse('if true; then echo hi; fi'))
+    })
+
+    it('멀티라인 if/else 본문(개행이 then/else 뒤에)은 세미콜론 버전과 같은 AST 를 만든다', () => {
+      expect(parse('if false; then\n:\nelse\necho no\nfi')).toEqual(parse('if false; then :; else echo no; fi'))
+    })
+
+    it('멀티라인 if/elif/else 본문(개행이 then 뒤에)은 세미콜론 버전과 같은 AST 를 만든다', () => {
+      expect(parse('if false; then\n:\nelif true; then\necho e\nfi')).toEqual(
+        parse('if false; then :; elif true; then echo e; fi'),
+      )
+    })
+
+    it('in 뒤 개행도 관대히 허용한다(실제 bash는 문법 오류지만 의도된 관대함): for f in\\na b\\ndo... 는 do echo $f; done 버전과 같은 AST', () => {
+      expect(parse('for f in\na b\ndo\necho $f\ndone')).toEqual(parse('for f in a b; do echo $f; done'))
+    })
+
+    it('회귀: for x in; do echo empty; done (빈 단어 목록)은 여전히 빈 목록이다', () => {
+      const cmd = parse('for x in; do echo empty; done').items[0]!.pipeline.commands[0]!
+      if (cmd.kind !== 'for') throw new Error('expected for')
+      expect(cmd.words).toEqual([])
+      expect(cmd.body.items[0]!.pipeline.commands[0]).toMatchObject({ words: [raw('echo'), raw('empty')] })
+    })
+
+    it('관대함: do 뒤에 진짜 세미콜론이 와도(`do; echo x; done`) 받아준다(실제 bash는 문법 오류)', () => {
+      expect(() => parse('while true; do; echo x; done')).not.toThrow()
+      expect(parse('while true; do; echo x; done')).toEqual(parse('while true; do echo x; done'))
+    })
+
+    it('중첩: 바깥/안쪽 본문이 모두 다음 줄에 있어도 파싱된다 (while > if)', () => {
+      const ast = parse('while true; do\nif true; then\nbreak\nfi\ndone')
+      expect(() => ast).not.toThrow()
+      const outer = ast.items[0]!.pipeline.commands[0]!
+      if (outer.kind !== 'while') throw new Error('expected while')
+      const inner = outer.body.items[0]!.pipeline.commands[0]!
+      expect(inner.kind).toBe('if')
     })
   })
 })

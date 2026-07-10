@@ -132,6 +132,26 @@ class Parser {
     return t.type === 'OP' && ops.includes(t.value)
   }
 
+  /**
+   * 연속된 선행 `;` 분리자를 건너뛴다 (task 5b).
+   *
+   * 렉서는 개행을 무조건 `;` 로 접기 때문에(task 1), bash 문법에서 `do`/`then`/`else`/`in`
+   * 바로 뒤의 개행(newline_list — 허용, 무시되는 자리)이 우리 토큰 스트림에서는 명령
+   * 분리자 `;` 와 구분 없이 똑같은 OP(';') 토큰이 된다. 그래서 본문이 다음 줄에서
+   * 시작하는 이디엄적인 형태(`do\n  echo x\ndone`)가 "선행 ;" 로 보여 parseList 가
+   * 문법 오류를 냈다. 이 헬퍼를 그 4개 지점(then-분기/elif-then/else-분기/do-본문/
+   * in-단어목록) 시작 직전에 호출해 선행 `;`(개행이 접힌 것이든 진짜 `;`든 — 렉서
+   * 토큰 단계에서는 이미 구분이 안 된다)를 무시한다. 실제 bash는 개행 유래는
+   * 받아주고 진짜 `;`(`do; echo x`)는 문법 오류로 거부하지만, 그 구분을 하려면
+   * 렉서에 NEWLINE 전용 토큰을 새로 두는 재작업이 필요하다 — 여기서는 대신 두
+   * 경우 다 관대하게 받아준다(학습용 셸에 무해한 확장, Task 4/5의 다른 관대한
+   * 허용들과 같은 성격). 오직 "더 받아주는" 방향으로만 느슨해지므로 기존에 통과하던
+   * 파싱은 전부 동일한 AST 를 그대로 낸다.
+   */
+  private skipSeparators(): void {
+    while (this.atOp(';')) this.next()
+  }
+
   /** 현재 토큰이 명령 위치의 bare 예약어면 그 텍스트, 아니면 null. */
   private peekKeyword(): string | null {
     const t = this.peek()
@@ -226,6 +246,7 @@ class Parser {
     this.expectKeyword('if')
     const cond = this.parseList(new Set(['then']))
     this.expectKeyword('then')
+    this.skipSeparators()
     const thenList = this.parseList(new Set(['elif', 'else', 'fi']))
 
     const elifs: { cond: ListNode; then: ListNode }[] = []
@@ -233,6 +254,7 @@ class Parser {
       this.expectKeyword('elif')
       const elifCond = this.parseList(new Set(['then']))
       this.expectKeyword('then')
+      this.skipSeparators()
       const elifThen = this.parseList(new Set(['elif', 'else', 'fi']))
       elifs.push({ cond: elifCond, then: elifThen })
     }
@@ -240,6 +262,7 @@ class Parser {
     let elseList: ListNode | undefined
     if (this.peekKeyword() === 'else') {
       this.expectKeyword('else')
+      this.skipSeparators()
       elseList = this.parseList(new Set(['fi']))
     }
 
@@ -251,6 +274,7 @@ class Parser {
     this.expectKeyword(until ? 'until' : 'while')
     const cond = this.parseList(new Set(['do']))
     this.expectKeyword('do')
+    this.skipSeparators()
     const body = this.parseList(new Set(['done']))
     this.expectKeyword('done')
     return { kind: 'while', cond, body, until }
@@ -273,6 +297,7 @@ class Parser {
     this.next()
 
     this.expectKeyword('in')
+    this.skipSeparators()
 
     const words: Word[] = []
     while (this.peek().type === 'WORD' && this.peekKeyword() !== 'do') {
@@ -282,6 +307,7 @@ class Parser {
 
     if (this.atOp(';')) this.next()
     this.expectKeyword('do')
+    this.skipSeparators()
     const body = this.parseList(new Set(['done']))
     this.expectKeyword('done')
     return { kind: 'for', var: varName, words, body }

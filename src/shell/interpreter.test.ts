@@ -587,6 +587,62 @@ describe('제어문 for (task 5, docker 로 확인됨)', () => {
   })
 })
 
+describe('do/then/else/in 뒤 개행 (newline_list) 허용 — 실행 동작 (task 5b, docker 로 확인됨)', () => {
+  // 렉서는 개행을 무조건 ;로 접기 때문에(task 1), do/then/else/in 바로 뒤의 개행이
+  // ;로 둔갑해 본문 parseList가 선행 ;를 문법 오류로 거부했었다. 이 태스크는 이 스캐폴딩
+  // 한계를 parser.ts의 skipSeparators()로 고친다 — 아래는 그 전엔 syntax error 였던
+  // 이디엄적인 멀티라인 형태가 한 줄 세미콜론 버전과 동일하게 실행됨을 확인한다.
+  it('멀티라인 for 본문은 세미콜론 버전과 같은 출력을 낸다 (docker: a\\nb)', async () => {
+    const r = await sh.exec('for f in a b; do\necho $f\ndone')
+    expect(r.stdout).toBe('a\nb\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('멀티라인 while 본문은 세미콜론 버전과 같은 출력을 낸다 (docker: x)', async () => {
+    const r = await sh.exec('while true; do\necho x\nbreak\ndone')
+    expect(r.stdout).toBe('x\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('멀티라인 if 본문은 세미콜론 버전과 같은 출력을 낸다 (docker: hi)', async () => {
+    const r = await sh.exec('if true; then\necho hi\nfi')
+    expect(r.stdout).toBe('hi\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('멀티라인 if/else 본문은 세미콜론 버전과 같은 출력을 낸다 (docker: no)', async () => {
+    const r = await sh.exec('if false; then\n:\nelse\necho no\nfi')
+    expect(r.stdout).toBe('no\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('in 뒤 개행도 관대히 허용한다 (실제 bash는 여기서 문법 오류지만, 의도된 관대한 확장): a\\nb', async () => {
+    const r = await sh.exec('for f in\na b\ndo\necho $f\ndone')
+    expect(r.stdout).toBe('a\nb\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('회귀: for x in; do echo empty; done (빈 목록)은 여전히 출력 없이 exit 0', async () => {
+    const r = await sh.exec('for x in; do echo empty; done')
+    expect(r.stdout).toBe('')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('중첩: while 본문과 안쪽 if 본문이 모두 다음 줄에 있어도 실행된다 (docker: done)', async () => {
+    // docker: touch f; while true; do\nif [ -f f ]; then\nbreak\nfi\ndone; echo done  →  done
+    fs.writeFile('/home/player/nlflag', '')
+    const r = await sh.exec('while true; do\nif [ -f nlflag ]; then\nbreak\nfi\ndone\necho done')
+    expect(r.stdout).toBe('done\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('회귀: 모든 한 줄짜리 세미콜론 형태는 그대로 동작한다', async () => {
+    expect((await sh.exec('for x in a b c; do echo $x; done')).stdout).toBe('a\nb\nc\n')
+    expect((await sh.exec('while false; do echo x; done')).stdout).toBe('')
+    expect((await sh.exec('if true; then echo yes; fi')).stdout).toBe('yes\n')
+  })
+})
+
 describe('registry 통합 — cat 이 등록되어 있다', () => {
   it('cat 으로 파일을 이어붙인다', async () => {
     expect((await sh.exec('cat a.txt b.txt')).stdout).toBe('alpha\nbeta\n')
