@@ -51,14 +51,21 @@ export function tokenize(input: string): Token[] {
     }
 
     // 개행은 ;와 동등한 리스트 분리자로 접는다(fold). bash는 대부분 문맥에서 개행을
-    // ;처럼 다루고, 파서는 이미 ;로 리스트를 나눈다. 단, 연속 개행(빈 줄)이나
-    // 선행/후행 개행이 매번 ; 토큰을 낳으면 파서가 빈 파이프라인으로 오인해
-    // 문법 오류를 낸다 — 그래서 직전 토큰이 없거나(선행) 이미 OP(;)라면
-    // (연속/빈 줄) 새 ; 를 또 밀어넣지 않는다.
+    // ;처럼 다루고, 파서는 이미 ;로 리스트를 나눈다. 단, 개행을 ;로 접으면 안 되는
+    // 자리가 있어 직전 토큰을 보고 ; 를 억누른다:
+    //  - 직전 토큰이 없음(선행 개행) 또는 이미 OP(;)(연속 개행/빈 줄) → ; 를 또 내면
+    //    파서가 빈 파이프라인으로 오인해 문법 오류를 낸다.
+    //  - 직전 토큰이 오른쪽 피연산자를 기대하는 이항 연산자(| && ||) → bash는 그런
+    //    연산자 뒤의 개행을 라인 컨티뉴에이션으로 보고 명령을 이어 붙인다
+    //    (`mkdir a &&\nmkdir b`, `echo x |\ncat`, `false ||\necho y`). 여기서 ; 를
+    //    내면 `&& ; ...`가 되어 파싱에 실패한다 — 그래서 개행을 공백처럼 흘려버린다.
     if (ch === '\n') {
       flush()
       const last = tokens[tokens.length - 1]
-      if (last && !(last.type === 'OP' && last.value === ';')) {
+      const suppress =
+        !last ||
+        (last.type === 'OP' && (last.value === ';' || last.value === '|' || last.value === '&&' || last.value === '||'))
+      if (!suppress) {
         tokens.push({ type: 'OP', value: ';' })
       }
       i++

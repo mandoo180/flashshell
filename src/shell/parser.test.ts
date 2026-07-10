@@ -183,4 +183,47 @@ describe('parse', () => {
     ])
     expect(cmd.words).toEqual([raw('echo'), raw('hi')])
   })
+
+  // --- 개행 fold + # 주석(렉서 Task 1)이 parseList 단에서도 안전한지 검증한다.
+  // 렉서의 ; 억누름 방어(선행/연속 개행 + | && || 뒤 라인 컨티뉴에이션)의 목적은
+  // parseList가 빈/반복 분리자에 던지지 않게 하는 것이므로, tokenize() 모양뿐 아니라
+  // 여기서 parse()를 직접 호출해 던지지 않음 + 항목 수를 확인한다.
+  describe('개행 fold가 parseList를 깨지 않는다', () => {
+    it('선행 빈 줄이 있어도 던지지 않고 한 항목이다', () => {
+      expect(() => parse('\n\necho hi\n')).not.toThrow()
+      expect(parse('\n\necho hi\n').items).toHaveLength(1)
+    })
+
+    it('중간 빈 줄은 항목을 늘리지 않고 두 항목(echo a ; echo b)이다', () => {
+      expect(() => parse('echo a\n\necho b')).not.toThrow()
+      expect(parse('echo a\n\necho b').items).toHaveLength(2)
+    })
+
+    it('&& 뒤 개행은 라인 컨티뉴에이션이라 && 리스트 하나로 이어진다 (mkdir a && mkdir b)', () => {
+      // 실제 bash 확인: mkdir a &&\nmkdir b 는 한 && 리스트로 실행된다 (a, b 둘 다 생성).
+      // AST에서 &&는 리스트 연결자라 items가 2개가 되지만(ops [null,'&&']), 핵심은
+      // 두 mkdir가 && 로 이어진 하나의 논리적 리스트라는 것 — `&& ; mkdir b` 로 깨져
+      // 던지지 않는다(Fix 1의 회귀 게이트).
+      expect(() => parse('mkdir a &&\nmkdir b')).not.toThrow()
+      const ast = parse('mkdir a &&\nmkdir b')
+      expect(ast.items.map((i) => i.op)).toEqual([null, '&&'])
+      expect(ast.items[0]!.pipeline.commands[0]!.words).toEqual([raw('mkdir'), raw('a')])
+      expect(ast.items[1]!.pipeline.commands[0]!.words).toEqual([raw('mkdir'), raw('b')])
+    })
+
+    it('| 뒤 개행은 라인 컨티뉴에이션이라 한 파이프라인이다 (echo x | cat)', () => {
+      // 실제 bash 확인: echo x |\ncat 는 한 파이프라인이다 (x 출력).
+      // | 는 파이프라인 내부 연결자라 items는 1개, 그 안에 명령 2개.
+      expect(() => parse('echo x |\ncat')).not.toThrow()
+      const ast = parse('echo x |\ncat')
+      expect(ast.items).toHaveLength(1)
+      expect(ast.items[0]!.pipeline.commands).toHaveLength(2)
+    })
+
+    it('|| 뒤 개행은 라인 컨티뉴에이션이라 || 리스트 하나로 이어진다 (cmd1 || cmd2)', () => {
+      // 실제 bash 확인: false ||\necho y 는 한 || 리스트로 실행된다 (y 출력).
+      expect(() => parse('cmd1 ||\ncmd2')).not.toThrow()
+      expect(parse('cmd1 ||\ncmd2').items.map((i) => i.op)).toEqual([null, '||'])
+    })
+  })
 })
