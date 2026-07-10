@@ -1,4 +1,5 @@
 import type { ShellSession, StateSnapshot, ExecResponse } from './session'
+import { PLAYER_HOME } from '../game/harness'
 
 /** exec 하나가 이 시간(ms)을 넘기면 워커를 죽이고 리플레이로 복원한다. 게임 명령은
  * 1ms 미만, grep ReDoS 는 수 초 — 넉넉히 가른다. */
@@ -26,7 +27,7 @@ export class WorkerShellSession implements ShellSession {
   private seq = 0
   private problemId: string | null = null
   private history: string[] = []
-  private lastSnapshot: StateSnapshot = { cwd: '/home/player', cwdEntries: [], env: {} }
+  private lastSnapshot: StateSnapshot = { cwd: PLAYER_HOME, cwdEntries: [], env: {} }
   private disposed = false
 
   constructor() { this.worker = this.spawn() }
@@ -88,10 +89,12 @@ export class WorkerShellSession implements ShellSession {
   }
 
   /**
-   * 갇힌 워커를 죽이고 새 워커에 문제 시작 + 히스토리 리플레이. 폭주한 그 줄은 다시
-   * 넣지 않는다(또 갇힌다). 새로 띄운 워커에서마저 start 나 리플레이 중 한 줄이 또
-   * 데드라인을 넘기면, 그 워커도 죽이고(백그라운드에서 계속 도는 좀비로 남기지
-   * 않는다) 거기서 복원을 포기한다(가능한 데까지만 복원).
+   * 갇힌 워커를 죽이고 새 워커에 문제 시작 + 히스토리 리플레이로 상태를 복원한다.
+   * 폭주한 그 줄은 다시 넣지 않는다(또 갇힌다). start 나 리플레이 중 한 줄이라도
+   * 또 데드라인을 넘기면 그 워커를 죽이고(좀비로 남기지 않는다) 새 워커에 '문제
+   * 초기 상태만' 다시 세팅한다(리플레이 포기). 그 start 마저 갇히면(퍼즐 setup
+   * 자체가 무한 루프인 경우뿐) 좀비 없이 포기한다. 어느 경우든 recover 가 끝나면
+   * this.worker 는 살아있고 가능한 한 초기화된 워커를 가리킨다.
    */
   private async recover(): Promise<void> {
     this.worker.terminate()
@@ -99,29 +102,36 @@ export class WorkerShellSession implements ShellSession {
     this.worker = this.spawn()
     if (this.problemId === null) return
 
+    // 1차: 문제 시작 + 전체 히스토리 리플레이. 실패하면 2차: 문제 초기 상태만.
+    for (const replay of [this.history, [] as string[]]) {
+      if (await this.tryInit(replay)) return
+      if (this.disposed) return // tryInit 이 이미 죽였고, dispose 됐으면 새로 안 띄운다.
+    }
+  }
+
+  /**
+   * 방금 띄운 this.worker 에 start + 주어진 줄들을 리플레이한다. 전부 데드라인 안에
+   * 끝나면 true. 도중 한 줄이라도 넘기면 그 워커를 terminate 하고(좀비 방지) 새
+   * 워커를 띄운 뒤 false — 호출자가 더 짧은 리플레이로 다시 시도하게 한다.
+   */
+  private async tryInit(replay: string[]): Promise<boolean> {
+    if (this.problemId === null) return true
     try {
       const { snapshot } = await this.request<{ snapshot: StateSnapshot }>(
         { type: 'start', problemId: this.problemId }, EXEC_DEADLINE_MS,
       )
       this.lastSnapshot = snapshot
-    } catch {
-      // 새로 띄운 워커에서마저 start 가 데드라인을 넘김 — 리플레이할 대상이 없으니
-      // 마지막 스냅샷을 유지한 채 포기한다.
-      return
-    }
-
-    for (const line of this.history) {
-      try {
-        const { response } = await this.request<{ response: ExecResponse }>({ type: 'exec', line }, EXEC_DEADLINE_MS)
+      for (const line of replay) {
+        const { response } = await this.request<{ response: ExecResponse }>(
+          { type: 'exec', line }, EXEC_DEADLINE_MS,
+        )
         this.lastSnapshot = response.snapshot
-      } catch {
-        // 리플레이 중인 그 줄 자체가 또 갇혔다. 이 워커를 그대로 두면 백그라운드에서
-        // 계속 CPU 를 태우는 좀비가 된다 — 죽이고 새로 띄워 다음 exec 는 최소한
-        // 응답 가능한 워커를 상대하게 한다. 나머지 히스토리 리플레이는 포기.
-        this.worker.terminate()
-        if (!this.disposed) this.worker = this.spawn()
-        break
       }
+      return true
+    } catch {
+      this.worker.terminate()
+      if (!this.disposed) this.worker = this.spawn()
+      return false
     }
   }
 
