@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { LocalShellSession } from './session'
 
 let s: LocalShellSession
@@ -36,5 +36,33 @@ describe('LocalShellSession', () => {
     await s.start('l1-10')
     const r = await s.exec('rm -rf *')
     expect(r).toHaveProperty('solved')
+  })
+  it('check 함수가 throws 해도 exec 는 해결되며 solved=false, 스냅샷 유효', async () => {
+    // 출제자 버그 (check에서 throw)로부터 플레이어 세션을 보호하는지 확인
+    await s.start('l1-01')
+
+    // private problem 필드 접근 및 원본 check 저장
+    const sessionTyped = s as unknown as { problem: { check: unknown } }
+    const originalCheck = sessionTyped.problem.check
+
+    // console.warn 스파이 & 억제 (의도적 경고 테스트 출력 방지)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      // check 를 던지는 함수로 교체
+      sessionTyped.problem.check = () => {
+        throw new Error('boom')
+      }
+
+      // exec 는 resolve 되어야 하며 solved=false 를 반환
+      const r = await s.exec('ls')
+      expect(r.solved).toBe(false)
+      expect(r.snapshot.cwd).toBe('/home/player')
+      expect(r.snapshot.cwdEntries).toBeDefined()
+    } finally {
+      // 다른 테스트 오염 방지: 원본 check 복구
+      sessionTyped.problem.check = originalCheck
+      warnSpy.mockRestore()
+    }
   })
 })
