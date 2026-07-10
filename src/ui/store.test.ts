@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useGame, setSessionFactory } from './store'
-import { LocalShellSession } from './session'
+import { LocalShellSession, type ShellSession, type StateSnapshot, type ExecResponse } from './session'
 import { allProblems } from '../game/problems/index'
 
 const get = () => useGame.getState()
@@ -231,6 +231,47 @@ describe('세션은 스토어 수명 동안 하나만 만든다', () => {
     await get().submit('cat readme.txt')
     await get().nextProblem()
     expect(get().session).toBe(first)
+  })
+})
+
+describe('워커 단일-인플라이트 계약(직렬화)', () => {
+  // 워커는 요청을 한 번에 하나만 처리한다(WorkerShellSession 은 스스로 직렬화하지
+  // 않는다). 폭주 명령이 2초 데드라인을 기다리는 동안 또 제출하면 exec 가 겹쳐
+  // recover 가 레이스한다 — 스토어가 요청을 큐에 실어, 앞 요청이 끝난 뒤에야 다음
+  // exec 를 보내야 한다(드롭이 아니라 순서 보존). resolve 를 직접 쥔 세션으로
+  // in-flight 를 만들어, 두 번째 exec 가 첫 번째가 끝나기 전엔 시작되지 않음을,
+  // 그리고 끝난 뒤엔 순서대로 실행됨을 검증한다.
+  it('exec 이 진행 중이면 다음 제출은 앞 요청이 끝날 때까지 큐에서 기다린다', async () => {
+    const snap: StateSnapshot = { cwd: '/home/player', cwdEntries: [], env: {} }
+    const ok: ExecResponse = { stdout: '', stderr: '', exitCode: 0, snapshot: snap, solved: false }
+    const started: string[] = []
+    let releaseFirst!: () => void
+    const slow: ShellSession = {
+      async start() { return snap },
+      exec(line) {
+        started.push(line)
+        if (line === 'first') {
+          return new Promise<ExecResponse>((res) => { releaseFirst = () => res(ok) })
+        }
+        return Promise.resolve(ok)
+      },
+      async reset() { return snap },
+      dispose() {},
+    }
+    setSessionFactory(() => slow)
+    await get().startProblem('l1-01')
+
+    const p1 = get().submit('first') // release 전까지 매달린다
+    const p2 = get().submit('second') // first 뒤로 큐잉되어야 한다
+    await new Promise((r) => setTimeout(r, 0)) // 마이크로태스크 배수
+
+    // second 는 아직 exec 되면 안 된다 — first 가 진행 중이다.
+    expect(started).toEqual(['first'])
+
+    releaseFirst()
+    await Promise.all([p1, p2])
+    // 둘 다, 그리고 제출 순서대로 실행됐다.
+    expect(started).toEqual(['first', 'second'])
   })
 })
 
