@@ -163,7 +163,7 @@ export const sed: CommandFn = (e) => {
         const replaced = line.replace(op.re, op.repl)
         if (!quiet) stdout += `${replaced}\n`
       } else if (op.kind === 'delete') {
-        if (!addrMatches(op.addr, line, lineNo)) stdout += `${line}\n`
+        if (!addrMatches(op.addr, line, lineNo) && !quiet) stdout += `${line}\n`
       } else {
         // print
         if (!quiet) stdout += `${line}\n`

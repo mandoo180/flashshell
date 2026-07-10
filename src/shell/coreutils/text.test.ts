@@ -98,6 +98,18 @@ describe('sed', () => {
     expect(await out('sed -n 3p a2.txt b2.txt')).toBe('l3\n')
   })
 
+  // -n 플래그와 delete 명령: delete 는 매칭된 줄을 삭제하고 나머지는 auto-print 해야 한다.
+  // 하지만 -n (quiet) 플래그가 있으면 auto-print 는 억제되므로 delete 는 아무것도 출력하지 않아야 한다.
+  it('sed -n "2d" 로 줄 2를 삭제하되 -n 이므로 출력 없음', async () => {
+    expect(await out('sed -n 2d t.txt')).toBe('')
+  })
+  it('sed -n "/hello/d" 로 패턴 일치 줄을 삭제하되 -n 이므로 출력 없음', async () => {
+    expect(await out('sed -n /hello/d t.txt')).toBe('')
+  })
+  it('sed "2d" (no -n) 는 줄 2 를 삭제하고 나머지는 auto-print', async () => {
+    expect(await out('sed 2d t.txt')).toBe('hello world\ngoodbye\n')
+  })
+
   // 서브셋 밖: 단일 명령이 아닌 스크립트는 침묵하며 잘못 동작하지 말고 flashshell: 로 거부한다.
   it("';' 로 이은 두 s 명령은 flashshell: 로 거부한다 (조용히 첫 명령만 적용하지 않는다)", async () => {
     const r = await run("sed 's/a/b/;s/c/d/' t.txt")
