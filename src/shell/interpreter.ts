@@ -152,10 +152,18 @@ function runFuncDef(node: FunctionDefNode, ctx: RunCtx): ExecResult {
  * ExecutionLimitError 는 잡지 않고 그대로 위로 던진다 — 그래서 무한 재귀(`f(){ f; }; f`)는
  * 매 호출마다 runSimpleCommand 의 spend(ctx) 로 예산을 깎다가 결국 예산 초과로 exit 130 이
  * 되지, JS 스택 오버플로로 크래시하지 않는다(await 경계마다 콜스택이 풀리므로).
+ *
+ * loopDepth 를 0 으로 리셋한다 — 함수 호출은 **루프-문맥 경계**다(childCtx 가 서브셸에서
+ * 하는 것과 같은 이유). bash 에서 함수 안의 break/continue 는 호출자의 루프에 닿을 수
+ * 없다(docker 확인): 호출자의 for 안에서 부른 함수의 bare `break` 는 loopDepth===0 을 봐
+ * 경고+no-op 하고, 함수 자신의 루프 안 `break`/`break N` 은 0 부터 세므로 그 루프에만
+ * 갇힌다. finally 에서 원래 값으로 복원한다.
  */
 async function callFunction(body: ListNode, argv: string[], ctx: RunCtx): Promise<ExecResult> {
   const savedPositional = ctx.positional
+  const savedLoop = ctx.loopDepth
   ctx.positional = argv.slice(1)
+  ctx.loopDepth = 0
   ctx.funcDepth++
   try {
     return await runList(body, ctx)
@@ -166,6 +174,7 @@ async function callFunction(body: ListNode, argv: string[], ctx: RunCtx): Promis
     throw e // ExecutionLimitError / LoopSignal 등은 함수 경계를 그대로 통과한다.
   } finally {
     ctx.positional = savedPositional
+    ctx.loopDepth = savedLoop
     ctx.funcDepth--
   }
 }

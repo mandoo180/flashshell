@@ -903,4 +903,35 @@ describe('함수 / 브레이스 그룹 / return (task 7, docker debian:stable-sl
     // docker: f() { for i in a b c; do echo $i; break; done; echo end; }; f → a\nend
     expect((await sh.exec('f() { for i in a b c; do echo $i; break; done; echo end; }; f')).stdout).toBe('a\nend\n')
   })
+
+  // 함수 호출은 루프-문맥 경계다: 함수 안의 break/continue 는 호출자의 루프에 닿을 수 없다.
+  // (아래 명령은 reviewer 가 `f(){…}` 무공백 형태로 bash 확인 — 우리 렉서는 `f() {…}`
+  // 스페이싱을 파싱하고 bash 출력은 두 형태가 동일함을 docker 로 재확인했다.)
+  it('함수 안의 bare break 는 호출자의 루프를 건드리지 않는다 (경고+no-op)', async () => {
+    // docker: f() { break; }; for i in a b c; do echo $i; f; done; echo end → a\nb\nc\nend
+    const r = await sh.exec('f() { break; }; for i in a b c; do echo $i; f; done; echo end')
+    expect(r.stdout).toBe('a\nb\nc\nend\n')
+    expect(r.stderr).toContain('only meaningful in a')
+  })
+
+  it('함수 안의 bare continue 는 호출자의 루프를 건드리지 않는다', async () => {
+    // docker: f() { continue; }; for i in a b c; do echo $i; f; echo tail$i; done
+    //   → a\ntaila\nb\ntailb\nc\ntailc (tail 이 안 잘린다)
+    const r = await sh.exec('f() { continue; }; for i in a b c; do echo $i; f; echo tail$i; done')
+    expect(r.stdout).toBe('a\ntaila\nb\ntailb\nc\ntailc\n')
+  })
+
+  it('함수 안 루프의 break 2 도 함수 경계까지만이라 호출자 루프에 닿지 않는다', async () => {
+    // docker: inner() { for j in x y; do echo $j; break 2; done; }; for i in a b; do echo i$i; inner; done; echo end
+    //   → ia\nx\nib\nx\nend (호출자 for 는 a,b 모두 돈다)
+    const r = await sh.exec('inner() { for j in x y; do echo $j; break 2; done; }; for i in a b; do echo i$i; inner; done; echo end')
+    expect(r.stdout).toBe('ia\nx\nib\nx\nend\n')
+  })
+
+  it('함수 자신의 루프 안 break 는 0 부터 세므로 그 루프에만 갇힌다 (호출마다 초기화)', async () => {
+    // docker: f() { for k in p q r; do echo $k; break; done; echo aftr; }; for i in a b; do echo i$i; f; done; echo end
+    //   → ia\np\naftr\nib\np\naftr\nend
+    const r = await sh.exec('f() { for k in p q r; do echo $k; break; done; echo aftr; }; for i in a b; do echo i$i; f; done; echo end')
+    expect(r.stdout).toBe('ia\np\naftr\nib\np\naftr\nend\n')
+  })
 })
