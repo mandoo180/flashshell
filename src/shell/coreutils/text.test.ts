@@ -151,3 +151,102 @@ describe('sed', () => {
     expect(r.exitCode).toBe(4)
   })
 })
+
+describe('awk', () => {
+  beforeEach(() => { fs.writeFile('/w/p.txt', 'alice 30\nbob 25\ncarol 35\n') })
+  it('필드 인쇄', async () => { expect(await out("awk '{print $1}' p.txt")).toBe('alice\nbob\ncarol\n') })
+  it('NR NF', async () => { expect(await out("awk '{print NR, NF}' p.txt")).toBe('1 2\n2 2\n3 2\n') })
+  it('-F 구분자', async () => { expect(await out("echo a:b:c | awk -F: '{print $2}'")).toBe('b\n') })
+  it('정규식 규칙', async () => { expect(await out("awk '/bob/{print $2}' p.txt")).toBe('25\n') })
+  it('누적 + END', async () => { expect(await out("awk '{s+=$2} END{print s}' p.txt")).toBe('90\n') })
+  it('BEGIN', async () => { expect(await out("awk 'BEGIN{print \"start\"} {print $1}' p.txt")).toBe('start\nalice\nbob\ncarol\n') })
+  it('숫자 비교 조건', async () => { expect(await out("awk '$2>28{print $1}' p.txt")).toBe('alice\ncarol\n') })
+
+  // 아래는 브리프의 8개 테스트를 넘어, docker debian:stable-slim mawk 1.3.4 실측과
+  // 대조한 경계 동작들이다(리포트에 각 docker 명령·출력을 남겼다).
+  it('기본 구분자는 공백 연속이고 앞뒤 공백은 무시한다', async () => {
+    // printf 는 우리 셸에 없으므로(브리프 참고) 파일 픽스처로 공백/탭 혼합 줄을 만든다.
+    fs.writeFile('/w/ws.txt', '  a   b\tc  \n')
+    expect(await out('awk \'{print NF, $1, $2, $3}\' ws.txt')).toBe('3 a b c\n')
+  })
+  it('숫자 아닌 필드의 산술 문맥은 0 (docker: `echo abc | awk \'{print $1+0}\'` -> 0)', async () => {
+    expect(await out("echo abc | awk '{print $1+0}'")).toBe('0\n')
+  })
+  it('선행 숫자 접두만 파싱 (docker: `42abc` -> 42)', async () => {
+    expect(await out("echo 42abc | awk '{print $1+0}'")).toBe('42\n')
+  })
+  it('print 인자 없으면 $0 그대로', async () => {
+    expect(await out('awk \'{print}\' p.txt')).toBe('alice 30\nbob 25\ncarol 35\n')
+  })
+  it('문자열 리터럴 비교는 필드가 숫자처럼 보여도 문자열 비교다 (docker 실측: $2==" 30" 은 false, $2=="30" 은 true)', async () => {
+    expect(await out('echo \'a 30\' | awk \'$2==" 30"{print "eq"}\'')).toBe('')
+    expect(await out('echo \'a 30\' | awk \'$2=="30"{print "eq"}\'')).toBe('eq\n')
+  })
+  it('필드 vs 문자열 리터럴 비교(사전식) — $1<"b"', async () => {
+    expect(await out("awk '$1<\"b\"{print $1}' p.txt")).toBe('alice\n')
+  })
+
+  it('미지원 구문은 flashshell 로 거부', async () => {
+    const r = await run("awk '{for(i=0;i<3;i++)print}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+
+  // 브리프가 요구한 for 외에, 이 서브셋 밖 구문 전부가 "조용히 틀리게 실행"되지 않고
+  // 반드시 거부되는지 실행으로 확인한다 — awk는 조용한 오답이 나기 가장 쉬운 곳이다.
+  it('while 제어문도 flashshell 로 거부(출력 없음)', async () => {
+    const r = await run("awk '{while(NR<3)print}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+  it('if 제어문도 flashshell 로 거부(출력 없음)', async () => {
+    const r = await run("awk '{if($1==\"bob\")print}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+  it('배열 사용도 flashshell 로 거부(출력 없음)', async () => {
+    const r = await run("awk '{a[1]=$1; print a[1]}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+  it('printf 도 flashshell 로 거부(출력 없음)', async () => {
+    const r = await run("awk '{printf \"%s\\n\", $1}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+  it('gsub 도 flashshell 로 거부(출력 없음)', async () => {
+    const r = await run("awk '{gsub(/a/,\"b\"); print}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+  it('사용자 함수(function)도 flashshell 로 거부(출력 없음)', async () => {
+    const r = await run("awk 'function f(x){return x} {print f($1)}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+  it('getline 도 flashshell 로 거부(출력 없음)', async () => {
+    const r = await run("awk '{getline; print}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+  it('삼항 연산자도 flashshell 로 거부(출력 없음)', async () => {
+    const r = await run("awk '{print $1==\"bob\" ? \"y\" : \"n\"}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+  it('++ 연산자도 flashshell 로 거부(출력 없음)', async () => {
+    const r = await run("awk '{i=0; i++; print i}' p.txt")
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+})

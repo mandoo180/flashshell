@@ -13,7 +13,6 @@ describe('registry', () => {
   })
 
   it('진짜 리눅스에 있지만 우리가 안 만든 명령을 구별한다', () => {
-    expect(isKnownUnimplemented('awk')).toBe(true)
     expect(isKnownUnimplemented('find')).toBe(true)
     expect(isKnownUnimplemented('tar')).toBe(true)
   })
