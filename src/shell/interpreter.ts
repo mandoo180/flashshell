@@ -183,6 +183,16 @@ async function runCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promis
     stdinFromFile: inputFromFile,
     fs: ctx.fs,
     state: { ...ctx.state, env: commandEnv } as ShellState,
+    // find -exec / xargs 가 다른 명령줄을 실행할 때 쓴다. 같은 ctx(fs/state/budget 공유) 위에서
+    // 파싱·실행하되, 서브셸(runSubshell)과 달리 cwd/env 를 격리하지 않는다 — find -exec 는
+    // 부모 셸 상태에서 돈다. 각 호출도 runCommand→spend(ctx) 를 타므로 무한루프 방어에 포함된다.
+    runLine: async (line: string): Promise<ExecResult> => {
+      try { return await runList(parse(line), ctx) }
+      catch (e) {
+        if (e instanceof ExecutionLimitError) throw e
+        return { stdout: '', stderr: `bash: ${e instanceof Error ? e.message : String(e)}\n`, exitCode: 2 }
+      }
+    },
   }
   let result: ExecResult
   try {

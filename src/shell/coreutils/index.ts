@@ -20,9 +20,11 @@ import { tr } from './tr'
 import { uniq } from './uniq'
 import { sed } from './sed'
 import { awk } from './awk'
+import { find } from './find'
+import { xargs } from './xargs'
 
 export const coreutils: Record<string, CommandFn> = {
   ls, cat, head, tail, wc, stat, grep, sort,
   cp, mv, rm, mkdir, rmdir, touch, ln, chmod,
-  cut, tr, uniq, sed, awk,
+  cut, tr, uniq, sed, awk, find, xargs,
 }

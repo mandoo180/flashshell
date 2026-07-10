@@ -23,7 +23,7 @@ const extras: Record<string, CommandFn> = { type: typeCmd }
  * 사용자가 자기 오타를 의심하며 시간을 낭비하지 않게 하려는 것이다.
  */
 const KNOWN_UNIMPLEMENTED = new Set([
-  'find', 'xargs', 'diff', 'comm', 'tee',
+  'diff', 'comm', 'tee',
   'nl', 'rev', 'basename', 'dirname', 'realpath', 'seq', 'du', 'df',
   'ps', 'kill', 'top', 'chown', 'chgrp', 'tar', 'gzip', 'zip', 'unzip',
   'curl', 'wget', 'ssh', 'scp', 'rsync', 'git', 'make', 'gcc',

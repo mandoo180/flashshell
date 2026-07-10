@@ -135,11 +135,21 @@ function tokensMatch(tokens: Token[], name: string): boolean {
   return ti === tlen
 }
 
-/** 패턴 하나를 파일명 하나에 맞춰본다. 경로 구분자는 다루지 않는다. */
-export function matchSegment(pattern: string, name: string): boolean {
+/**
+ * 패턴 하나를 파일명 하나에 맞춰본다. 경로 구분자는 다루지 않는다.
+ *
+ * `dotglob` 옵션(기본 false): bash 의 경로명 확장(`*.txt` 같은 글롭)은 선행 점을
+ * 가진 이름에 `*`/`?` 가 안 걸리도록 보호한다 — 아래 가드가 그 규칙이다. 하지만
+ * `find -name` 은 이 보호 없이 plain fnmatch(3) 로 매치한다: docker
+ * debian:stable-slim coreutils 9.7 로 확인, `find . -name "*"` 는 `.` 자신과
+ * `.hidden` 파일도 낸다(보호가 없다). 그래서 find.ts 는 `{ dotglob: true }` 로
+ * 이 가드를 꺼서 호출한다 — 같은 토큰 매칭 엔진을 재사용하되 선행 점 규칙만
+ * 다르게 켜고 끈다.
+ */
+export function matchSegment(pattern: string, name: string, opts: { dotglob?: boolean } = {}): boolean {
   // bash: 글롭의 * 와 ? 는 선행 점에 맞지 않는다. 패턴의 "첫 글자"가 리터럴 '.' 이어야
   // 이 보호가 풀린다 — [.]* 처럼 대괄호 표현식이 '.'을 매칭할 수 있어도 소용없다.
-  if (name.startsWith('.') && !pattern.startsWith('.')) return false
+  if (!opts.dotglob && name.startsWith('.') && !pattern.startsWith('.')) return false
   const tokens = tokenize(pattern)
   if (tokens === null) return false // 역순 범위 등 깨진 패턴 — 아무것도 매칭하지 않는다
   return tokensMatch(tokens, name)

@@ -22,6 +22,12 @@ export interface CommandEnv {
   stdinFromFile: boolean
   fs: VFS
   state: ShellState
+  /**
+   * 이 명령이 다른 명령줄을 실행해야 할 때(find -exec, xargs) 쓰는 콜백.
+   * 인터프리터가 주입한다. 같은 fs/state/budget 위에서 돈다.
+   * exec()가 절대 reject 안 하듯 이 콜백도 ExecResult 를 resolve 한다.
+   */
+  runLine?: (line: string) => Promise<ExecResult>
 }
 
 export type CommandOutput = ExecResult
