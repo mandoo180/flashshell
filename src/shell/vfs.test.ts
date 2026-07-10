@@ -60,20 +60,26 @@ describe('VFS 파일 조작', () => {
     expect(fs.lstat(deep)!.mode).toBe(0o755)
 
     // 비용: 깊이를 4배로 늘리면 선형은 ~4배, O(n^2)는 ~16배가 든다.
-    // 하드웨어 속도와 무관하게 그 사이(8배)에서 자른다. 절대 임계값은
+    // 하드웨어 속도와 무관하게 그 사이(10배)에서 자른다. 절대 임계값은
     // 빠른 머신에서 O(n^2)를 놓칠 수 있어 점근 비율로 검증한다.
+    // 각 깊이를 여러 번 재고 최소값을 쓴다 — 최소값은 GC/스케줄러가 끼어든
+    // 오염된 실행에 강건하다(병렬 테스트 부하에서 단일 측정이 튀어도 안 흔들림).
     const measure = (depth: number): number => {
-      const local = new VFS()
-      const path = '/' + Array(depth).fill('y').join('/')
-      const start = performance.now()
-      local.mkdir(path, { recursive: true })
-      return performance.now() - start
+      let best = Infinity
+      for (let i = 0; i < 3; i++) {
+        const local = new VFS()
+        const path = '/' + Array(depth).fill('y').join('/')
+        const start = performance.now()
+        local.mkdir(path, { recursive: true })
+        best = Math.min(best, performance.now() - start)
+      }
+      return best
     }
-    // 워밍업으로 JIT/GC 초기 노이즈를 흡수한다.
-    measure(1000)
+    measure(1000) // 워밍업으로 JIT 초기 노이즈를 흡수한다.
     const small = Math.max(measure(2000), 0.5)
     const large = measure(8000)
-    expect(large / small).toBeLessThan(8)
+    // O(n): ~4. O(n^2): ~16. 10에서 자르면 부하가 있어도 오탐 없이 O(n^2)를 잡는다.
+    expect(large / small).toBeLessThan(10)
   })
 
   it('비어있지 않은 디렉터리 rmdir은 ENOTEMPTY', () => {
