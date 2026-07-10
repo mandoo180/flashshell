@@ -2,7 +2,8 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { App } from './App'
-import { useGame } from './store'
+import { useGame, setSessionFactory } from './store'
+import { LocalShellSession } from './session'
 import type { Progress } from '../game/progress'
 
 const PROGRESS_KEY = 'flashshell.progress.v1'
@@ -11,6 +12,10 @@ beforeEach(() => {
   // jsdom 은 테스트 사이에 저장소를 비우지 않는다. 진행도가 누적되면
   // "잠긴 레벨" 테스트가 앞 테스트의 성공 때문에 깨진다.
   localStorage.clear()
+  // jsdom 에는 Worker가 없다 — 기본 팩토리(WorkerShellSession)를 그대로 두면
+  // 이 파일이 startProblem/submit 을 통해 스토어를 구동할 때 new Worker(...) 가
+  // 죽는다. 인프로세스 세션을 주입한다.
+  setSessionFactory(() => new LocalShellSession())
   useGame.setState(useGame.getInitialState(), true)
 })
 

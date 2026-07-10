@@ -4,7 +4,8 @@ import { render, screen, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { App } from './App'
-import { useGame } from './store'
+import { useGame, setSessionFactory } from './store'
+import { LocalShellSession } from './session'
 import { useSignal, GLITCH_MS } from './useSignal'
 
 // import.meta.url 은 vitest 트랜스폼 하에서 file: 스킴이 보장되지 않으므로
@@ -14,6 +15,10 @@ const themeCssPath = resolve(process.cwd(), 'src/ui/theme.css')
 beforeEach(() => {
   // jsdom 은 테스트 사이에 저장소를 비우지 않는다 (Play.test.tsx 와 동일한 이유).
   localStorage.clear()
+  // jsdom 에는 Worker가 없다 — 기본 팩토리(WorkerShellSession)를 그대로 두면
+  // 이 파일이 startProblem/submit 을 통해 스토어를 구동할 때 new Worker(...) 가
+  // 죽는다. 인프로세스 세션을 주입한다.
+  setSessionFactory(() => new LocalShellSession())
   useGame.setState(useGame.getInitialState(), true)
 })
 afterEach(() => {
@@ -127,9 +132,19 @@ async function goToLevel1(user: ReturnType<typeof userEvent.setup>) {
 // Promise 체인을 타지 않고 동기 디스패치 + act() 로 끝나서 가짜 타이머 밑에서도
 // 멀쩡히 동작한다(직접 검증함). 그래서 가짜 타이머가 필요한 테스트에서는
 // userEvent 대신 fireEvent 를 쓴다.
-function goToLevel1WithFireEvent() {
-  render(<App />)
+async function clickLevel1() {
   fireEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+  // openLevel → startProblem 은 이제 비동기다(세션의 session.start()가 실제
+  // 워크가 없어도 최소 한 마이크로태스크 틱 뒤에 resolve된다). fireEvent 만으로는
+  // Play 화면 전이(screen: 'play' 로의 set())가 아직 안 끝났을 수 있다 —
+  // submitWithFireEvent 와 같은 이유로 act 로 감싼 빈 async 콜백으로 보류 중인
+  // 마이크로태스크를 확실히 다 돌린다.
+  await act(async () => {})
+}
+
+async function goToLevel1WithFireEvent() {
+  render(<App />)
+  await clickLevel1()
 }
 
 async function submitWithFireEvent(line: string) {
@@ -156,7 +171,7 @@ describe('시그널: crt 클래스', () => {
     // 위 주석 참고: 이 프로젝트의 vitest+user-event 조합에서는 userEvent 를 가짜
     // 타이머와 같이 쓰면 클릭 하나조차 영원히 resolve 되지 않아 fireEvent 를 쓴다.)
     vi.useFakeTimers()
-    goToLevel1WithFireEvent()
+    await goToLevel1WithFireEvent()
     await submitWithFireEvent('cat nope.txt')
 
     expect(document.querySelector('.crt')).toHaveClass('signal-wrong')
@@ -166,7 +181,7 @@ describe('시그널: crt 클래스', () => {
 
   it('정답은 signal-solved 를 붙이고, 시트가 떠 있는 동안 시간이 지나도 유지한다', async () => {
     vi.useFakeTimers()
-    goToLevel1WithFireEvent()
+    await goToLevel1WithFireEvent()
     await submitWithFireEvent('cat readme.txt')
 
     expect(document.querySelector('.crt')).toHaveClass('signal-solved')
@@ -207,7 +222,7 @@ describe('시그널: crt 클래스', () => {
     // 오답 시점 + 120ms"가 아니라 "첫 번째 오답 시점 + 120ms"에 신호를
     // 지워버려서, 두 번째 오답의 글리치 창이 부당하게 짧아진다.
     vi.useFakeTimers()
-    goToLevel1WithFireEvent()
+    await goToLevel1WithFireEvent()
 
     await submitWithFireEvent('cat nope.txt')  // t=0: 1차 오답
     act(() => { vi.advanceTimersByTime(60) })  // t=60
@@ -226,7 +241,7 @@ describe('시그널: crt 클래스', () => {
   it('언마운트되면 대기 중이던 wrong 타이머가 정리된다', async () => {
     vi.useFakeTimers()
     const { unmount } = render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+    await clickLevel1()
     await submitWithFireEvent('cat nope.txt')
     expect(useGame.getState().signal).toBe('wrong')
 
@@ -249,7 +264,7 @@ describe('시그널: crt 클래스', () => {
     vi.useFakeTimers()
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { unmount } = render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+    await clickLevel1()
     await submitWithFireEvent('cat nope.txt')
     expect(useGame.getState().signal).toBe('wrong')
 
