@@ -134,4 +134,26 @@ describe('diff', () => {
   it('파일 없으면 exit 2', async () => {
     const r = await sh.exec('diff x.txt nope.txt'); expect(r.exitCode).toBe(2); expect(r.stderr).toContain('diff')
   })
+
+  // Regression guard: bare diff on differing files must fail closed (no guessed hunk output)
+  it('(-q 없이) 다른 파일은 flashshell 거절 메시지, exit 1, stdout 공백', async () => {
+    const r = await sh.exec('diff x.txt y.txt')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toContain('flashshell')
+    expect(r.stdout).toBe('')
+  })
+
+  // Missing operand: one file argument only
+  it('인자 하나만 주면 missing operand, exit 2', async () => {
+    const r = await sh.exec('diff x.txt')
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toContain('missing operand')
+  })
+
+  // Extra operand: three file arguments
+  it('인자 세 개면 extra operand, exit 2', async () => {
+    const r = await sh.exec('diff x.txt y.txt z.txt')
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toContain('extra operand')
+  })
 })
