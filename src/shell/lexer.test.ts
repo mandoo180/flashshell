@@ -228,4 +228,62 @@ describe('tokenize', () => {
     // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo $(echo "abc' => unexpected EOF while looking for matching `"'
     expect(() => tokenize('echo $(echo "abc')).toThrow(/unexpected EOF/)
   })
+
+  describe('개행 분리자와 # 주석', () => {
+    const shape = (ts: Token[]) =>
+      ts.map((t) => (t.type === 'OP' ? `OP(${t.value})` : t.type === 'WORD' ? 'WORD' : 'EOF'))
+
+    it('개행은 ; 와 동등한 분리자 토큰으로 접힌다', () => {
+      // 실제 bash 확인: echo a; echo b 와 echo a\necho b 는 동일하게 a\nb 를 출력한다.
+      const ts = tokenize('echo a\necho b')
+      expect(shape(ts)).toEqual(['WORD', 'WORD', 'OP(;)', 'WORD', 'WORD', 'EOF'])
+      expect(words(ts).map((t) => t.word.map((p) => p.text).join(''))).toEqual(['echo', 'a', 'echo', 'b'])
+    })
+
+    it('# 이후 줄 끝까지는 주석으로 버려진다', () => {
+      // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo hi # comment here' => hi
+      const ts = tokenize('echo hi # 주석')
+      expect(shape(ts)).toEqual(['WORD', 'WORD', 'EOF'])
+      expect(words(ts).map((t) => t.word.map((p) => p.text).join(''))).toEqual(['echo', 'hi'])
+    })
+
+    it('단어 중간의 #은 리터럴이다 (a#b)', () => {
+      // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo a#b' => a#b
+      const ts = tokenize('echo a#b')
+      expect(shape(ts)).toEqual(['WORD', 'WORD', 'EOF'])
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: 'a#b' }])
+    })
+
+    it('따옴표 안의 #은 리터럴이다', () => {
+      // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo "# x"' => # x
+      const ts = tokenize("echo '# not'")
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'literal', text: '# not' }])
+    })
+
+    it('if/then/fi 여러 줄이 세미콜론 흐름과 동등하게 토큰화된다', () => {
+      const multi = tokenize('if true\nthen echo hi\nfi')
+      const single = tokenize('if true ; then echo hi ; fi')
+      expect(shape(multi)).toEqual(shape(single))
+      expect(words(multi).map((t) => t.word.map((p) => p.text).join(''))).toEqual(
+        words(single).map((t) => t.word.map((p) => p.text).join('')),
+      )
+    })
+
+    it('빈 줄(연속 개행)은 빈 리스트 항목을 만들지 않고 ; 하나로 접힌다', () => {
+      // 실제 bash 확인: docker run --rm debian:stable-slim bash -c $'echo a\n\necho b' => a\nb (빈 줄은 무시된다)
+      const ts = tokenize('echo a\n\necho b')
+      expect(shape(ts)).toEqual(['WORD', 'WORD', 'OP(;)', 'WORD', 'WORD', 'EOF'])
+    })
+
+    it('선행 주석 줄은 선행 ; 를 만들지 않는다', () => {
+      // 실제 bash 확인: 스크립트 첫 줄이 주석이어도 문법 오류 없이 실행된다.
+      const ts = tokenize('# leading comment\necho hi')
+      expect(shape(ts)).toEqual(['WORD', 'WORD', 'EOF'])
+    })
+
+    it('후행 개행은 후행 세미콜론처럼 접힌다 (파서가 허용)', () => {
+      const ts = tokenize('echo hi\n')
+      expect(shape(ts)).toEqual(['WORD', 'WORD', 'OP(;)', 'EOF'])
+    })
+  })
 })

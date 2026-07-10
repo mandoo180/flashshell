@@ -44,9 +44,33 @@ export function tokenize(input: string): Token[] {
   while (i < input.length) {
     const ch = input[i]!
 
-    if (ch === ' ' || ch === '\t' || ch === '\n') {
+    if (ch === ' ' || ch === '\t') {
       flush()
       i++
+      continue
+    }
+
+    // 개행은 ;와 동등한 리스트 분리자로 접는다(fold). bash는 대부분 문맥에서 개행을
+    // ;처럼 다루고, 파서는 이미 ;로 리스트를 나눈다. 단, 연속 개행(빈 줄)이나
+    // 선행/후행 개행이 매번 ; 토큰을 낳으면 파서가 빈 파이프라인으로 오인해
+    // 문법 오류를 낸다 — 그래서 직전 토큰이 없거나(선행) 이미 OP(;)라면
+    // (연속/빈 줄) 새 ; 를 또 밀어넣지 않는다.
+    if (ch === '\n') {
+      flush()
+      const last = tokens[tokens.length - 1]
+      if (last && !(last.type === 'OP' && last.value === ';')) {
+        tokens.push({ type: 'OP', value: ';' })
+      }
+      i++
+      continue
+    }
+
+    // #: 새 토큰이 시작하는 자리(따옴표 밖, 단어 진행 중이 아님)에서만 주석이다.
+    // 단어 중간의 #(a#b)이나 따옴표 안의 #('#x')은 이 지점에 도달하지 않는다 —
+    // 전자는 word.length > 0 이라 아래 조건을 건너뛰고(raw로 합쳐짐), 후자는
+    // 따옴표 분기가 내부에서 통째로 소비하므로 여기까지 오지 않는다.
+    if (ch === '#' && word.length === 0) {
+      while (i < input.length && input[i] !== '\n') i++
       continue
     }
 
