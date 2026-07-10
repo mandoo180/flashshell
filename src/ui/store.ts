@@ -92,6 +92,11 @@ export const useGame = create<GameStore>((set, get) => ({
     // 가 알아서 한다.
     let { session } = get()
     if (!session) {
+      // 세션은 여기서 딱 한 번 만들어지고 이후 절대 null 로 되돌리지 않는다
+      // (backToLevels 도 세션을 유지한다). 그래서 이 큐 리셋은 진행 중인 직렬화
+      // 작업이 없는 최초 1회에만 실행돼 안전하다. 나중에 세션 teardown/재생성 경로를
+      // 추가한다면, 이 `!session` 분기가 in-flight 중에 다시 참이 되어 큐에 쌓인
+      // 작업을 버릴 수 있으니 그 불변식을 반드시 함께 지켜야 한다.
       session = sessionFactory()
       sessionQueue = Promise.resolve() // 새 세션 → 직렬화 큐 초기화
       set({ session })
