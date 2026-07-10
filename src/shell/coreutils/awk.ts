@@ -418,6 +418,7 @@ class Runtime {
 
 /** 기본 필드 분리(공백 연속, 앞뒤 공백 무시) 아니면 -F 로 받은 구분자. */
 function splitFields(line: string, fs: string | undefined): string[] {
+  if (line === '') return []
   if (fs === undefined || fs === ' ') {
     const trimmed = line.trim()
     return trimmed === '' ? [] : trimmed.split(/\s+/)

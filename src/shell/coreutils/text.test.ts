@@ -186,6 +186,27 @@ describe('awk', () => {
     expect(await out("awk '$1<\"b\"{print $1}' p.txt")).toBe('alice\n')
   })
 
+  it('비어있는 줄은 -F 커스텀 구분자 사용시 NF=0', async () => {
+    fs.writeFile('/w/blank.csv', 'a:b\n\nc:d\n')
+    expect(await out("awk -F: '{print NF}' blank.csv")).toBe('2\n0\n2\n')
+  })
+
+  it('NF>0 으로 비어있는 줄을 필터링', async () => {
+    fs.writeFile('/w/blank.csv', 'a:b\n\nc:d\n')
+    expect(await out("awk -F: 'NF>0{print}' blank.csv")).toBe('a:b\nc:d\n')
+  })
+
+  it('기본 구분자로 비어있는 줄도 NF=0 (회귀 테스트)', async () => {
+    fs.writeFile('/w/blanksp.txt', 'a b\n\nc d\n')
+    expect(await out("awk '{print NF}' blanksp.txt")).toBe('2\n0\n2\n')
+  })
+
+  it('$2>=28 은 28 을 포함하고 $2>28 은 제외 (경계값 테스트)', async () => {
+    fs.writeFile('/w/ages.txt', 'alice 27\ndave 28\nevelyn 29\n')
+    expect(await out("awk '$2>=28{print $1}' ages.txt")).toBe('dave\nevelyn\n')
+    expect(await out("awk '$2>28{print $1}' ages.txt")).toBe('evelyn\n')
+  })
+
   it('미지원 구문은 flashshell 로 거부', async () => {
     const r = await run("awk '{for(i=0;i<3;i++)print}' p.txt")
     expect(r.exitCode).not.toBe(0)
