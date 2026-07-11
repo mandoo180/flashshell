@@ -106,6 +106,51 @@ describe('tokenize', () => {
     expect(() => tokenize('echo $(ls -l')).toThrow(/unexpected EOF/)
   })
 
+  describe('(( expr )) 산술 명령 (task 2)', () => {
+    it('단어 시작의 bare (( 는 짝이 맞는 )) 까지 raw 조각 하나로 통째로 삼킨다', () => {
+      const ts = tokenize('(( 1 + 2 ))')
+      expect(words(ts)).toHaveLength(1)
+      expect(words(ts)[0]!.word).toEqual([{ kind: 'raw', text: '(( 1 + 2 ))' }])
+    })
+
+    it('안의 <, > 는 리다이렉트 연산자로 오인되지 않는다 (배경 버그 회귀)', () => {
+      // 수정 전: `((` 가 raw 두 글자로 흩어지고 `<` 가 리다이렉트로 토큰화되어 완전히 깨졌다.
+      const ts = tokenize('(( i < 5 ))')
+      expect(ops(ts)).toEqual([])
+      expect(words(ts)).toHaveLength(1)
+      expect(words(ts)[0]!.word).toEqual([{ kind: 'raw', text: '(( i < 5 ))' }])
+    })
+
+    it('안쪽에 괄호 그룹이 있어도 짝을 정확히 센다', () => {
+      const ts = tokenize('(( (1+2) * 3 ))')
+      expect(words(ts)[0]!.word).toEqual([{ kind: 'raw', text: '(( (1+2) * 3 ))' }])
+    })
+
+    it('&& 뒤 등 다른 자리의 (( 도 같은 방식으로 삼킨다 (합성 문맥)', () => {
+      const ts = tokenize('(( 2 > 1 )) && echo yes')
+      expect(words(ts)[0]!.word).toEqual([{ kind: 'raw', text: '(( 2 > 1 ))' }])
+      expect(ops(ts)).toEqual(['&&'])
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: 'echo' }])
+    })
+
+    it('$(( 는 여전히 $ 분기가 먼저 가로챈다 (산술 확장과 충돌 없음)', () => {
+      const ts = tokenize('echo $((1+2))')
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '$((1+2))' }])
+    })
+
+    it('닫히지 않은 (( 는 끝까지 삼키지 않고 던진다', () => {
+      expect(() => tokenize('(( 1 + 2')).toThrow(/unexpected EOF/)
+    })
+
+    it('단어 중간의 (( 는 (단어 시작이 아니므로) 그냥 raw 글자로 흡수된다', () => {
+      // 예: a((b -- 첫 글자 a 로 이미 단어가 시작된 뒤라 word.length !== 0.
+      const ts = tokenize('a((b))')
+      expect(ops(ts)).toEqual([])
+      expect(words(ts)).toHaveLength(1)
+      expect(words(ts)[0]!.word).toEqual([{ kind: 'raw', text: 'a((b))' }])
+    })
+  })
+
   it('빈 입력은 EOF만 낸다', () => {
     expect(tokenize('   ')).toEqual([{ type: 'EOF' }])
   })

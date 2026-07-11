@@ -539,6 +539,65 @@ describe('산술 확장 $(( )) 통합 (task-1)', () => {
   })
 })
 
+describe('(( expr )) 산술 명령 (task-2, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('결과 ≠ 0 이면 참 → exit 0 (docker: (( 1+2 )); echo $? → 0)', async () => {
+    const r = await sh.exec('(( 1 + 2 )); echo $?')
+    expect(r.stdout).toBe('0\n')
+  })
+
+  it('결과 = 0 이면 거짓 → exit 1 (docker: (( 0 )); echo $? → 1)', async () => {
+    const r = await sh.exec('(( 0 )); echo $?')
+    expect(r.stdout).toBe('1\n')
+  })
+
+  it('비교 결과가 거짓이면 exit 1 (docker: (( 5 < 3 )); echo $? → 1)', async () => {
+    const r = await sh.exec('(( 5 < 3 )); echo $?')
+    expect(r.stdout).toBe('1\n')
+  })
+
+  it('비교 결과가 참이면 exit 0 (docker: (( 3 > 1 )); echo $? → 0)', async () => {
+    const r = await sh.exec('(( 3 > 1 )); echo $?')
+    expect(r.stdout).toBe('0\n')
+  })
+
+  it('후위 증감의 env 부작용이 셸 상태에 남는다 (docker: x=1; (( x++ )); echo $x → 2)', async () => {
+    const r = await sh.exec('x=1; (( x++ )); echo $x')
+    expect(r.stdout).toBe('2\n')
+  })
+
+  it('대입식의 env 부작용도 남는다 (docker: x=5; (( x = x * 2 )); echo $x → 10)', async () => {
+    const r = await sh.exec('x=5; (( x = x * 2 )); echo $x')
+    expect(r.stdout).toBe('10\n')
+  })
+
+  it('배경 버그 회귀: (( i < 5 )) 의 < 가 리다이렉트로 오인되지 않는다', async () => {
+    const r = await sh.exec('i=2; (( i < 5 )); echo $?')
+    expect(r.stdout).toBe('0\n')
+  })
+
+  it('0 나누기 등 산술 오류는 stderr + exit 1 로 surface (reject/hang 아님)', async () => {
+    const r = await sh.exec('(( 1 / 0 )); echo $?')
+    expect(r.stdout).toBe('1\n')
+    expect(r.stderr).toContain('division by 0')
+  })
+
+  it('&& 로 다른 명령과 합성된다 (docker: (( 2 > 1 )) && echo yes → yes)', async () => {
+    const r = await sh.exec('(( 2 > 1 )) && echo yes')
+    expect(r.stdout).toBe('yes\n')
+  })
+
+  it('|| 는 참일 때 오른쪽을 건너뛴다', async () => {
+    const r = await sh.exec('(( 1 )) || echo skip-me')
+    expect(r.stdout).toBe('')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('회귀: 기존 리다이렉션(단일 ( 아님)은 영향받지 않는다', async () => {
+    const r = await sh.exec('echo a > f; cat f')
+    expect(r.stdout).toBe('a\n')
+  })
+})
+
 describe('제어문 break / continue (task 4, docker 로 확인됨)', () => {
   it('break 은 가장 안쪽 루프를 즉시 끝낸다 (break 직전 출력은 보존)', async () => {
     // docker: while true; do echo x; break; done  →  x, exit 0

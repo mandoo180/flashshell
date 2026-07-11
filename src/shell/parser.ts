@@ -76,10 +76,21 @@ export interface GroupNode {
 }
 
 /**
+ * `(( expr ))` 산술 명령(standalone, task 2). expr 은 lexer 가 통째로 삼킨 원문에서 바깥
+ * `((`/`))` 를 벗겨낸 안쪽 텍스트 그대로다(파싱 전) — interpreter 가 evalArith(Task 1의
+ * 산술 평가기)에 그대로 넘긴다. bash 산술-명령 규약: 결과 ≠ 0 이면 exit 0(참), 0 이면
+ * exit 1(거짓). `for (( ))` C-스타일 루프는 이 태스크 범위 밖(스탠드얼론 `(( ))`만).
+ */
+export interface ArithCmdNode {
+  kind: 'arith'
+  expr: string
+}
+
+/**
  * 파이프라인의 한 단계가 될 수 있는 명령. 단순 명령 + 복합 명령의 유니온이다.
  * `kind` 로 판별한다.
  */
-export type Command = CommandNode | IfNode | WhileNode | ForNode | CaseNode | FunctionDefNode | GroupNode
+export type Command = CommandNode | IfNode | WhileNode | ForNode | CaseNode | FunctionDefNode | GroupNode | ArithCmdNode
 
 export interface PipelineNode { kind: 'pipeline'; commands: Command[] }
 
@@ -226,6 +237,20 @@ class Parser {
     return t.type === 'WORD' ? keywordOf(t.word) : null
   }
 
+  /**
+   * 현재 토큰이 lexer 가 통째로 삼킨 `(( expr ))` 단위(단일 raw 조각, `((`로 시작하고
+   * `))`로 끝남)면 안쪽 expr 텍스트를, 아니면 null 을 준다. bareWord 와 같은 원리로
+   * 따옴표 없이 통째로 이어진 raw 조각 하나일 때만 인정한다(lexer 가 항상 그렇게 만든다 —
+   * matchDoubleParenEnd 로 짝을 찾아 한 raw 조각으로 push 하므로).
+   */
+  private peekArithExpr(): string | null {
+    const t = this.peek()
+    if (t.type !== 'WORD') return null
+    const text = bareWord(t.word)
+    if (text === null || text.length < 4 || !text.startsWith('((') || !text.endsWith('))')) return null
+    return text.slice(2, -2)
+  }
+
   /** 다음 토큰이 정확히 이 예약어이길 요구하고 소비한다. 아니면 문법 오류. */
   private expectKeyword(kw: string): void {
     if (this.peekKeyword() !== kw) {
@@ -308,8 +333,19 @@ class Parser {
    * 첫 토큰이 bare 예약어(if/while/until/for/case/function/`{`)면 복합 명령, 아니면 단순
    * 명령. 단, `function` 예약어가 없어도 `NAME ()` 형태(첫 단어 뒤에 `()`)면 함수 정의로
    * 분기한다 — matchFuncDefName 이 토큰을 소비하지 않고 앞을 훑어 판정한다.
+   *
+   * `(( expr ))` (task 2)도 여기서 가장 먼저 가로챈다 — lexer 가 이미 한 단위(raw 조각
+   * 하나)로 통째로 삼켰으므로, 예약어 판정보다 먼저 봐도(peekArithExpr 은 keywordOf 와
+   * 겹치지 않는다 — `((`로 시작하는 예약어가 없다) 안전하고, 함수정의 판정(matchFuncDefName)
+   * 보다 먼저 봐야 `((1))`처럼 함수이름 정규식에 안 걸리는 텍스트가 엉뚱하게 단순 명령으로
+   * 새지 않는다.
    */
   private parseCommandOrCompound(): Command {
+    const arithExpr = this.peekArithExpr()
+    if (arithExpr !== null) {
+      this.next()
+      return { kind: 'arith', expr: arithExpr }
+    }
     switch (this.peekKeyword()) {
       case 'if': return this.parseIf()
       case 'while': return this.parseWhile(false)

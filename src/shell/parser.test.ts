@@ -570,3 +570,44 @@ describe('함수 정의 / 브레이스 그룹 (task 7)', () => {
     expect(ast.items[0]!.pipeline.commands[0]!.kind).toBe('group')
   })
 })
+
+describe('(( expr )) 산술 명령 (task 2)', () => {
+  function firstCompound(input: string) {
+    return parse(input).items[0]!.pipeline.commands[0]!
+  }
+
+  it('(( expr )) 를 arith 노드로 파싱하고 바깥 ((/)) 를 벗겨낸 expr 을 보존한다', () => {
+    const c = firstCompound('(( 1 + 2 ))')
+    expect(c.kind).toBe('arith')
+    if (c.kind !== 'arith') throw new Error('not arith')
+    expect(c.expr).toBe(' 1 + 2 ')
+  })
+
+  it('(( i < 5 )) 가 리다이렉트로 오인되지 않고 arith 로 파싱된다 (배경 버그 회귀)', () => {
+    const c = firstCompound('(( i < 5 ))')
+    expect(c.kind).toBe('arith')
+    if (c.kind !== 'arith') throw new Error('not arith')
+    expect(c.expr).toBe(' i < 5 ')
+  })
+
+  it('&& 뒤의 명령과 합성된다 (합성 문맥)', () => {
+    // '&&' 는 리스트 아이템 연결자다 — arith 가 첫 아이템, echo yes 가 두 번째 아이템(op: '&&').
+    const ast = parse('(( 2 > 1 )) && echo yes')
+    expect(ast.items).toHaveLength(2)
+    expect(ast.items[0]!.op).toBeNull()
+    expect(ast.items[0]!.pipeline.commands[0]!.kind).toBe('arith')
+    expect(ast.items[1]!.op).toBe('&&')
+    expect(ast.items[1]!.pipeline.commands[0]!.kind).toBe('command')
+  })
+
+  it('arith 도 파이프라인/리스트에 참여한다', () => {
+    const ast = parse('(( 1 )); (( 2 ))')
+    expect(ast.items).toHaveLength(2)
+    expect(ast.items[0]!.pipeline.commands[0]!.kind).toBe('arith')
+    expect(ast.items[1]!.pipeline.commands[0]!.kind).toBe('arith')
+  })
+
+  it('닫는 )) 가 없으면 문법 오류(렉서 단계에서 던짐)다', () => {
+    expect(() => parse('(( 1 + 2')).toThrow(/unexpected EOF/)
+  })
+})

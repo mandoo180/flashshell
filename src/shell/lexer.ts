@@ -1,4 +1,4 @@
-import { matchSubstitutionEnd } from './subst'
+import { matchSubstitutionEnd, matchDoubleParenEnd } from './subst'
 
 export type WordPart =
   | { kind: 'literal'; text: string } // 작은따옴표 안 / 이스케이프됨 → 확장 없음
@@ -148,6 +148,19 @@ export function tokenize(input: string): Token[] {
     // (unterminated 면 matchSubstitutionEnd가 던진다).
     if (ch === '$' && input[i + 1] === '(') {
       const j = matchSubstitutionEnd(input, i) + 1
+      push('raw', input.slice(i, j))
+      i = j
+      continue
+    }
+
+    // (( expr )) 산술 명령: 단어 시작(word.length === 0)에서 bare `((` 를 만나면 짝이 맞는
+    // `))` 까지 통째로 한 raw 조각으로 삼킨다. `$((` 는 위 분기가 이미 가로채므로 여기
+    // 도달하지 않는다 — 이 서브셋엔 `( )` 서브셸이 없어서, 단어 시작의 bare `((` 는
+    // 언제나 산술 명령으로 봐도 모호하지 않다. 이 분기가 없으면 `((`가 raw 글자 두 개로
+    // 낱낱이 흩어져 `<`/`>` 가 리다이렉트 연산자로 오인되며 완전히 깨진다
+    // (예: `(( i < 5 ))` 의 `<` 가 리다이렉트로 토큰화됨).
+    if (ch === '(' && input[i + 1] === '(' && word.length === 0) {
+      const j = matchDoubleParenEnd(input, i)
       push('raw', input.slice(i, j))
       i = j
       continue

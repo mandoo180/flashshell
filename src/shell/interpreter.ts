@@ -1,9 +1,10 @@
 import { VFS } from './vfs'
 import { ExecutionLimitError, ControlSignal, LoopSignal, BreakSignal, ReturnSignal, errnoText } from './errors'
-import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ListNode, type PipelineNode } from './parser'
+import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ArithCmdNode, type ListNode, type PipelineNode } from './parser'
 import { expandWord, expandToSingle, expandForCase, type ExpandCtx } from './expand'
 import { matchSegment } from './glob'
 import { lookupCommand, isKnownUnimplemented } from './registry'
+import { evalArith, ArithError } from './arith'
 import type { CommandEnv, ExecResult, ShellState } from './types'
 import type { Word } from './lexer'
 
@@ -143,6 +144,32 @@ async function runCommand(node: Command, ctx: RunCtx, stdin: string): Promise<Ex
     case 'funcdef': return runFuncDef(node, ctx)
     // 브레이스 그룹: 서브셸이 아니라 현재 ctx 에서 LIST 를 실행한다(env 공유).
     case 'group': return runList(node.body, ctx)
+    // `(( expr ))` 산술 명령(task 2).
+    case 'arith': return runArith(node, ctx)
+  }
+}
+
+/**
+ * `(( expr ))` 산술 명령(standalone, task 2). Task 1 의 evalArith 를 그대로 재사용해
+ * expr 을 평가한다 — ctx.state.env 를 직접 넘기므로 대입/증감(`(( x++ ))`, `(( x = x*2 ))`)
+ * 부작용이 셸 상태에 영구히 남는다(ExpandCtx 의 env 참조 공유와 같은 원리, docker 확인:
+ * `x=1; (( x++ )); echo $x` → 2).
+ *
+ * exit code 는 bash 산술-명령 규약대로 "결과 ≠ 0 이면 참(exit 0), 0 이면 거짓(exit 1)" —
+ * `$(( ))` 확장(값을 문자열로 돌려줌)과 정반대 극성이다. 0 나누기/문법 오류 등 ArithError 는
+ * runSimpleCommand 의 확장-오류 처리와 같은 패턴으로 stderr + exit 1 의 얌전한 ExecResult 로
+ * 바꾼다(reject 하지 않음, docker 확인: `(( 1/0 ))` → stderr "division by 0", exit 1).
+ * ArithError 가 아닌 예외(특히 ExecutionLimitError)는 그대로 위로 던진다 — 무한루프 방어를
+ * 삼키면 안 되기 때문이다.
+ */
+function runArith(node: ArithCmdNode, ctx: RunCtx): ExecResult {
+  spend(ctx)
+  try {
+    const value = evalArith(node.expr, ctx.state)
+    return { stdout: '', stderr: '', exitCode: value !== 0 ? 0 : 1 }
+  } catch (e) {
+    if (e instanceof ArithError) return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
+    throw e
   }
 }
 
