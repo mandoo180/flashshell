@@ -2,6 +2,7 @@ import type { VFS } from './vfs'
 import type { Word } from './lexer'
 import { expandGlob } from './glob'
 import { matchSubstitutionEnd } from './subst'
+import { evalArith } from './arith'
 
 export interface ExpandCtx {
   env: Record<string, string>
@@ -48,6 +49,21 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
     const ch = source[i]!
 
     if (ch !== '$') { append(field, ch, protectedResult); i++; continue }
+
+    // $((expr)) — 산술 확장. 반드시 $( 명령치환보다 먼저 잡아야 한다: matchSubstitutionEnd
+    // 는 $(( 를 구분하지 않으므로, 이 분기가 없으면 `$((1+2))` 가 `(1+2)` 명령치환으로
+    // 오인돼 조용히 빈 문자열이 된다(오늘의 버그). matchSubstitutionEnd 는 괄호 깊이를
+    // 세므로 `$(( ... ))` 의 바깥 `)` 인덱스를 돌려준다 → 안쪽 `)` 는 close-1, 식은
+    // source.slice(i+3, close-1). evalArith 가 던지는 오류(0 나누기·문법 오류 등)는 여기서
+    // 잡지 않고 그대로 위로 흘린다 — runSimpleCommand 의 catch 가 얌전한 ExecResult
+    // (stderr + exit 1)로 바꾼다(exec 은 reject 하지 않는다).
+    if (source[i + 1] === '(' && source[i + 2] === '(') {
+      const closeIndex = matchSubstitutionEnd(source, i)
+      const expr = source.slice(i + 3, closeIndex - 1)
+      append(field, String(evalArith(expr, ctx)), protectedResult)
+      i = closeIndex + 1
+      continue
+    }
 
     // $(...) — 짝 찾기는 렉서와 공유하는 따옴표 인식 스캐너를 쓴다. 여기서 독자적으로
     // 괄호 깊이를 세면 따옴표 속 )를 짝으로 착각하는 버그를 다시 만들게 된다

@@ -149,6 +149,37 @@ describe('expandWord — 명령치환', () => {
   })
 })
 
+describe('expandWord — 산술 확장 $(( ))', () => {
+  it('$((1+2)) 를 3 으로 바꾼다', async () => {
+    expect(await expandWord(wordOf('$((1+2))'), ctx)).toEqual(['3'])
+  })
+  it('echo 인자 자리의 산술 (텍스트에 붙어도 동작)', async () => {
+    expect(await expandWord(wordOf('x$((2*3))y'), ctx)).toEqual(['x6y'])
+  })
+  it('변수를 읽는다 (bare 와 $x 둘 다)', async () => {
+    ctx.env.N = '5'
+    expect(await expandWord(wordOf('$((N+1))'), ctx)).toEqual(['6'])
+    expect(await expandWord(wordOf('$(($N*2))'), ctx)).toEqual(['10'])
+  })
+  it('대입 부작용이 ctx.env 에 남는다', async () => {
+    ctx.env.I = '0'
+    expect(await expandWord(wordOf('$((I=I+1))'), ctx)).toEqual(['1'])
+    expect(ctx.env.I).toBe('1')
+  })
+  it('중첩 괄호', async () => {
+    expect(await expandWord(wordOf('$(( (1+2)*3 ))'), ctx)).toEqual(['9'])
+  })
+  it('$(( )) 는 $( 명령치환보다 먼저 잡혀 명령을 실행하지 않는다', async () => {
+    let ran = false
+    ctx.runSubshell = async (script) => { ran = true; return { stdout: script, stderr: '', exitCode: 0 } }
+    expect(await expandWord(wordOf('$((1+2))'), ctx)).toEqual(['3'])
+    expect(ran).toBe(false)
+  })
+  it('산술 오류(0 나누기)는 던져서 위(interpreter)가 ExecResult 로 바꾸게 한다', async () => {
+    await expect(expandWord(wordOf('$((1/0))'), ctx)).rejects.toThrow(/division by 0/)
+  })
+})
+
 describe('expandWord — 글롭', () => {
   it('따옴표 없는 패턴을 확장한다', async () => {
     expect(await expandWord(wordOf('*.txt'), ctx)).toEqual(['a.txt', 'b.txt'])

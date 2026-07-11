@@ -509,6 +509,36 @@ describe('제어문 while / until (task 4, docker 로 확인됨)', () => {
   })
 })
 
+describe('산술 확장 $(( )) 통합 (task-1)', () => {
+  it('카운터 루프가 산술로 종단한다 (헤드라인: 오늘까지 안 되던 것)', async () => {
+    // docker: i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done  →  0 1 2
+    const r = await run('i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done', fs, {
+      cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' },
+      lastExitCode: 0, home: '/home/player', functions: new Map(),
+    }, 100_000)
+    expect(r.stdout).toBe('0\n1\n2\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('명령 인자 자리의 산술', async () => {
+    expect((await sh.exec('echo $((2**10))')).stdout).toBe('1024\n')
+    expect((await sh.exec('echo $((10/3)) $(( (1+2)*3 ))')).stdout).toBe('3 9\n')
+  })
+
+  it('산술 대입이 셸 상태에 남는다', async () => {
+    await sh.exec('x=5')
+    expect((await sh.exec('echo $((x+=10))')).stdout).toBe('15\n')
+    expect((await sh.exec('echo $x')).stdout).toBe('15\n')
+  })
+
+  it('0 나누기는 stderr + exit 1 로 surface (exec 은 reject 하지 않는다)', async () => {
+    const r = await sh.exec('echo $((1/0))')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toContain('division by 0')
+    expect(r.stdout).toBe('')
+  })
+})
+
 describe('제어문 break / continue (task 4, docker 로 확인됨)', () => {
   it('break 은 가장 안쪽 루프를 즉시 끝낸다 (break 직전 출력은 보존)', async () => {
     // docker: while true; do echo x; break; done  →  x, exit 0
