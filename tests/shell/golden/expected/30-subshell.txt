@@ -1,0 +1,7 @@
+a
+b
+done x=[]
+
+===STDERR===
+===EXIT===
+0
