@@ -1,0 +1,8 @@
+a=x b=y z
+one|two|three
+[padded   value]
+REPLY=hi
+
+===STDERR===
+===EXIT===
+0
