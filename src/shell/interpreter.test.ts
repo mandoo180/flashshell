@@ -409,6 +409,43 @@ describe('env IFS 통합 (task 5, docker debian:stable-slim bash 5 로 확인됨
   })
 })
 
+describe('"$@" 빈 인자 & 리뷰 수정 (task 5 fix, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  // Issue 1: 빈 문자열 인자도 개별 필드로 보존
+  // docker: f() { for w in "$@"; do echo "[$w]"; done; }; f "" => []
+  it('"$@" 인자가 빈 문자열 하나면 빈 필드 하나', async () => {
+    expect((await sh.exec('f() { for w in "$@"; do echo "[$w]"; done; }; f ""')).stdout).toBe('[]\n')
+  })
+  // docker: f a "" b => [a][][b]
+  it('"$@" 중간 빈 인자 보존', async () => {
+    expect((await sh.exec('f() { for w in "$@"; do echo "[$w]"; done; }; f a "" b')).stdout).toBe('[a]\n[]\n[b]\n')
+  })
+  // Issue 2: x="$@" 는 스페이스로 조인 (IFS=: 여도)
+  // docker: f() { x="$@"; echo "[$x]"; }; f a b c => [a b c]
+  it('x="$@" 대입은 스페이스로 조인한다', async () => {
+    expect((await sh.exec('f() { x="$@"; echo "[$x]"; }; f a b c')).stdout).toBe('[a b c]\n')
+  })
+  it('IFS=: 이어도 x="$@" 는 스페이스 조인 (x="$*" 는 콜론)', async () => {
+    expect((await sh.exec('IFS=:; f() { x="$@"; echo "[$x]"; }; f a b c')).stdout).toBe('[a b c]\n')
+    expect((await sh.exec('IFS=:; f() { x="$*"; echo "[$x]"; }; f a b c')).stdout).toBe('[a:b:c]\n')
+  })
+  // docker: case "$@" in "a b c") ... => MATCH (space-join)
+  it('case subject "$@" 도 스페이스로 조인해 매칭한다', async () => {
+    expect((await sh.exec('h() { case "$@" in "a b c") echo MATCH;; *) echo NO;; esac; }; h a b c')).stdout).toBe('MATCH\n')
+  })
+  // Issue 3: 비공백 IFS 빈 필드 보존
+  // docker: IFS=:; v="a::b"; for w in $v => [a][][b]
+  it('IFS=: 인접 구분자는 빈 필드를 만든다', async () => {
+    expect((await sh.exec('IFS=:; v="a::b"; for w in $v; do echo "[$w]"; done')).stdout).toBe('[a]\n[]\n[b]\n')
+  })
+  // docker: IFS=:; v=":a:b" => [][a][b]
+  it('IFS=: 선행 구분자는 선행 빈 필드', async () => {
+    expect((await sh.exec('IFS=:; v=":a:b"; for w in $v; do echo "[$w]"; done')).stdout).toBe('[]\n[a]\n[b]\n')
+  })
+  it('회귀: 기본 공백 IFS 는 연속 공백을 접는다 (변경 없음)', async () => {
+    expect((await sh.exec('v="a  b"; for w in $v; do echo "[$w]"; done')).stdout).toBe('[a]\n[b]\n')
+  })
+})
+
 describe('파라미터 확장 — 길이/기본값/대체 (task 3, docker debian:stable-slim bash 5 로 확인됨)', () => {
   it('${#NAME} 길이', async () => {
     const r = await sh.exec('NAME=world; echo ${#NAME}')

@@ -562,53 +562,68 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
   }
 }
 
+const isIfsWhitespace = (ch: string): boolean => ch === ' ' || ch === '\t' || ch === '\n'
+
 /**
- * 필드를 (1) 하드 경계(field.breaks — IFS·따옴표와 무관하게 무조건)와 (2) splittable(비따옴표
- * 확장 결과)인 IFS 문자에서 쪼갠다. ifs 는 ctx.env.IFS 에서 파싱된 문자 집합이다(빈 배열이면
- * IFS 분할이 전혀 일어나지 않고 하드 경계만 적용된다).
+ * 필드를 (1) 하드 경계(field.breaks)와 (2) POSIX IFS 단어분할로 쪼갠다. 오직 splittable(비따옴표
+ * 확장 결과)인 문자만 분리자가 된다 — 리터럴/따옴표 문자는 IFS 문자와 같아도 내용이다(`IFS=:`
+ * 에서도 `echo a:b:c` 는 안 잘린다).
  *
- * 하드 경계는 무조건 필드를 끊는다 — 인접 `"$@"` 인자가 빈 문자열이어도 빈 필드를 남긴다.
- * 경계 뒤에는 반드시 한 필드가 뒤따르므로(breakPending), 마지막 인자가 비어도 필드로 남는다.
- * IFS 분할은 반대로 "started" 인 필드만 끊고 연속 IFS/선행·후행 IFS 를 접는다(기존 동작 유지).
+ * POSIX 규칙(bash 실측): IFS 문자는 **공백류**(space/tab/newline)와 **비공백**으로 나뉜다.
+ *  - IFS-공백 실행(run)은 하나의 분리자로 접히고, 앞뒤 IFS-공백은 버려진다(빈 필드 안 생김).
+ *  - IFS-비공백은 각각이 하나의 분리자이고 인접 IFS-공백을 흡수한다. 따라서 인접/선행 비공백
+ *    분리자는 **빈 필드**를 만든다: `a::b`→[a][][b], `:a`→[][a], `a::`→[a][], `a:b:`→[a][b]
+ *    (후행 분리자 하나는 빈 필드를 안 더한다). 혼합(`IFS=" :"`)이면 공백은 접히고 `:`만 경계다.
+ *  - IFS 빈 배열이면 분할이 전혀 없다(하드 경계만).
+ *
+ * 하드 경계(`"$@"` per-arg)는 IFS 와 무관한 확정 경계다 — breaks 로 텍스트를 세그먼트로 나눈
+ * 뒤 각 세그먼트를 POSIX 분할하고, 빈 세그먼트라도 필드 하나(빈 필드)를 커밋한다(빈 위치
+ * 인자 보존). `"$@"` 인자 문자는 따옴표 보호(splittable=false)라 세그먼트 내부에서 IFS 분할
+ * 되지 않는다.
  */
 function splitFields(field: Field, ifs: string[]): Field[] {
+  const ifsSet = new Set(ifs)
+  const text = field.text
   const out: Field[] = []
-  let current = empty()
-  let started = false
-  let breakPending = false // 하드 경계가 방금 커밋한 "뒤따를 필드" — 비어도 emit 해야 한다
-  const breaks = field.breaks
-  let bIdx = 0
-  const len = field.text.length
 
-  for (let p = 0; p <= len; p++) {
-    // 하드 경계: 이 위치의 경계를 전부 소진한다. 같은 위치에 여러 개면(연속 빈 인자)
-    // 각각이 필드 하나를 무조건 밀어낸다.
-    while (bIdx < breaks.length && breaks[bIdx] === p) {
-      out.push(current)
-      current = empty()
-      started = false
-      breakPending = true
-      bIdx++
-    }
-    if (p === len) break
+  const isDelim = (p: number): boolean => field.splittable[p]! && ifsSet.has(text[p]!)
+  const isWsDelim = (p: number): boolean => isDelim(p) && isIfsWhitespace(text[p]!)
+  const isNonWsDelim = (p: number): boolean => isDelim(p) && !isIfsWhitespace(text[p]!)
 
-    const ch = field.text[p]!
-    const isQuoted = field.quoted[p]!
-    const isSplittable = field.splittable[p]!
-    // 확장 결과의 비따옴표 부분(splittable)만 IFS 로 쪼갠다 — 리터럴 소스 문자는
-    // splittable=false 라 `IFS=:` 에서도 `echo a:b:c` 가 안 잘린다(bash 동작).
-    if (isSplittable && ifs.includes(ch)) {
-      if (started) { out.push(current); current = empty(); started = false }
-      continue
+  // [start, end) 세그먼트 하나를 POSIX IFS 분할해 out 에 밀어 넣고, 밀어 넣은 필드 수를 낸다.
+  const scanSegment = (start: number, end: number): number => {
+    let pushed = 0
+    let i = start
+    while (i < end && isWsDelim(i)) i++ // 선행 IFS-공백은 버린다(선행 비공백은 안 버림 → 빈 필드)
+    while (i < end) {
+      const f = empty()
+      while (i < end && !isDelim(i)) { append(f, text[i]!, field.quoted[i]!, field.splittable[i]!); i++ }
+      out.push(f); pushed++
+      if (i >= end) break
+      // 논리적 분리자 하나 소비: IFS-공백 실행 → 선택적 비공백 하나 → 뒤따르는 IFS-공백 실행
+      while (i < end && isWsDelim(i)) i++
+      if (i < end && isNonWsDelim(i)) {
+        i++
+        while (i < end && isWsDelim(i)) i++
+      }
     }
-    append(current, ch, isQuoted, isSplittable)
-    started = true
-    breakPending = false
+    return pushed
   }
-  if (started || breakPending) out.push(current)
+
+  if (field.breaks.length === 0) {
+    scanSegment(0, text.length)
+  } else {
+    // 하드 경계로 세그먼트를 나눈다. 각 세그먼트는 커밋됨 — POSIX 분할이 0필드면 빈 필드 하나.
+    let segStart = 0
+    for (const b of field.breaks) {
+      if (scanSegment(segStart, b) === 0) out.push(empty())
+      segStart = b
+    }
+    if (scanSegment(segStart, text.length) === 0) out.push(empty())
+  }
 
   // 내용이 하나도 안 나왔지만 따옴표는 있었다면(`""`, `"$*"` 빈 인자 등), 빈 단어 하나를
-  // 남긴다. (`"$@"` 빈 인자는 hadQuotes 를 세우지 않아 여기 안 걸린다 — expandWord 참고.)
+  // 남긴다. (`"$@"` zero-arg 는 hadQuotes 를 세우지 않아 여기 안 걸린다 — expandWord 참고.)
   if (out.length === 0 && field.hadQuotes) out.push(empty())
   return out
 }
@@ -643,10 +658,12 @@ export async function expandWord(word: Word, ctx: ExpandCtx): Promise<string[]> 
     if (part.kind === 'literal') { field.hadQuotes = true; appendLiteral(field, part.text, true); continue }
     if (part.kind === 'dquote') {
       // 따옴표 조각은 보통 "따옴표 있었음"을 세워 빈 필드(`""`→빈 단어)를 정당화한다.
-      // 단, 조각 전체가 바로 `$@` 뿐이면 예외다: bash 는 인자 없는 `"$@"` 를 빈 필드조차
-      // 아니라 통째로 사라지게 한다(docker: `set --; for a in "$@"; do echo x; done` → 무출력).
-      // `"$*"` 나 `""` 는 빈 따옴표 null 을 남기지만 `"$@"` 만 유일하게 안 남긴다.
-      if (part.text !== '$@') field.hadQuotes = true
+      // 단, 조각 전체가 `$@` 이고 위치 인자가 **하나도 없을 때만** 예외다: bash 는 인자
+      // 없는 `"$@"` 를 빈 필드조차 아니라 통째로 사라지게 한다(docker: `set --; for a in
+      // "$@"; do echo x; done` → 무출력). 그러나 인자가 하나라도 있으면(빈 문자열이라도)
+      // 각 인자는 필드를 남긴다(`f ""` → `[]` 한 개, `f "" ""` → `[][]`). `"$*"`·`""` 는
+      // 언제나 빈 따옴표 null 을 남긴다 — `"$@"` 의 zero-arg 만 유일한 예외다.
+      if (!(part.text === '$@' && ctx.positional.length === 0)) field.hadQuotes = true
       await expandDollar(part.text, true, field, ctx)
       continue
     }
@@ -717,5 +734,23 @@ export async function expandForCase(word: Word, ctx: ExpandCtx): Promise<string>
     }
     await expandDollar(text, false, field, ctx)
   }
-  return field.text
+  return flattenSingleString(field)
+}
+
+/**
+ * 단어분리를 하지 않는 단일 문자열 문맥(대입 RHS, case subject/pattern)에서 필드 텍스트를
+ * 낸다. 하드 경계(`"$@"` per-arg)는 이 문맥에선 **스페이스**로 조인한다 — bash 는 한 단어로
+ * 접힐 때 `"$@"` 를 IFS 첫 글자가 아니라 항상 스페이스로 잇는다(docker: `IFS=:; x="$@"; f a
+ * b c` → `a b c`, 콜론이 아님. `"$*"` 만 IFS 첫 글자를 쓴다 — 그건 expandDollar 가 이미 조인해
+ * 놓아 breaks 가 없다). breaks 가 없으면 text 그대로.
+ */
+function flattenSingleString(field: Field): string {
+  if (field.breaks.length === 0) return field.text
+  let result = ''
+  let prev = 0
+  for (const b of field.breaks) {
+    result += field.text.slice(prev, b) + ' '
+    prev = b
+  }
+  return result + field.text.slice(prev)
 }
