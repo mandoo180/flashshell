@@ -1,0 +1,7 @@
+abc
+x y z
+xQ
+
+===STDERR===
+===EXIT===
+0

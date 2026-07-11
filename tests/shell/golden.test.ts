@@ -48,8 +48,14 @@ function parseExpected(raw: string): Expected {
   }
 }
 
-/** 케이스 파일의 각 줄을 순서대로 실행하고 출력을 이어붙인다. */
-async function runCase(script: string): Promise<Expected> {
+const WHOLE_FILE_MARKER = '# GOLDEN: whole-file'
+
+/**
+ * 케이스 파일의 각 줄을 순서대로 실행하고 출력을 이어붙인다(기존 36개 line-by-line 케이스).
+ * here-doc 처럼 본문이 여러 물리 줄에 걸치는 구조는 줄 단위 실행으로는 표현할 수 없다
+ * (본문 줄들이 개별 명령으로 오인되어 exec 된다) — 그런 케이스는 whole-file 모드를 쓴다.
+ */
+async function runCaseLineByLine(script: string): Promise<Expected> {
   const sh = createShell({ fs: seedVfs(), cwd: '/work', home: '/work' })
   let stdout = ''
   let stderr = ''
@@ -63,6 +69,23 @@ async function runCase(script: string): Promise<Expected> {
     exitCode = result.exitCode
   }
   return { stdout, stderr, exitCode }
+}
+
+/**
+ * opt-in whole-file 모드(첫 줄이 `# GOLDEN: whole-file`인 케이스): 파일 전체를 단 한 번의
+ * `sh.exec`로 넘긴다. 렉서가 이미 개행을 `;`로 접고 `#` 주석을 스스로 건너뛰므로, 마커
+ * 줄을 포함한 원문을 그대로 넘겨도 마커는 평범한 주석으로 무시된다 — 별도 스트리핑 불필요.
+ * gen-golden.sh 도 케이스 파일을 bash 에 통째로 넘기므로(whole-file), 이 모드의 `.txt` 는
+ * 이미 정확하다: 테스트만 그 실행 방식을 맞춰주면 된다.
+ */
+async function runCaseWholeFile(script: string): Promise<Expected> {
+  const sh = createShell({ fs: seedVfs(), cwd: '/work', home: '/work' })
+  const result = await sh.exec(script)
+  return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode }
+}
+
+async function runCase(script: string): Promise<Expected> {
+  return script.startsWith(WHOLE_FILE_MARKER) ? runCaseWholeFile(script) : runCaseLineByLine(script)
 }
 
 const caseFiles = readdirSync(join(golden, 'cases')).filter((f) => f.endsWith('.sh')).sort()

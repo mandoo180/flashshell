@@ -1,0 +1,10 @@
+line one
+two
+val=hi
+literal=$x
+indented
+tabs stripped
+
+===STDERR===
+===EXIT===
+0
