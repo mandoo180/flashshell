@@ -95,37 +95,58 @@ function readLogicalLine(stdin: string, raw: boolean): LogicalLine {
   return { text, protectedIdx, hitNewline, consumed: i }
 }
 
-/** 논리 줄을 nVars 개로 나눈다(마지막이 나머지). RegExp 없이 문자 단위 스캔(ReDoS 무관). */
-function splitForRead(text: string, protectedIdx: boolean[], ifs: string[], nVars: number): string[] {
+/**
+ * 필드 하나(선행 IFS-공백 스킵 → 다음 구분자까지) + 그 뒤 논리적 구분자 하나(IFS-공백
+ * 실행 → 선택적 비공백 하나 → 뒤따르는 IFS-공백 실행, expand.ts scanSegment 와 동일 규칙)를
+ * 소비하고 필드 값과 갱신된 pos 를 돌려준다. splitForRead(마지막 아닌 변수)와
+ * splitForReadArray(-a, 모든 원소가 이 규칙)가 공유하는 스캔 단위다.
+ */
+function consumeIfsField(
+  text: string,
+  n: number,
+  posIn: number,
+  isDelim: (p: number) => boolean,
+  isWsDelim: (p: number) => boolean,
+  isNonWsDelim: (p: number) => boolean,
+): { field: string; pos: number } {
+  let pos = posIn
+  while (pos < n && isWsDelim(pos)) pos++
+  const start = pos
+  while (pos < n && !isDelim(pos)) pos++
+  const field = text.slice(start, pos)
+  if (pos < n) {
+    while (pos < n && isWsDelim(pos)) pos++
+    if (pos < n && isNonWsDelim(pos)) {
+      pos++
+      while (pos < n && isWsDelim(pos)) pos++
+    }
+  }
+  return { field, pos }
+}
+
+function delimPredicates(text: string, protectedIdx: boolean[], ifs: string[]) {
   const ifsSet = new Set(ifs)
-  const n = text.length
   const isDelim = (p: number): boolean => !protectedIdx[p] && ifsSet.has(text[p]!)
   const isWsDelim = (p: number): boolean => isDelim(p) && isIfsWhitespace(text[p]!)
   const isNonWsDelim = (p: number): boolean => isDelim(p) && !isIfsWhitespace(text[p]!)
+  return { isDelim, isWsDelim, isNonWsDelim }
+}
+
+/** 논리 줄을 nVars 개로 나눈다(마지막이 나머지). RegExp 없이 문자 단위 스캔(ReDoS 무관). */
+function splitForRead(text: string, protectedIdx: boolean[], ifs: string[], nVars: number): string[] {
+  const n = text.length
+  const { isDelim, isWsDelim, isNonWsDelim } = delimPredicates(text, protectedIdx, ifs)
 
   let pos = 0
-  const skipLeadingWs = (): void => { while (pos < n && isWsDelim(pos)) pos++ }
-
   const results: string[] = []
   for (let v = 0; v < nVars - 1; v++) {
-    skipLeadingWs()
-    if (pos >= n) { results.push(''); continue }
-    const start = pos
-    while (pos < n && !isDelim(pos)) pos++
-    results.push(text.slice(start, pos))
-    if (pos < n) {
-      // 논리적 분리자 하나 소비(expand.ts scanSegment 와 동일 규칙): IFS-공백 실행 →
-      // 선택적 비공백 하나 → 뒤따르는 IFS-공백 실행, 이 전체가 구분자 하나다.
-      while (pos < n && isWsDelim(pos)) pos++
-      if (pos < n && isNonWsDelim(pos)) {
-        pos++
-        while (pos < n && isWsDelim(pos)) pos++
-      }
-    }
+    const r = consumeIfsField(text, n, pos, isDelim, isWsDelim, isNonWsDelim)
+    results.push(r.field)
+    pos = r.pos
   }
 
   if (nVars >= 1) {
-    skipLeadingWs()
+    while (pos < n && isWsDelim(pos)) pos++
     let end = n
     while (end > pos && isWsDelim(end - 1)) end--
     results.push(text.slice(pos, end))
@@ -133,22 +154,63 @@ function splitForRead(text: string, protectedIdx: boolean[], ifs: string[], nVar
   return results
 }
 
-/** `-r`만 지원한다. `--` 이후는 전부 변수 이름. 그 외 플래그는 error 로 얌전히 거부. */
-function parseArgs(args: string[]): { raw: boolean; names: string[] } | { error: string } {
+/**
+ * `read -a`(M3 Part 4 task 2) 전용: 논리 줄 전체를 필드로 나누되, splitForRead 와 달리
+ * "마지막 필드는 나머지 전체(비공백 구분자는 후행이라도 안 벗김)" 규칙이 없다 — 모든
+ * 필드가 consumeIfsField 의 같은 스캔 단위(마지막 아닌 변수와 동일 규칙)를 쓴다. docker로
+ * 확인: 후행 비공백 구분자 하나(`a:` + IFS=:)는 유령 빈 원소를 안 만들고(구분자로 그냥
+ * 소비됨), 인접한 두 비공백 구분자(`a::b`)만 그 사이에 빈 원소를 만든다(`a`,``,`b`).
+ */
+function splitForReadArray(text: string, protectedIdx: boolean[], ifs: string[]): string[] {
+  const n = text.length
+  const { isDelim, isWsDelim, isNonWsDelim } = delimPredicates(text, protectedIdx, ifs)
+
+  const results: string[] = []
+  let pos = 0
+  while (pos < n) {
+    const r = consumeIfsField(text, n, pos, isDelim, isWsDelim, isNonWsDelim)
+    results.push(r.field)
+    pos = r.pos
+  }
+  return results
+}
+
+/**
+ * `-r`/`-a NAME` 을 지원한다(`-r`, `-a` 임의 순서로 한 토큰에 뭉칠 수 있음 — `-ra`/`-ar`
+ * 둘 다 docker 로 확인). `--` 이후는 전부 변수 이름. 그 외 플래그는 error 로 얌전히 거부.
+ *
+ * `-a` 는 항상 **다음 argv 토큰 전체**를 배열 이름으로 그대로 가져간다(같은 토큰 안에서
+ * `-a` 뒤에 남은 문자를 이름으로 붙여쓰지 않는다) — docker 확인: `read -ar arr`(a 다음
+ * r)도 `read -ra arr`(r 다음 a)와 똑같이 -r+-a 플래그가 둘 다 켜지고 "arr"이 배열
+ * 이름이다(만약 -a 가 같은 토큰의 남은 글자를 이름으로 먹었다면 "r"이 이름이 되고 -r 은
+ * 안 켜졌을 텐데, 실측 결과는 백슬래시 리터럴이 보존돼 -r 이 켜졌음을 보여준다). 다음
+ * 토큰이 없으면(`read -a` 단독) exit 2 "option requires an argument"(docker 확인).
+ */
+function parseArgs(
+  args: string[],
+): { raw: boolean; names: string[]; arrayName?: string } | { error: string } | { missingArg: string } {
   let raw = false
+  let arrayName: string | undefined
   const names: string[] = []
   let optionsEnded = false
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
     if (optionsEnded) { names.push(arg); continue }
     if (arg === '--') { optionsEnded = true; continue }
     if (arg === '-' || !arg.startsWith('-')) { names.push(arg); continue }
     for (let j = 1; j < arg.length; j++) {
       const ch = arg[j]!
       if (ch === 'r') { raw = true; continue }
+      if (ch === 'a') {
+        i++
+        if (i >= args.length) return { missingArg: '-a' }
+        arrayName = args[i] // i 는 바깥 for 의 갱신식이 다시 +1 하므로, 다음 바깥 순회는 그 다음 토큰부터.
+        continue
+      }
       return { error: arg }
     }
   }
-  return { raw, names }
+  return { raw, names, arrayName }
 }
 
 export const read: CommandFn = (e): CommandOutput => {
@@ -156,11 +218,18 @@ export const read: CommandFn = (e): CommandOutput => {
   if ('error' in parsed) {
     return {
       stdout: '',
-      stderr: `bash: read: ${parsed.error}: invalid option\nread: usage: read [-r] [name ...]\n`,
+      stderr: `bash: read: ${parsed.error}: invalid option\nread: usage: read [-r] [-a array] [name ...]\n`,
       exitCode: 2,
     }
   }
-  const { raw, names } = parsed
+  if ('missingArg' in parsed) {
+    return {
+      stdout: '',
+      stderr: `bash: read: ${parsed.missingArg}: option requires an argument\nread: usage: read [-r] [-a array] [name ...]\n`,
+      exitCode: 2,
+    }
+  }
+  const { raw, names, arrayName } = parsed
 
   // 커서가 주입됐으면(while/for 루프 본문, task 6) `e.stdin`이 아니라 커서의 남은 입력에서
   // 읽고, 소비한 만큼 커서를 앞에서 잘라 갱신한다 — 그래서 같은 커서를 공유하는 다음
@@ -172,6 +241,18 @@ export const read: CommandFn = (e): CommandOutput => {
   const line = readLogicalLine(source, raw)
   if (cursor) cursor.rest = source.slice(line.consumed)
   const exitCode = line.hitNewline ? 0 : 1
+
+  if (arrayName !== undefined) {
+    // -a 가 있으면 배열이 이긴다: 뒤에 남는 이름들(예: `read -a arr extra`)은 통째로
+    // 무시된다(docker 확인 — extra 는 대입은커녕 unset 인 채로 남는다). 모든 필드가
+    // 원소가 된다 — 스칼라 read 의 "마지막 변수가 나머지" 규칙이 없다.
+    if (!isValidName(arrayName)) {
+      return { stdout: '', stderr: `bash: read: \`${arrayName}': not a valid identifier\n`, exitCode: 1 }
+    }
+    const fields = splitForReadArray(line.text, line.protectedIdx, ifsChars(e.state.env))
+    e.state.arrays.set(arrayName, fields)
+    return { stdout: '', stderr: '', exitCode }
+  }
 
   if (names.length === 0) {
     // 인자 없음: 전체 논리 줄을 가공 없이(트림/분할 없이) REPLY 에 넣는다.

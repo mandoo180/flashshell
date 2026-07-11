@@ -259,3 +259,86 @@ describe('exec() 배선: 파이프는 격리(subshell) — 밖으로 안 샌다'
     expect(out.stdout).toBe('[UNSET]\n')
   })
 })
+
+/**
+ * `read -a`(M3 Part 4 task 2). 전부 docker debian:stable-slim bash 5.2.37 실측(task-2-report.md
+ * 참고). 스칼라 read 와 달리 "마지막 변수 나머지" 규칙이 없다 — 모든 필드가 배열 원소가 된다.
+ * splitForRead 의 "마지막 아님" 필드 스캔 규칙(선행 IFS-공백 스킵→다음 구분자까지→구분자
+ * 하나 소비)을 텍스트 끝까지 반복 적용하면 되는 걸 docker 로 확인했다 — 후행 구분자가
+ * 있어도 그 뒤에 유령 빈 원소가 안 생긴다(`a:` + IFS=: → 1원소, `a::` → 2원소 그 중
+ * 마지막이 빈 문자열: 두 비공백 구분자 사이만 빈 원소, 끝의 단일 구분자는 그냥 소비됨).
+ */
+describe('-a (인덱스 배열)', () => {
+  it('기본: 3단어 → 3원소 (docker: a b c / 3 / b)', async () => {
+    const out = await runRead(['-a', 'arr'], 'a b c\n')
+    expect(state.arrays.get('arr')).toEqual(['a', 'b', 'c'])
+    expect(out.exitCode).toBe(0)
+  })
+  it('여러 공백류(스페이스+탭)는 하나의 구분자로 합쳐진다 (docker: 3원소)', async () => {
+    await runRead(['-a', 'arr'], 'x  y\tz\n')
+    expect(state.arrays.get('arr')).toEqual(['x', 'y', 'z'])
+  })
+  it('커스텀 IFS(:)로 3원소 (docker: a:b:c → 3)', async () => {
+    state.env.IFS = ':'
+    await runRead(['-a', 'arr'], 'a:b:c\n')
+    expect(state.arrays.get('arr')).toEqual(['a', 'b', 'c'])
+  })
+  it('비공백 IFS 인접 구분자는 그 사이에 빈 원소를 만든다 (docker: a::b → 3원소, [1]="")', async () => {
+    state.env.IFS = ':'
+    await runRead(['-a', 'arr'], 'a::b\n')
+    expect(state.arrays.get('arr')).toEqual(['a', '', 'b'])
+  })
+  it('후행 비공백 구분자 하나는 유령 빈 원소를 안 만든다 (docker: "a:" + IFS=: → 1원소)', async () => {
+    state.env.IFS = ':'
+    await runRead(['-a', 'arr'], 'a:\n')
+    expect(state.arrays.get('arr')).toEqual(['a'])
+  })
+  it('-ra (r 다음 a): 백슬래시 리터럴 보존 + 2원소 (docker: [a\\tb] / 2)', async () => {
+    const out = await runRead(['-ra', 'arr'], 'a\\tb c\n')
+    expect(state.arrays.get('arr')).toEqual(['a\\tb', 'c'])
+    expect(out.exitCode).toBe(0)
+  })
+  it('-ar (a 다음 r, 순서 반대): 같은 결과 (docker: [a\\tb] / 2)', async () => {
+    await runRead(['-ar', 'arr'], 'a\\tb c\n')
+    expect(state.arrays.get('arr')).toEqual(['a\\tb', 'c'])
+  })
+  it('-r -a (분리된 두 플래그): 같은 결과 (docker: [a\\tb] / 2)', async () => {
+    await runRead(['-r', '-a', 'arr'], 'a\\tb c\n')
+    expect(state.arrays.get('arr')).toEqual(['a\\tb', 'c'])
+  })
+  it('빈 줄 → 빈 배열, exit 1 (docker: 1/0)', async () => {
+    const out = await runRead(['-a', 'arr'], '')
+    expect(state.arrays.get('arr')).toEqual([])
+    expect(out.exitCode).toBe(1)
+  })
+  it('앞뒤 IFS 공백은 트림된다 (docker: "  a b  " → 2원소)', async () => {
+    await runRead(['-a', 'arr'], '  a b  \n')
+    expect(state.arrays.get('arr')).toEqual(['a', 'b'])
+  })
+  it('잘못된 배열 이름은 얌전히 nonzero, 크래시 없음 (docker: exit=1)', async () => {
+    const out = await runRead(['-a', '1bad'], 'x y\n')
+    expect(out.exitCode).toBe(1)
+    expect(out.stderr).not.toBe('')
+    expect(state.arrays.has('1bad')).toBe(false)
+  })
+  it('-a 뒤에 이름이 없으면 얌전히 exit 2, 크래시 없음 (docker: exit=2)', async () => {
+    const out = await runRead(['-a'], 'x y\n')
+    expect(out.exitCode).toBe(2)
+  })
+})
+
+describe('exec() 배선: read -a < file 은 밖으로 보존, 파이프는 격리', () => {
+  it('read -a arr < f 후 ${arr[@]} 가 밖에서 보인다 (docker: a b c / 3 / b)', async () => {
+    fs.writeFile('/home/player/farr', 'a b c\n')
+    const sh = createShell({ fs, cwd: '/home/player', home: '/home/player' })
+    await sh.exec('read -a arr < farr')
+    const out = await sh.exec('echo "${arr[@]}"; echo "${#arr[@]}"; echo "${arr[1]}"')
+    expect(out.stdout).toBe('a b c\n3\nb\n')
+  })
+  it('echo "a b" | read -a arr; ${#arr[@]} 는 밖에서 0 (docker: pipe read 는 subshell)', async () => {
+    const sh = createShell({ fs, cwd: '/home/player', home: '/home/player' })
+    await sh.exec('echo "a b" | read -a arr')
+    const out = await sh.exec('echo "${#arr[@]}"')
+    expect(out.stdout).toBe('0\n')
+  })
+})
