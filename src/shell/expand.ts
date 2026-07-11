@@ -20,17 +20,70 @@ export interface ExpandCtx {
  * - quoted[i] 는 text[i] 가 따옴표 보호를 받는지 나타낸다.
  * - hadQuotes 는 "따옴표 조각이 하나라도 있었는가"다. 내용이 비어도 참일 수 있다.
  *   `""` 는 빈 단어를 남기고 `$EMPTY` 는 단어를 남기지 않는 차이가 여기서 갈린다.
+ * - splittable[i] 는 text[i] 가 IFS 단어분할 대상인지다. bash 는 **확장 결과**(파라미터/
+ *   명령/산술 확장)의 비따옴표 부분만 단어분할하고, 소스에 그대로 적힌 리터럴 문자는
+ *   절대 분할하지 않는다. 기본 IFS(공백류)에서는 리터럴 공백이 렉서 단계에서 이미 단어를
+ *   가르므로 이 구분이 안 보였지만(한 Word 안에 비따옴표 리터럴 공백은 없다), `IFS=:` 처럼
+ *   비공백 IFS 에서는 `echo a:b:c` 의 리터럴 `:` 를 분할하면 안 되므로(bash: `a:b:c` 그대로)
+ *   quoted 와 별개로 이 플래그가 필요하다. splittable=true 는 항상 quoted=false 를 함의한다.
+ * - breaks 는 "하드 필드 경계"의 char 인덱스 목록이다(중복 허용, 기록 순서대로 비감소).
+ *   경계 p 는 "인덱스 p 바로 앞에서 새 필드가 시작된다"는 뜻으로, IFS·따옴표와 무관하게
+ *   splitFields 가 무조건 필드를 끊는다. `"$@"` 가 각 위치 인자를 개별 필드로 만들 때만
+ *   쓰인다 — IFS 문자가 아닌 필드 경계는 이것 말고는 표현할 방법이 없다. 같은 위치에
+ *   여러 경계가 있으면(연속 빈 위치 인자) 각각이 빈 필드를 만든다(그래서 Set 이 아니라
+ *   배열이다 — Set 은 중복을 잃어 연속 빈 인자를 구분 못 한다).
  */
-interface Field { text: string; quoted: boolean[]; hadQuotes: boolean }
+interface Field { text: string; quoted: boolean[]; splittable: boolean[]; hadQuotes: boolean; breaks: number[] }
 
-const empty = (): Field => ({ text: '', quoted: [], hadQuotes: false })
+const empty = (): Field => ({ text: '', quoted: [], splittable: [], hadQuotes: false, breaks: [] })
 
-function append(field: Field, text: string, quoted: boolean): void {
+/** 저수준 append — quoted(따옴표 보호=글롭/분할 억제)와 splittable(IFS 분할 대상)을 명시한다. */
+function append(field: Field, text: string, quoted: boolean, splittable: boolean): void {
   field.text += text
-  for (let i = 0; i < text.length; i++) field.quoted.push(quoted)
+  for (let i = 0; i < text.length; i++) { field.quoted.push(quoted); field.splittable.push(splittable) }
 }
 
-const IFS = [' ', '\t', '\n']
+/** 소스 리터럴 문자 append — 절대 IFS 분할되지 않는다(splittable=false). */
+function appendLiteral(field: Field, text: string, quoted: boolean): void {
+  append(field, text, quoted, false)
+}
+
+/**
+ * 확장 결과 append — protectedResult(따옴표 안이면 true)면 보호받고 분할도 안 된다.
+ * 비따옴표 확장 결과만 IFS 분할 대상이다(splittable = !protectedResult).
+ */
+function appendExpanded(field: Field, text: string, protectedResult: boolean): void {
+  append(field, text, protectedResult, !protectedResult)
+}
+
+/** 현재 text 끝 위치에 하드 필드 경계를 기록한다. `"$@"` 인자 사이 경계 전용. */
+function addBreak(field: Field): void {
+  field.breaks.push(field.text.length)
+}
+
+/**
+ * 현재 문맥의 IFS 문자 집합을 ctx.env.IFS 에서 읽는다(하드코딩 상수가 아니라).
+ *  - 미설정(undefined) → 기본 `[' ', '\t', '\n']`
+ *  - 빈 문자열 `''`    → `[]` (단어분할이 전혀 일어나지 않는다 — 확장 전체가 한 필드)
+ *  - 그 외            → IFS 문자열의 서로 다른 문자들
+ * 비공백 문자(예: `IFS=:`)는 분할 문자이자 `$*` 조인 문자가 된다(bash 실측).
+ */
+function ifsChars(ctx: ExpandCtx): string[] {
+  const raw = ctx.env.IFS
+  if (raw === undefined) return [' ', '\t', '\n']
+  if (raw === '') return []
+  return [...new Set(raw)]
+}
+
+/**
+ * `$*` / `${*}` / 비따옴표 `$@`/`$*` 조인에 쓰는 분리자 — IFS 의 첫 글자다.
+ * IFS 빈 문자열이면 분리자 없이(''), 미설정이면 스페이스. (bash 실측: `IFS=xyz; echo "$*"`
+ * → `axbxc`, 즉 첫 글자 `x` 로 조인. `IFS=; echo "$*"` → 이어붙임.)
+ */
+function ifsJoinSep(ctx: ExpandCtx): string {
+  const chars = ifsChars(ctx)
+  return chars.length > 0 ? chars[0]! : ''
+}
 
 /**
  * $N / ${N} 하나를 읽는다. $0 은 스크립트/함수명 자리인데 지금은 항상 빈 문자열이다
@@ -84,7 +137,10 @@ function resolveName(ctx: ExpandCtx, name: string): ResolvedName {
     return { isSet: n >= 1 && n <= ctx.positional.length, value: positionalAt(ctx, n), assignable: false }
   }
   if (name === '@' || name === '*') {
-    return { isSet: ctx.positional.length > 0, value: ctx.positional.join(IFS[0]!), assignable: false }
+    // `${@}` / `${*}` 및 연산자형(`${@:-x}` 등)의 조인형 값. 여기서는 per-arg 하드 경계를
+    // 표현할 수 없으므로(문자열 하나만 돌려준다) IFS 첫 글자로 조인한 단일 값이다 —
+    // per-arg 는 bare `"$@"`(expandDollar 의 @/* 분기) 전용이다.
+    return { isSet: ctx.positional.length > 0, value: ctx.positional.join(ifsJoinSep(ctx)), assignable: false }
   }
   if (name === '#') {
     return { isSet: true, value: String(ctx.positional.length), assignable: false }
@@ -406,7 +462,7 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
   while (i < source.length) {
     const ch = source[i]!
 
-    if (ch !== '$') { append(field, ch, protectedResult); i++; continue }
+    if (ch !== '$') { appendLiteral(field, ch, protectedResult); i++; continue }
 
     // $((expr)) — 산술 확장. 반드시 $( 명령치환보다 먼저 잡아야 한다: matchSubstitutionEnd
     // 는 $(( 를 구분하지 않으므로, 이 분기가 없으면 `$((1+2))` 가 `(1+2)` 명령치환으로
@@ -418,7 +474,7 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
     if (source[i + 1] === '(' && source[i + 2] === '(') {
       const closeIndex = matchSubstitutionEnd(source, i)
       const expr = source.slice(i + 3, closeIndex - 1)
-      append(field, String(evalArith(expr, ctx)), protectedResult)
+      appendExpanded(field, String(evalArith(expr, ctx)), protectedResult)
       i = closeIndex + 1
       continue
     }
@@ -432,15 +488,16 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
       const result = await ctx.runSubshell(script)
       // 명령치환 결과의 후행 개행은 전부 벗긴다. 이것이 bash 동작이다.
       const output = result.stdout.replace(/\n+$/, '')
-      // 결과는 따옴표 보호를 물려받는다. 안 그러면 "$(x)"가 쪼개진다.
-      append(field, output, protectedResult)
+      // 결과는 따옴표 보호를 물려받는다. 안 그러면 "$(x)"가 쪼개진다. 비따옴표면 확장
+      // 결과이므로 IFS 단어분할 대상이다(appendExpanded).
+      appendExpanded(field, output, protectedResult)
       i = closeIndex + 1
       continue
     }
 
     // $?
     if (source[i + 1] === '?') {
-      append(field, String(ctx.lastExitCode), protectedResult)
+      appendExpanded(field, String(ctx.lastExitCode), protectedResult)
       i += 2
       continue
     }
@@ -450,9 +507,9 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
     // replacement(task 4) 안의 }에서 옛 코드처럼 깨지지 않기 위해서다.
     if (source[i + 1] === '{') {
       const close = findBraceClose(source, i + 2)
-      if (close === -1) { append(field, ch, protectedResult); i++; continue }
+      if (close === -1) { appendLiteral(field, ch, protectedResult); i++; continue }
       const value = await expandBraceParam(source.slice(i + 2, close), protectedResult, ctx)
-      append(field, value, protectedResult)
+      appendExpanded(field, value, protectedResult)
       i = close + 1
       continue
     }
@@ -462,54 +519,96 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
     // 리터럴 $1 등으로 흘러버린다 (M1 시절 동작 — task 3부터 실제 확장 대상이다).
     const posChar = source[i + 1]
     if (posChar === '#') {
-      append(field, String(ctx.positional.length), protectedResult)
+      appendExpanded(field, String(ctx.positional.length), protectedResult)
       i += 2
       continue
     }
     if (posChar === '@' || posChar === '*') {
-      // 기본형만 구현한다: 공백(IFS 첫 글자)으로 조인한 뒤, 그 결과를 기존
-      // append/splitFields 경로에 그대로 태운다 — 따옴표 없는 $@/$*는 자연히
-      // 인자별로 재분할되고(splitFields가 공백에서 쪼갠다), 따옴표 붙은 "$@"/"$*"는
-      // 둘 다 공백-조인 단일 필드가 된다. "$@"의 진짜 bash 동작(인자마다 개별
-      // 필드로 보존 — 인자 내부에 공백이 있어도 안 쪼개짐)은 여기 구현과 다르다.
-      // 이 정밀 동작은 M3/Layer-3로 미룬다 — 지금은 크래시 없이 기본형으로만 동작.
-      append(field, ctx.positional.join(IFS[0]!), protectedResult)
+      const args = ctx.positional
+      if (protectedResult && posChar === '@') {
+        // "$@": 각 위치 인자를 개별 필드로 보존한다 — 인자 내부에 공백/IFS 가 있어도
+        // 안 쪼개지고, 인접 인자 사이에는 하드 경계를 넣는다(IFS 와 무관). 첫 인자 앞·
+        // 마지막 인자 뒤에는 경계를 넣지 않으므로 같은 단어의 앞뒤 텍스트에 붙는다
+        // (`"pre$@post"` → preA, B, Cpost). 인자가 없으면 아무것도 안 붙이고 경계도
+        // 안 남긴다 → "$@" 는 통째로 사라진다(빈 필드조차 아님; hadQuotes 도 안 세운다,
+        // expandWord 참고). 첫 인자 이후 각 인자 앞에 하드 경계를 기록한다.
+        for (let a = 0; a < args.length; a++) {
+          if (a > 0) addBreak(field)
+          appendExpanded(field, args[a]!, true) // 보호됨: IFS 분할 안 됨(하드 경계로만 나뉨)
+        }
+      } else if (protectedResult && posChar === '*') {
+        // "$*": IFS 첫 글자로 조인한 단일 필드(IFS 빈 문자열이면 이어붙임). 하드 경계 없음.
+        appendExpanded(field, args.join(ifsJoinSep(ctx)), true)
+      } else {
+        // 비따옴표 $@ / $*: IFS 첫 글자로 조인한 뒤 unprotected 로 넣어, splitFields 가
+        // env IFS 로 단어분할하게 한다(둘 다 결과적으로 IFS 로 재분할된다 — 차이는
+        // 따옴표 붙었을 때만 드러난다).
+        appendExpanded(field, args.join(ifsJoinSep(ctx)), false)
+      }
       i += 2
       continue
     }
     if (posChar !== undefined && posChar >= '0' && posChar <= '9') {
-      append(field, positionalAt(ctx, Number(posChar)), protectedResult)
+      appendExpanded(field, positionalAt(ctx, Number(posChar)), protectedResult)
       i += 2
       continue
     }
 
     // $NAME
     const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(i + 1))
-    if (!match) { append(field, ch, protectedResult); i++; continue }
-    append(field, ctx.env[match[0]] ?? '', protectedResult)
+    if (!match) { appendLiteral(field, ch, protectedResult); i++; continue }
+    appendExpanded(field, ctx.env[match[0]] ?? '', protectedResult)
     i += 1 + match[0].length
   }
 }
 
-/** 따옴표 보호를 받지 않는 IFS 문자에서 필드를 쪼갠다. */
-function splitFields(field: Field): Field[] {
+/**
+ * 필드를 (1) 하드 경계(field.breaks — IFS·따옴표와 무관하게 무조건)와 (2) splittable(비따옴표
+ * 확장 결과)인 IFS 문자에서 쪼갠다. ifs 는 ctx.env.IFS 에서 파싱된 문자 집합이다(빈 배열이면
+ * IFS 분할이 전혀 일어나지 않고 하드 경계만 적용된다).
+ *
+ * 하드 경계는 무조건 필드를 끊는다 — 인접 `"$@"` 인자가 빈 문자열이어도 빈 필드를 남긴다.
+ * 경계 뒤에는 반드시 한 필드가 뒤따르므로(breakPending), 마지막 인자가 비어도 필드로 남는다.
+ * IFS 분할은 반대로 "started" 인 필드만 끊고 연속 IFS/선행·후행 IFS 를 접는다(기존 동작 유지).
+ */
+function splitFields(field: Field, ifs: string[]): Field[] {
   const out: Field[] = []
   let current = empty()
   let started = false
+  let breakPending = false // 하드 경계가 방금 커밋한 "뒤따를 필드" — 비어도 emit 해야 한다
+  const breaks = field.breaks
+  let bIdx = 0
+  const len = field.text.length
 
-  for (let i = 0; i < field.text.length; i++) {
-    const ch = field.text[i]!
-    const isQuoted = field.quoted[i]!
-    if (!isQuoted && IFS.includes(ch)) {
+  for (let p = 0; p <= len; p++) {
+    // 하드 경계: 이 위치의 경계를 전부 소진한다. 같은 위치에 여러 개면(연속 빈 인자)
+    // 각각이 필드 하나를 무조건 밀어낸다.
+    while (bIdx < breaks.length && breaks[bIdx] === p) {
+      out.push(current)
+      current = empty()
+      started = false
+      breakPending = true
+      bIdx++
+    }
+    if (p === len) break
+
+    const ch = field.text[p]!
+    const isQuoted = field.quoted[p]!
+    const isSplittable = field.splittable[p]!
+    // 확장 결과의 비따옴표 부분(splittable)만 IFS 로 쪼갠다 — 리터럴 소스 문자는
+    // splittable=false 라 `IFS=:` 에서도 `echo a:b:c` 가 안 잘린다(bash 동작).
+    if (isSplittable && ifs.includes(ch)) {
       if (started) { out.push(current); current = empty(); started = false }
       continue
     }
-    append(current, ch, isQuoted)
+    append(current, ch, isQuoted, isSplittable)
     started = true
+    breakPending = false
   }
-  if (started) out.push(current)
+  if (started || breakPending) out.push(current)
 
-  // 내용이 하나도 안 나왔지만 따옴표는 있었다면(`""`), 빈 단어 하나를 남긴다.
+  // 내용이 하나도 안 나왔지만 따옴표는 있었다면(`""`, `"$*"` 빈 인자 등), 빈 단어 하나를
+  // 남긴다. (`"$@"` 빈 인자는 hadQuotes 를 세우지 않아 여기 안 걸린다 — expandWord 참고.)
   if (out.length === 0 && field.hadQuotes) out.push(empty())
   return out
 }
@@ -541,13 +640,21 @@ export async function expandWord(word: Word, ctx: ExpandCtx): Promise<string[]> 
   for (let index = 0; index < word.length; index++) {
     const part = word[index]!
 
-    if (part.kind === 'literal') { field.hadQuotes = true; append(field, part.text, true); continue }
-    if (part.kind === 'dquote') { field.hadQuotes = true; await expandDollar(part.text, true, field, ctx); continue }
+    if (part.kind === 'literal') { field.hadQuotes = true; appendLiteral(field, part.text, true); continue }
+    if (part.kind === 'dquote') {
+      // 따옴표 조각은 보통 "따옴표 있었음"을 세워 빈 필드(`""`→빈 단어)를 정당화한다.
+      // 단, 조각 전체가 바로 `$@` 뿐이면 예외다: bash 는 인자 없는 `"$@"` 를 빈 필드조차
+      // 아니라 통째로 사라지게 한다(docker: `set --; for a in "$@"; do echo x; done` → 무출력).
+      // `"$*"` 나 `""` 는 빈 따옴표 null 을 남기지만 `"$@"` 만 유일하게 안 남긴다.
+      if (part.text !== '$@') field.hadQuotes = true
+      await expandDollar(part.text, true, field, ctx)
+      continue
+    }
 
     // raw: 맨 앞 조각의 맨 앞 ~ 만 홈으로 바꾼다.
     let text = part.text
     if (index === 0 && text.startsWith('~') && (text.length === 1 || text[1] === '/')) {
-      append(field, ctx.home, true) // 홈 경로는 다시 분할되면 안 된다
+      appendLiteral(field, ctx.home, true) // 홈 경로는 리터럴 — 다시 분할되면 안 된다
       text = text.slice(1)
     }
     await expandDollar(text, false, field, ctx)
@@ -556,7 +663,7 @@ export async function expandWord(word: Word, ctx: ExpandCtx): Promise<string[]> 
   // 아무 조각도 없으면(있을 수 없지만) 빈 배열
   if (word.length === 0) return []
 
-  const fields = splitFields(field)
+  const fields = splitFields(field, ifsChars(ctx))
 
   // 따옴표가 전혀 없고 내용도 비었으면 단어가 통째로 사라진다 ($NOPE, $EMPTY)
   if (fields.length === 0) return []
@@ -600,12 +707,12 @@ export async function expandForCase(word: Word, ctx: ExpandCtx): Promise<string>
   for (let index = 0; index < word.length; index++) {
     const part = word[index]!
 
-    if (part.kind === 'literal') { append(field, part.text, true); continue }
+    if (part.kind === 'literal') { appendLiteral(field, part.text, true); continue }
     if (part.kind === 'dquote') { await expandDollar(part.text, true, field, ctx); continue }
 
     let text = part.text
     if (index === 0 && text.startsWith('~') && (text.length === 1 || text[1] === '/')) {
-      append(field, ctx.home, true)
+      appendLiteral(field, ctx.home, true)
       text = text.slice(1)
     }
     await expandDollar(text, false, field, ctx)

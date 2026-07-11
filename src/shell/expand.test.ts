@@ -253,6 +253,118 @@ describe('expandWord — 위치 매개변수 (task 3)', () => {
   })
 })
 
+describe('expandWord — "$@" per-argument 필드 (task 5, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  // docker: set -- x "y z" w; for a in "$@"; do echo "[$a]"; done => [x] [y z] [w]
+  it('"$@" 는 각 위치 인자를 개별 필드로 — 인자 내부 공백도 보존한다', async () => {
+    ctx.positional = ['x', 'y z', 'w']
+    expect(await expandWord(wordOf('"$@"'), ctx)).toEqual(['x', 'y z', 'w'])
+  })
+  // docker: set --; for a in "$@"; do echo x; done => (출력 없음 — 0 필드)
+  it('"$@" 는 위치 인자가 없으면 필드를 하나도 남기지 않는다 (빈 단어조차 아님)', async () => {
+    ctx.positional = []
+    expect(await expandWord(wordOf('"$@"'), ctx)).toEqual([])
+  })
+  // docker: set -- A B C; for a in "pre$@post"; do echo "[$a]"; done => [preA] [B] [Cpost]
+  it('"pre$@post" 는 첫 인자를 pre 에, 마지막 인자를 post 에 붙이고 중간은 개별 필드', async () => {
+    ctx.positional = ['A', 'B', 'C']
+    expect(await expandWord(wordOf('"pre$@post"'), ctx)).toEqual(['preA', 'B', 'Cpost'])
+  })
+  // docker: set --; for a in "pre$@post"; do echo "[$a]"; done => [prepost]
+  it('"pre$@post" 는 인자가 없으면 pre 와 post 가 한 필드로 붙는다 (prepost)', async () => {
+    ctx.positional = []
+    expect(await expandWord(wordOf('"pre$@post"'), ctx)).toEqual(['prepost'])
+  })
+  // docker: set -- A; for a in "pre$@post"; do echo "[$a]"; done => [preApost]
+  it('"pre$@post" 인자가 하나면 preApost 한 필드', async () => {
+    ctx.positional = ['A']
+    expect(await expandWord(wordOf('"pre$@post"'), ctx)).toEqual(['preApost'])
+  })
+  it('"$@" 는 인자가 하나면 필드 하나', async () => {
+    ctx.positional = ['solo']
+    expect(await expandWord(wordOf('"$@"'), ctx)).toEqual(['solo'])
+  })
+  // docker: set -- "a b" c; for a in $@; do echo "[$a]"; done => [a] [b] [c]
+  it('비따옴표 $@ 는 인자 내부 공백까지 단어분할한다', async () => {
+    ctx.positional = ['a b', 'c']
+    expect(await expandWord(wordOf('$@'), ctx)).toEqual(['a', 'b', 'c'])
+  })
+  // docker: set --; for a in "$*"; do echo "[$a]"; done => [] (빈 단어 하나 — "$@" 와 다름)
+  it('"$*" 는 인자가 없어도 빈 단어 하나를 남긴다 ("$@" 와 달리 사라지지 않는다)', async () => {
+    ctx.positional = []
+    expect(await expandWord(wordOf('"$*"'), ctx)).toEqual([''])
+  })
+})
+
+describe('expandWord — env IFS (task 5, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  // docker: IFS=:; set -- "x:y:z"; for a in $1; do echo "[$a]"; done => [x] [y] [z]
+  it('IFS=: 이면 비따옴표 확장을 : 에서 쪼갠다', async () => {
+    ctx.env.IFS = ':'
+    ctx.env.V = 'x:y:z'
+    expect(await expandWord(wordOf('$V'), ctx)).toEqual(['x', 'y', 'z'])
+  })
+  // docker: IFS=:; set -- a b c; echo "$*" => a:b:c
+  it('IFS=: 이면 "$*" 를 : 로 조인한다', async () => {
+    ctx.env.IFS = ':'
+    ctx.positional = ['a', 'b', 'c']
+    expect(await expandWord(wordOf('"$*"'), ctx)).toEqual(['a:b:c'])
+  })
+  // docker: IFS=,; set -- a b c; echo "$*" => a,b,c
+  it('IFS=, 이면 "$*" 를 , 로 조인한다', async () => {
+    ctx.env.IFS = ','
+    ctx.positional = ['a', 'b', 'c']
+    expect(await expandWord(wordOf('"$*"'), ctx)).toEqual(['a,b,c'])
+  })
+  // docker: IFS=xyz; set -- a b c; echo "$*" => axbxc (IFS 의 첫 글자로 조인)
+  it('"$*" 조인 문자는 IFS 의 첫 글자다', async () => {
+    ctx.env.IFS = 'xyz'
+    ctx.positional = ['a', 'b', 'c']
+    expect(await expandWord(wordOf('"$*"'), ctx)).toEqual(['axbxc'])
+  })
+  // docker: IFS=; set -- a b; for a in "$@"; do echo "[$a]"; done => [a] [b] ("$@" 는 IFS 무관)
+  it('IFS 가 빈 문자열이어도 "$@" 는 여전히 인자별 개별 필드다', async () => {
+    ctx.env.IFS = ''
+    ctx.positional = ['a', 'b']
+    expect(await expandWord(wordOf('"$@"'), ctx)).toEqual(['a', 'b'])
+  })
+  // docker: IFS=; x="a b"; for a in $x; do echo "[$a]"; done => [a b] (분할 안 함)
+  it('IFS 가 빈 문자열이면 비따옴표 확장을 전혀 쪼개지 않는다', async () => {
+    ctx.env.IFS = ''
+    ctx.env.V = 'a b'
+    expect(await expandWord(wordOf('$V'), ctx)).toEqual(['a b'])
+  })
+  // docker: IFS=; set -- a b c; echo "[$*]" => [abc] (빈 IFS → 분리자 없이 이어붙임)
+  it('IFS 가 빈 문자열이면 "$*" 는 분리자 없이 인자를 이어붙인다', async () => {
+    ctx.env.IFS = ''
+    ctx.positional = ['a', 'b', 'c']
+    expect(await expandWord(wordOf('"$*"'), ctx)).toEqual(['abc'])
+  })
+  // docker: IFS=:; set -- "a:b" c; for a in $@; do echo "[$a]"; done => [a] [b] [c]
+  it('IFS=: 이면 비따옴표 $@ 도 조인 후 : 로 재분할된다', async () => {
+    ctx.env.IFS = ':'
+    ctx.positional = ['a:b', 'c']
+    expect(await expandWord(wordOf('$@'), ctx)).toEqual(['a', 'b', 'c'])
+  })
+  it('IFS=: 이면 "${*}" (중괄호 조인형) 도 : 로 조인한다', async () => {
+    ctx.env.IFS = ':'
+    ctx.positional = ['a', 'b']
+    expect(await expandWord(wordOf('"${*}"'), ctx)).toEqual(['a:b'])
+  })
+  it('기본 IFS(미설정)에서 tab/newline 도 단어분할 대상이다', async () => {
+    ctx.env.V = 'a\tb\nc'
+    expect(await expandWord(wordOf('$V'), ctx)).toEqual(['a', 'b', 'c'])
+  })
+  // docker: IFS=:; echo a:b:c => a:b:c (리터럴 소스 문자는 확장 결과가 아니라 분할 안 됨)
+  it('IFS=: 이어도 리터럴 소스 텍스트는 분할되지 않는다 (확장 결과만 분할)', async () => {
+    ctx.env.IFS = ':'
+    expect(await expandWord(wordOf('a:b:c'), ctx)).toEqual(['a:b:c'])
+  })
+  it('IFS=: 이어도 따옴표 안 확장은 분할되지 않는다', async () => {
+    ctx.env.IFS = ':'
+    ctx.env.V = 'x:y:z'
+    expect(await expandWord(wordOf('"$V"'), ctx)).toEqual(['x:y:z'])
+  })
+})
+
 describe('expandWord — 파라미터 확장: 길이 (task 3)', () => {
   // docker: NAME=world; echo ${#NAME} => 5
   it('${#NAME} 은 값의 길이', async () => {

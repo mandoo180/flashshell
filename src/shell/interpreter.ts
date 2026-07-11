@@ -376,10 +376,14 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
     argv = []
     for (const word of node.words) argv.push(...(await expandWord(word, expandCtx)))
 
-    // 2. 명령 없는 순수 대입: 셸 상태를 영구히 바꾼다.
+    // 2. 명령 없는 순수 대입: 셸 상태를 영구히 바꾼다. 대입값은 **단어분리도 글롭도 하지
+    //    않는다**(bash: NAME=VALUE 의 VALUE 는 tilde·파라미터·명령치환·산술확장·따옴표제거만
+    //    거친다) — expandForCase 가 정확히 그 확장이다. expandWord().join(' ') 로 하면 IFS
+    //    분할이 걸려, `IFS=:` 이후 `IFS=:`(값 `:`가 IFS 로 잘림→`""`)이나 `PATH=/a:/b`(→`/a /b`)
+    //    가 깨진다(docker: `IFS=:; IFS=:; echo "[$IFS]"` → `[:]`, `x=a:b:c` → `[a:b:c]`).
     if (argv.length === 0) {
       for (const assignment of node.assignments) {
-        ctx.state.env[assignment.name] = (await expandWord(assignment.value, expandCtx)).join(' ')
+        ctx.state.env[assignment.name] = await expandForCase(assignment.value, expandCtx)
       }
       return { stdout: '', stderr: '', exitCode: 0 }
     }
@@ -405,11 +409,12 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
     return runSource(argv, ctx)
   }
 
-  // 3. 명령 앞의 대입은 이 명령의 환경에만 적용되고 사라진다.
+  // 3. 명령 앞의 대입은 이 명령의 환경에만 적용되고 사라진다. (2번과 같은 이유로 단어분리·
+  //    글롭 없는 expandForCase 를 쓴다 — `IFS=: cmd` 처럼 값에 IFS 문자가 있어도 안 잘린다.)
   const commandEnv = { ...ctx.state.env }
   try {
     for (const assignment of node.assignments) {
-      commandEnv[assignment.name] = (await expandWord(assignment.value, expandCtx)).join(' ')
+      commandEnv[assignment.name] = await expandForCase(assignment.value, expandCtx)
     }
   } catch (e) {
     if (e instanceof ExecutionLimitError) throw e

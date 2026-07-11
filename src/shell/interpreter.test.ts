@@ -357,6 +357,58 @@ describe('확장 통합', () => {
   })
 })
 
+describe('대입값 확장 — 단어분리·글롭 없음 (task 5, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  // 대입값(NAME=VALUE 의 VALUE)은 단어분리도 글롭도 받지 않는다 — task 5 의 env IFS 변경이
+  // 이 경로에 회귀를 만들지 않도록 고정한다(하드코딩 IFS 시절엔 우연히 안 깨졌을 뿐).
+  // docker: IFS=:; IFS=:; echo "[$IFS]" => [:]
+  it('IFS 가 이미 : 여도 IFS=: 재대입은 : 로 남는다 (값 : 가 IFS 로 잘리지 않음)', async () => {
+    expect((await sh.exec('IFS=:; IFS=:; echo "[$IFS]"')).stdout).toBe('[:]\n')
+  })
+  // docker: IFS=:; x=a:b:c; echo "[$x]" => [a:b:c]
+  it('IFS=: 이어도 대입값 안의 : 는 단어분리되지 않는다', async () => {
+    expect((await sh.exec('IFS=:; x=a:b:c; echo "[$x]"')).stdout).toBe('[a:b:c]\n')
+  })
+  // docker: IFS=:; PATH2=/a:/b; echo "[$PATH2]" => [/a:/b]
+  it('IFS=: 이어도 PATH 류 대입값이 안 잘린다', async () => {
+    expect((await sh.exec('IFS=:; P=/a:/b; echo "[$P]"')).stdout).toBe('[/a:/b]\n')
+  })
+  // docker: y=*.txt; echo "[$y]" => [*.txt] (대입값은 글롭 안 함)
+  it('대입값은 글롭으로 펼쳐지지 않는다', async () => {
+    expect((await sh.exec('y=*.txt; echo "[$y]"')).stdout).toBe('[*.txt]\n')
+  })
+  // docker: IFS=:; z=$(echo a:b:c); echo "[$z]" => [a:b:c] (명령치환 결과도 대입값에선 안 잘린다)
+  it('대입값의 명령치환 결과는 단어분리되지 않는다 (IFS=: 에서도)', async () => {
+    expect((await sh.exec('IFS=:; z=$(echo a:b:c); echo "[$z]"')).stdout).toBe('[a:b:c]\n')
+  })
+})
+
+describe('env IFS 통합 (task 5, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  // docker: IFS=:; f() { echo "$*"; }; f a b c => a:b:c
+  it('IFS=: 이면 함수 안 "$*" 가 : 로 조인된다', async () => {
+    expect((await sh.exec('IFS=:; f() { echo "$*"; }; f a b c')).stdout).toBe('a:b:c\n')
+  })
+  // docker: IFS=:; f() { for a in $1; do echo "[$a]"; done; }; f "x:y:z" => [x] [y] [z]
+  it('IFS=: 이면 비따옴표 확장이 : 에서 쪼개진다', async () => {
+    expect((await sh.exec('IFS=:; f() { for a in $1; do echo "[$a]"; done; }; f "x:y:z"')).stdout).toBe('[x]\n[y]\n[z]\n')
+  })
+  // docker: IFS=:; echo a:b:c => a:b:c (리터럴은 IFS 로 안 잘린다 — 확장 결과만 분할)
+  it('IFS=: 이어도 리터럴 인자는 분할되지 않는다', async () => {
+    expect((await sh.exec('IFS=:; echo a:b:c')).stdout).toBe('a:b:c\n')
+  })
+  // docker: f() { for a in "$@"; do echo "[$a]"; done; }; f x "y z" w => [x] [y z] [w]
+  it('"$@" 는 함수 인자를 개별 필드로 보존한다 (내부 공백 포함)', async () => {
+    expect((await sh.exec('f() { for a in "$@"; do echo "[$a]"; done; }; f x "y z" w')).stdout).toBe('[x]\n[y z]\n[w]\n')
+  })
+  // docker: f() { for a in "pre$@post"; do echo "[$a]"; done; }; f A B C => [preA] [B] [Cpost]
+  it('"pre$@post" 는 앞뒤 텍스트에 첫·마지막 인자를 붙인다', async () => {
+    expect((await sh.exec('f() { for a in "pre$@post"; do echo "[$a]"; done; }; f A B C')).stdout).toBe('[preA]\n[B]\n[Cpost]\n')
+  })
+  // docker: f() { for a in "$@"; do echo x; done; }; f => (무출력)
+  it('"$@" 는 인자가 없으면 루프가 한 번도 안 돈다', async () => {
+    expect((await sh.exec('f() { for a in "$@"; do echo x; done; }; f')).stdout).toBe('')
+  })
+})
+
 describe('파라미터 확장 — 길이/기본값/대체 (task 3, docker debian:stable-slim bash 5 로 확인됨)', () => {
   it('${#NAME} 길이', async () => {
     const r = await sh.exec('NAME=world; echo ${#NAME}')
