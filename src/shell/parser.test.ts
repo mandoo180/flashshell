@@ -555,6 +555,27 @@ describe('함수 정의 / 브레이스 그룹 (task 7)', () => {
     expect(c.body.items).toHaveLength(2)
   })
 
+  it('빈 그룹 { }/{ ; } 은 문법 오류다 (M3 Part 4 task 4 B9 — 실제 bash: exit 2, docker 확인)', () => {
+    // docker: bash -c '{ }' → "syntax error near unexpected token `}'", exit 2
+    // docker: bash -c '{ ; }' → "syntax error near unexpected token `;'", exit 2
+    expect(() => parse('{ }')).toThrow(/syntax error/)
+    expect(() => parse('{ ; }')).toThrow(/syntax error/)
+  })
+
+  it('명시적 no-op { :; } 은 빈 리스트가 아니다 — 문법 오류 아님 (회귀)', () => {
+    const c = firstCompound('{ :; }')
+    expect(c.kind).toBe('group')
+    if (c.kind !== 'group') throw new Error('not group')
+    expect(c.body.items).toHaveLength(1)
+  })
+
+  it('빈 함수 본문 f() { } 도 문법 오류다 (parseBraceGroupList 공유 — docker: exit 2)', () => {
+    // docker: bash -c 'f() { }' → "syntax error near unexpected token `}'", exit 2
+    // docker: bash -c 'f() { ; }' → "syntax error near unexpected token `;'", exit 2
+    expect(() => parse('f() { }')).toThrow(/syntax error/)
+    expect(() => parse('f() { ; }')).toThrow(/syntax error/)
+  })
+
   it('body 브레이스가 없으면 문법 오류다', () => {
     expect(() => parse('f() echo hi')).toThrow(/syntax error/)
   })
@@ -651,15 +672,21 @@ describe('( LIST ) 서브셸 (task 3)', () => {
     expect(() => parse('( echo a')).toThrow(/syntax error/)
   })
 
-  it('빈 여는 (뒤 명령 없이 바로 문법 오류가 아니라 닫는 )가 있으면 빈 리스트를 허용한다', () => {
-    // 참고: 실제 bash 는 `( )`(빈 본문)을 문법 오류로 거부한다(compound_list 는 항상
-    // ≥1 항목 필요) — docker 확인. 우리 엔진은 기존 GroupNode(`{ }`)도 이미 같은 관용을
-    // 베풀고 있어(빈 리스트 허용, 문법 오류 아님), SubshellNode 도 그 기존 관용과 일관되게
-    // 맞춘다(신규 회귀 아님 — 이 태스크 이전부터 있던 설계 선택).
-    const c = firstCompound('( )')
+  it('빈 서브셸 ( )/( ; ) 은 문법 오류다 (M3 Part 4 task 4 B9 — 실제 bash: exit 2, docker 확인)', () => {
+    // docker: bash -c '( )' → "syntax error near unexpected token `)'", exit 2
+    // docker: bash -c '( ; )' → "syntax error near unexpected token `;'", exit 2
+    // ( ; ) 는 parseSubshell 의 선행 skipSeparators() 가 `;` 를 먼저 삼켜 ( ) 와 똑같은
+    // "빈 리스트" 로 수렴한다 — 그래서 같은 empty-check 하나로 둘 다 잡힌다.
+    expect(() => parse('( )')).toThrow(/syntax error/)
+    expect(() => parse('( ; )')).toThrow(/syntax error/)
+  })
+
+  it('명시적 no-op ( : ) 은 빈 리스트가 아니다 — 문법 오류 아님 (회귀)', () => {
+    // docker: bash -c '( : ); echo $?' → 0 (: 은 진짜 명령이라 본문이 비어있지 않다)
+    const c = firstCompound('( : )')
     expect(c.kind).toBe('subshell')
     if (c.kind !== 'subshell') throw new Error('not subshell')
-    expect(c.body.items).toHaveLength(0)
+    expect(c.body.items).toHaveLength(1)
   })
 
   it('subshell 도 파이프라인/리스트에 참여한다', () => {

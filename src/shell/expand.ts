@@ -68,14 +68,19 @@ function addBreak(field: Field): void {
 }
 
 /**
- * 현재 문맥의 IFS 문자 집합을 ctx.env.IFS 에서 읽는다(하드코딩 상수가 아니라).
+ * 현재 문맥의 IFS 문자 집합을 env.IFS 에서 읽는다(하드코딩 상수가 아니라).
  *  - 미설정(undefined) → 기본 `[' ', '\t', '\n']`
  *  - 빈 문자열 `''`    → `[]` (단어분할이 전혀 일어나지 않는다 — 확장 전체가 한 필드)
  *  - 그 외            → IFS 문자열의 서로 다른 문자들
  * 비공백 문자(예: `IFS=:`)는 분할 문자이자 `$*` 조인 문자가 된다(bash 실측).
+ *
+ * expand.ts(단어분할/파라미터 확장)와 builtins/read.ts(`read` 빌트인의 필드 분할)가 완전히
+ * 같은 로직을 각자 사본으로 두고 있었다(M3 Part 4 task 4 B7) — 하나만 남기고 여기서
+ * export 해 read.ts 가 그대로 import 해 쓴다. env(Record<string,string>)를 받는 시그니처라
+ * ExpandCtx 가 없는 read.ts 에서도 바로 쓸 수 있다(호출부는 `ifsChars(ctx.env)`처럼 넘긴다).
  */
-function ifsChars(ctx: ExpandCtx): string[] {
-  const raw = ctx.env.IFS
+export function ifsChars(env: Record<string, string>): string[] {
+  const raw = env.IFS
   if (raw === undefined) return [' ', '\t', '\n']
   if (raw === '') return []
   return [...new Set(raw)]
@@ -87,7 +92,7 @@ function ifsChars(ctx: ExpandCtx): string[] {
  * → `axbxc`, 즉 첫 글자 `x` 로 조인. `IFS=; echo "$*"` → 이어붙임.)
  */
 function ifsJoinSep(ctx: ExpandCtx): string {
-  const chars = ifsChars(ctx)
+  const chars = ifsChars(ctx.env)
   return chars.length > 0 ? chars[0]! : ''
 }
 
@@ -314,6 +319,35 @@ function atFormItems(ctx: ExpandCtx, at: { bang: boolean; name: string; sliceSpe
   let items = at.bang ? setIndices(ctx, at.name) : setValues(ctx, at.name)
   if (at.sliceSpec !== undefined) items = sliceElements(at.sliceSpec, items, ctx)
   return items
+}
+
+/**
+ * `${@:o[:l]}` / `${*:o[:l]}` — NAME 없는 위치 매개변수 슬라이스(M3 Part 4 task 4 B4)인지
+ * 판정한다. 맞으면 star(`*`형이면 true, `@`형이면 false)와 sliceSpec 을, 아니면 null 을
+ * 낸다. 기본값 연산자(`${@:-x}`/`${@:=x}`/`${@:+x}`/`${@:?x}`)는 `:` 다음이 슬라이스 산술식이
+ * 아니라 그 네 연산자 문자 중 하나이므로 슬라이스가 아니다 — expandBraceParam 의 hasColon/
+ * opChar 판정과 같은 구분(`${S:-2}` vs `${S: -2}`)을 여기서도 그대로 따른다.
+ */
+function parsePositionalSlice(inner: string): { star: boolean; sliceSpec: string } | null {
+  if (inner[0] !== '@' && inner[0] !== '*') return null
+  const rest = inner.slice(1)
+  if (rest[0] !== ':') return null
+  const opChar = rest[1]
+  if (opChar === '-' || opChar === '=' || opChar === '+' || opChar === '?') return null
+  return { star: inner[0] === '*', sliceSpec: rest.slice(1) }
+}
+
+/**
+ * `${@:o:l}`/`${*:o:l}` 이 슬라이스할 "확장 위치 매개변수 리스트" — 인덱스 0 이 `$0`이고
+ * 인덱스 1부터 `$1`, `$2`, … 다. bash 는 위치 매개변수 슬라이스에서 offset 0 을 `$0`
+ * (스크립트/함수명) 자리로 본다 — docker 실측: `f(){ echo "${@:0:2}"; }; f p q r s`
+ * → `bash p`(offset0=$0="bash", offset1=$1="p"), `f(){ echo "${@:2:2}"; }; f p q r s`
+ * → `q r`(offset2=$2="q", offset3=$3="r"). 이 엔진은 $0 을 지금은 항상 빈 문자열로
+ * 단순화하므로(positionalAt 참고, Task 7/8/9 가 실제 값을 채운다) 여기서도 그 값을 그대로
+ * 재사용한다 — 오프셋 규약(0=$0 슬롯)만 맞추고 $0 실값 자체는 손대지 않는다.
+ */
+function extendedPositional(ctx: ExpandCtx): string[] {
+  return [positionalAt(ctx, 0), ...ctx.positional]
 }
 
 /**
@@ -786,6 +820,29 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
         continue
       }
 
+      // `${@:o:l}` / `${*:o:l}` — NAME 없는 위치 매개변수 슬라이스(M3 Part 4 task 4 B4).
+      // 예전엔 위치 매개변수를 통째로 joined 문자열로 만든 뒤(resolveName) substringOp 로
+      // **문자** 슬라이스했다 — `${arr[@]:o:l}`(위 at-form)처럼 **원소** 슬라이스해야 한다
+      // (docker: `f(){ echo "${@:2:2}"; }; f p q r s` → `q r`, 문자열 슬라이스였다면
+      // 틀렸을 것). offset 규약은 extendedPositional 참고($0 슬롯 포함). at-form 과 완전히
+      // 같은 패턴: `@`는 per-arg(하드 경계), `*`는 IFS[0] 조인.
+      const posSlice = parsePositionalSlice(inner)
+      if (posSlice !== null) {
+        const items = sliceElements(posSlice.sliceSpec, extendedPositional(ctx), ctx)
+        if (posSlice.star) {
+          appendExpanded(field, items.join(ifsJoinSep(ctx)), protectedResult)
+        } else if (protectedResult) {
+          for (let a = 0; a < items.length; a++) {
+            if (a > 0) addBreak(field)
+            appendExpanded(field, items[a]!, true)
+          }
+        } else {
+          appendExpanded(field, items.join(ifsJoinSep(ctx)), false)
+        }
+        i = close + 1
+        continue
+      }
+
       const value = await expandBraceParam(inner, protectedResult, ctx)
       appendExpanded(field, value, protectedResult)
       i = close + 1
@@ -962,7 +1019,7 @@ export async function expandWord(word: Word, ctx: ExpandCtx): Promise<string[]> 
   // 아무 조각도 없으면(있을 수 없지만) 빈 배열
   if (word.length === 0) return []
 
-  const fields = splitFields(field, ifsChars(ctx))
+  const fields = splitFields(field, ifsChars(ctx.env))
 
   // 따옴표가 전혀 없고 내용도 비었으면 단어가 통째로 사라진다 ($NOPE, $EMPTY)
   if (fields.length === 0) return []

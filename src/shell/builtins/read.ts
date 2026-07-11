@@ -1,4 +1,5 @@
 import type { CommandFn, CommandOutput } from '../types'
+import { ifsChars } from '../expand'
 
 /**
  * `read` 빌트인(단일 라인, M3 Part 3 task 4 + task 6 커서). 기본은 `e.stdin` 위에서 한 번만
@@ -52,15 +53,9 @@ function isValidName(name: string): boolean {
 
 const isIfsWhitespace = (ch: string): boolean => ch === ' ' || ch === '\t' || ch === '\n'
 
-/** IFS 문자 집합. 미설정→기본 공백류, 빈 문자열→분할 없음, 그 외→서로 다른 문자들. */
-function ifsChars(env: Record<string, string>): string[] {
-  const raw = env.IFS
-  if (raw === undefined) return [' ', '\t', '\n']
-  if (raw === '') return []
-  const out: string[] = []
-  for (const c of raw) if (!out.includes(c)) out.push(c)
-  return out
-}
+// IFS 문자 집합 판정(미설정→기본 공백류, 빈 문자열→분할 없음, 그 외→서로 다른 문자들)은
+// expand.ts 의 ifsChars 를 그대로 쓴다(M3 Part 4 task 4 B7) — 예전엔 이 파일에 똑같은
+// 로직의 사본이 있었다.
 
 interface LogicalLine { text: string; protectedIdx: boolean[]; hitNewline: boolean; consumed: number }
 

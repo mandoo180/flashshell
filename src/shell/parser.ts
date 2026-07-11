@@ -494,11 +494,19 @@ class Parser {
     return { kind: 'funcdef', name, body: this.parseBraceGroupList() }
   }
 
-  /** `{ LIST; }` 의 내부 LIST 를 읽는다(중괄호 소비 포함). 그룹/함수 body 가 공유한다. */
+  /**
+   * `{ LIST; }` 의 내부 LIST 를 읽는다(중괄호 소비 포함). 그룹/함수 body 가 공유한다.
+   * 본문이 비어 있으면(`{ }`/`{ ; }`) 문법 오류다(M3 Part 4 task 4 B9) — bash 의
+   * compound_list 문법은 항상 ≥1 항목을 요구한다(docker: `{ }` → exit 2 "syntax error
+   * near unexpected token `}'", `f() { }` 도 동일 — 이 함수를 funcdef 도 공유하므로
+   * 자동으로 같이 고쳐진다). `{ ; }`는 skipSeparators() 가 그 `;`를 먼저 삼켜 `{ }`와
+   * 똑같이 "빈 리스트"로 수렴하므로 이 한 번의 길이 검사로 둘 다 잡힌다.
+   */
   private parseBraceGroupList(): ListNode {
     this.expectKeyword('{')
     this.skipSeparators()
     const body = this.parseList(new Set(['}']))
+    if (body.items.length === 0) syntaxError('}')
     this.expectKeyword('}')
     return body
   }
@@ -517,11 +525,16 @@ class Parser {
    * 끝의 stopOps-단독 분기가 이 호출을 지원하도록 손봤다). 닫는 `)`가 없으면(EOF 까지
    * 감) parseList 가 이미 "unexpected EOF" 문법 오류를 낸다 — 여기서 별도 처리가 필요
    * 없다.
+   *
+   * 본문이 비어 있으면(`( )`/`( ; )`) 문법 오류다(M3 Part 4 task 4 B9) — parseBraceGroupList
+   * 와 같은 이유·같은 패턴(docker: `( )` → exit 2 "syntax error near unexpected token
+   * `)'"). `( ; )`도 선행 skipSeparators() 가 `;`를 삼켜 `( )`와 같은 빈 리스트로 수렴한다.
    */
   private parseSubshell(): SubshellNode {
     this.next() // '(' 소비
     this.skipSeparators()
     const body = this.parseList(undefined, [')'])
+    if (body.items.length === 0) syntaxError(')')
     this.expectOp(')')
     return { kind: 'subshell', body, redirs: this.parseRedirs() }
   }

@@ -1089,6 +1089,31 @@ describe('함수 / 브레이스 그룹 / return (task 7, docker debian:stable-sl
     expect((await sh.exec('f() { echo $1; }; f a; echo done$1')).stdout).toBe('a\ndone\n')
   })
 
+  describe('${@:o:l}/${*:o:l} 위치 매개변수 슬라이스 (M3 Part 4 task 4 B4, docker debian:stable-slim bash 5 로 확인됨)', () => {
+    it('${@:2:2} 는 원소 슬라이스 — f(){ echo "${@:2:2}"; }; f p q r s → q r', async () => {
+      expect((await sh.exec('f(){ echo "${@:2:2}"; }; f p q r s')).stdout).toBe('q r\n')
+    })
+    it('${@:1} 은 offset부터 끝까지 — f a b c → a b c', async () => {
+      expect((await sh.exec('f(){ echo "${@:1}"; }; f a b c')).stdout).toBe('a b c\n')
+    })
+    it('${@:2} 는 offset2부터 끝까지 — f a b c → b c', async () => {
+      expect((await sh.exec('f(){ echo "${@:2}"; }; f a b c')).stdout).toBe('b c\n')
+    })
+    it('${#@} 는 영향받지 않는다', async () => {
+      expect((await sh.exec('f(){ echo "${#@}"; }; f a b c d')).stdout).toBe('4\n')
+    })
+    it('"${@:1:2}" 는 quoted per-arg — for 루프로 확인 (엔진에 printf 없음, docker: printf "[%s]" "${@:1:2}" → [a][b])', async () => {
+      const r = await sh.exec('f(){ for x in "${@:1:2}"; do echo "[$x]"; done; }; f a b c')
+      expect(r.stdout).toBe('[a]\n[b]\n')
+    })
+    it('${*:1:2} 는 조인 — f a b c → a b', async () => {
+      expect((await sh.exec('f(){ echo "${*:1:2}"; }; f a b c')).stdout).toBe('a b\n')
+    })
+    it('회귀: 배열 ${arr[@]:o:l} 은 여전히 정상', async () => {
+      expect((await sh.exec('arr=(a b c); echo "${arr[@]:1:2}"')).stdout).toBe('b c\n')
+    })
+  })
+
   it('중첩 함수: 안쪽 호출이 자기 $1 을 보고, 바깥 $1 은 복원된다', async () => {
     // docker: outer() { inner() { echo $1; }; inner z; echo $1; }; outer q → z\nq
     expect((await sh.exec('outer() { inner() { echo $1; }; inner z; echo $1; }; outer q')).stdout).toBe('z\nq\n')
@@ -1151,6 +1176,19 @@ describe('함수 / 브레이스 그룹 / return (task 7, docker debian:stable-sl
   it('브레이스 그룹은 LIST 를 순서대로 실행한다', async () => {
     // docker: { echo a; echo b; } → a\nb
     expect((await sh.exec('{ echo a; echo b; }')).stdout).toBe('a\nb\n')
+  })
+
+  it('빈 그룹 { }/{ ; } 은 얌전한 문법 오류로 exit 2 — exec 는 리젝트하지 않는다 (M3 Part 4 task 4 B9, docker 확인)', async () => {
+    const r1 = await sh.exec('{ }')
+    expect(r1.exitCode).toBe(2)
+    expect(r1.stderr).toMatch(/syntax error/)
+    const r2 = await sh.exec('{ ; }')
+    expect(r2.exitCode).toBe(2)
+    expect(r2.stderr).toMatch(/syntax error/)
+  })
+
+  it('명시적 no-op { :; } 는 exit 0 (빈 것과 다름, 회귀)', async () => {
+    expect((await sh.exec('{ :; }')).exitCode).toBe(0)
   })
 
   it('브레이스 그룹은 서브셸이 아니라 현재 env 를 공유한다', async () => {
@@ -1292,6 +1330,19 @@ describe('( list ) 서브셸: 격리된 childCtx (task 3, docker debian:stable-s
     const r = await sh2.exec('( echo sub')
     expect(r.exitCode).not.toBe(0)
     expect(r.stderr).toMatch(/syntax error/)
+  })
+
+  it('빈 서브셸 ( )/( ; ) 은 얌전한 문법 오류로 exit 2 — exec 는 리젝트하지 않는다 (M3 Part 4 task 4 B9, docker 확인)', async () => {
+    const r1 = await sh.exec('( )')
+    expect(r1.exitCode).toBe(2)
+    expect(r1.stderr).toMatch(/syntax error/)
+    const r2 = await sh.exec('( ; )')
+    expect(r2.exitCode).toBe(2)
+    expect(r2.stderr).toMatch(/syntax error/)
+  })
+
+  it('명시적 no-op ( : ) 는 exit 0 (빈 것과 다름, 회귀)', async () => {
+    expect((await sh.exec('( : )')).exitCode).toBe(0)
   })
 
   it('exit 빌트인이 없어 (exit 3) 은 command not found — 서브셸 자체의 결함이 아니다', async () => {
