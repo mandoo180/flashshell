@@ -23,6 +23,7 @@ beforeEach(() => {
     fs,
     lastExitCode: 0,
     positional: [],
+    arrays: new Map(),
     runSubshell: async (script) => ({ stdout: `<${script}>`, stderr: '', exitCode: 0 }),
   }
 })
@@ -797,6 +798,169 @@ describe('expandForCase (task 6) — case 문의 WORD/PATTERN 전용 확장', ()
 
   it('명령치환도 그대로 지원한다', async () => {
     expect(await expandForCase(wordOf('$(echo hi)'), ctx)).toBe('<echo hi>') // runSubshell 목 스텁 (beforeEach)
+  })
+})
+
+describe('expandWord — 배열 읽기 (task 3, M3 Part 3, docker debian:stable-slim bash 5.2 로 확인됨)', () => {
+  beforeEach(() => { ctx.arrays.set('arr', ['a', 'b', 'c']) })
+
+  it('${arr[0]}/${arr[2]} 는 원소, ${arr[9]} 미설정 인덱스는 빈 문자열이라 단어가 사라진다', async () => {
+    expect(await expandWord(wordOf('${arr[0]}'), ctx)).toEqual(['a'])
+    expect(await expandWord(wordOf('${arr[2]}'), ctx)).toEqual(['c'])
+    expect(await expandWord(wordOf('${arr[9]}'), ctx)).toEqual([]) // 빈 → 단어 소멸
+    expect(await expandWord(wordOf('x${arr[9]}y'), ctx)).toEqual(['xy'])
+  })
+
+  it('${arr[@]} 비따옴표는 단어분할되어 a b c 세 필드', async () => {
+    expect(await expandWord(wordOf('${arr[@]}'), ctx)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('"${arr[@]}" 는 각 원소를 개별 필드로 보존 (printf "[%s]" → [a][b][c])', async () => {
+    expect(await expandWord(wordOf('"${arr[@]}"'), ctx)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('"${arr[*]}" 는 IFS[0] 로 조인한 단일 필드; IFS=, 면 a,b,c', async () => {
+    expect(await expandWord(wordOf('"${arr[*]}"'), ctx)).toEqual(['a b c'])
+    ctx.env.IFS = ','
+    expect(await expandWord(wordOf('"${arr[*]}"'), ctx)).toEqual(['a,b,c'])
+  })
+
+  it('비따옴표 ${arr[*]} 는 조인 후 단어분할 → a b c', async () => {
+    expect(await expandWord(wordOf('${arr[*]}'), ctx)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('${#arr[@]} 는 설정 원소 개수(3), ${#arr[1]} 는 원소 문자열 길이(1)', async () => {
+    expect(await expandWord(wordOf('${#arr[@]}'), ctx)).toEqual(['3'])
+    expect(await expandWord(wordOf('${#arr[*]}'), ctx)).toEqual(['3'])
+    expect(await expandWord(wordOf('${#arr[1]}'), ctx)).toEqual(['1'])
+  })
+
+  it('${#arr[0]} 는 원소0 길이 (arr=(hello) → 5)', async () => {
+    ctx.arrays.set('h', ['hello'])
+    expect(await expandWord(wordOf('${#h[0]}'), ctx)).toEqual(['5'])
+  })
+
+  it('${!arr[@]} 는 인덱스(키) 목록 0 1 2', async () => {
+    expect(await expandWord(wordOf('${!arr[@]}'), ctx)).toEqual(['0', '1', '2'])
+  })
+
+  it('"${!arr[@]}" 는 각 키를 개별 필드로, "${!arr[*]}" 는 IFS 조인', async () => {
+    expect(await expandWord(wordOf('"${!arr[@]}"'), ctx)).toEqual(['0', '1', '2'])
+    expect(await expandWord(wordOf('"${!arr[*]}"'), ctx)).toEqual(['0 1 2'])
+  })
+
+  it('${arr[@]:1:2} 는 원소 리스트 슬라이스(offset1 len2) → b c, ${arr[@]:1} → b c', async () => {
+    expect(await expandWord(wordOf('${arr[@]:1:2}'), ctx)).toEqual(['b', 'c'])
+    expect(await expandWord(wordOf('${arr[@]:1}'), ctx)).toEqual(['b', 'c'])
+  })
+
+  it('"${arr[@]:1:2}" 슬라이스도 per-arg (printf "[%s]" → [b][c])', async () => {
+    expect(await expandWord(wordOf('"${arr[@]:1:2}"'), ctx)).toEqual(['b', 'c'])
+  })
+
+  it('${arr[*]:1:2} 는 슬라이스 후 조인 → b c (한 필드, 따옴표 시)', async () => {
+    expect(await expandWord(wordOf('"${arr[*]:1:2}"'), ctx)).toEqual(['b c'])
+  })
+
+  it('bare $arr 와 ${arr} 는 원소 0 (a)', async () => {
+    expect(await expandWord(wordOf('$arr'), ctx)).toEqual(['a'])
+    expect(await expandWord(wordOf('${arr}'), ctx)).toEqual(['a'])
+    expect(await expandWord(wordOf('${#arr}'), ctx)).toEqual(['1']) // 원소0 길이
+  })
+
+  it('bare $arr[0] 은 중괄호 없으면 첨자가 아니라 리터럴 (a[0])', async () => {
+    // docker: arr=(a b c); echo $arr[0] → a[0]
+    expect(await expandWord(wordOf('$arr[0]'), ctx)).toEqual(['a[0]'])
+  })
+
+  it('산술 첨자: i=2 → ${arr[$i]}=c, ${arr[i-1]}(i=2)=b, ${arr[i+1]}(i=0)', async () => {
+    ctx.env.i = '2'
+    expect(await expandWord(wordOf('${arr[$i]}'), ctx)).toEqual(['c'])
+    expect(await expandWord(wordOf('${arr[i-1]}'), ctx)).toEqual(['b'])
+    ctx.env.i = '0'
+    expect(await expandWord(wordOf('${arr[i+1]}'), ctx)).toEqual(['b'])
+  })
+
+  it('음수 첨자는 끝에서부터: ${arr[-1]}=c, ${arr[-2]}=b, out-of-range ${arr[-9]} 는 빈(크래시 없음)', async () => {
+    expect(await expandWord(wordOf('${arr[-1]}'), ctx)).toEqual(['c'])
+    expect(await expandWord(wordOf('${arr[-2]}'), ctx)).toEqual(['b'])
+    expect(await expandWord(wordOf('x${arr[-9]}y'), ctx)).toEqual(['xy'])
+  })
+})
+
+describe('expandWord — 배열 SPARSE (task 3, docker 확인)', () => {
+  // arr=(a b c); arr[5]=z → 인덱스 3,4 는 진짜 hole
+  function sparse(): string[] { const a = ['a', 'b', 'c']; a[5] = 'z'; return a }
+  beforeEach(() => { ctx.arrays.set('arr', sparse()) })
+
+  it('${arr[@]} 는 홀을 건너뛴다 → a b c z', async () => {
+    expect(await expandWord(wordOf('${arr[@]}'), ctx)).toEqual(['a', 'b', 'c', 'z'])
+    expect(await expandWord(wordOf('"${arr[@]}"'), ctx)).toEqual(['a', 'b', 'c', 'z'])
+  })
+
+  it('${#arr[@]} 는 설정 개수(4), 길이(6) 아님', async () => {
+    expect(await expandWord(wordOf('${#arr[@]}'), ctx)).toEqual(['4'])
+  })
+
+  it('${!arr[@]} 는 설정 인덱스만 → 0 1 2 5', async () => {
+    expect(await expandWord(wordOf('${!arr[@]}'), ctx)).toEqual(['0', '1', '2', '5'])
+  })
+
+  it('${arr[3]} 홀은 빈 문자열, 음수 첨자는 최대인덱스+1 기준: ${arr[-1]}=z, ${arr[-2]}=hole', async () => {
+    expect(await expandWord(wordOf('x${arr[3]}y'), ctx)).toEqual(['xy'])
+    expect(await expandWord(wordOf('${arr[-1]}'), ctx)).toEqual(['z'])
+    expect(await expandWord(wordOf('x${arr[-2]}y'), ctx)).toEqual(['xy'])
+  })
+})
+
+describe('expandWord — 배열 미정의/스칼라 parity (task 3, docker 확인)', () => {
+  it('미정의 배열: ${u[@]} 빈, ${#u[@]} 0, ${u[0]} 빈', async () => {
+    expect(await expandWord(wordOf('${u[@]}'), ctx)).toEqual([])
+    expect(await expandWord(wordOf('${#u[@]}'), ctx)).toEqual(['0'])
+    expect(await expandWord(wordOf('x${u[0]}y'), ctx)).toEqual(['xy'])
+  })
+
+  it('"${u[@]}" 빈 배열은 필드조차 안 남긴다 ("$@" zero-arg parity)', async () => {
+    // docker: u=(); set -- "${u[@]}"; echo $# → 0
+    expect(await expandWord(wordOf('"${u[@]}"'), ctx)).toEqual([])
+    expect(await expandWord(wordOf('"x${u[@]}y"'), ctx)).toEqual(['xy'])
+  })
+
+  it('스칼라는 1-원소 배열처럼: x=hello → ${x[0]}=hello, ${x[@]}=hello, ${#x[@]}=1, ${!x[@]}=0', async () => {
+    ctx.env.x = 'hello'
+    expect(await expandWord(wordOf('${x[0]}'), ctx)).toEqual(['hello'])
+    expect(await expandWord(wordOf('${x[@]}'), ctx)).toEqual(['hello'])
+    expect(await expandWord(wordOf('"${x[@]}"'), ctx)).toEqual(['hello'])
+    expect(await expandWord(wordOf('${x[*]}'), ctx)).toEqual(['hello'])
+    expect(await expandWord(wordOf('${#x[@]}'), ctx)).toEqual(['1'])
+    expect(await expandWord(wordOf('${!x[@]}'), ctx)).toEqual(['0'])
+    expect(await expandWord(wordOf('x${x[1]}y'), ctx)).toEqual(['xy']) // 인덱스1 미설정
+  })
+})
+
+describe('expandWord — 배열 인용/분할 (공백 낀 원소, task 3, docker 확인)', () => {
+  beforeEach(() => { ctx.arrays.set('arr', ['x y', 'z']) })
+
+  it('"${arr[@]}" 는 공백 낀 원소를 한 필드로 유지 → [x y][z]', async () => {
+    expect(await expandWord(wordOf('"${arr[@]}"'), ctx)).toEqual(['x y', 'z'])
+  })
+
+  it('비따옴표 ${arr[@]} 는 공백 낀 원소를 단어분할 → [x][y][z]', async () => {
+    expect(await expandWord(wordOf('${arr[@]}'), ctx)).toEqual(['x', 'y', 'z'])
+  })
+
+  it('"${arr[*]}" 는 조인 → [x y z] 한 필드', async () => {
+    expect(await expandWord(wordOf('"${arr[*]}"'), ctx)).toEqual(['x y z'])
+  })
+})
+
+describe('expandWord — 배열 malformed 는 크래시하지 않는다 (task 3)', () => {
+  beforeEach(() => { ctx.arrays.set('arr', ['a', 'b', 'c']) })
+  it('${arr[} / ${arr[@} / ${!arr[} 는 던지지 않고 관대하게 처리', async () => {
+    // 닫히지 않은 대괄호 — 첨자로 인식 안 되고 폴백(원소0/빈). 크래시만 없으면 된다.
+    await expect(expandWord(wordOf('"${arr[}"'), ctx)).resolves.toBeDefined()
+    await expect(expandWord(wordOf('"${arr[@}"'), ctx)).resolves.toBeDefined()
+    await expect(expandWord(wordOf('"${!arr[}"'), ctx)).resolves.toBeDefined()
   })
 })
 

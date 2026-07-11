@@ -12,6 +12,12 @@ export interface ExpandCtx {
   lastExitCode: number
   /** $1..$9 / $@ / $* / $# 의 재료. 인덱스 0 = $1. Task 7(함수)·8(source)·9(shebang)가 세팅한다. */
   positional: string[]
+  /**
+   * 인덱스 배열 저장소(이름 → 원소, sparse 가능 — 진짜 JS hole). `${arr[i]}`/`${arr[@]}`
+   * /`${#arr[@]}`/`${!arr[@]}`/슬라이스/bare `$arr`(→원소0) 확장이 여기서 읽는다
+   * (M3 Part 3 task 3). interpreter 의 expandCtxFor 가 ctx.state.arrays 를 그대로 넘긴다.
+   */
+  arrays: Map<string, string[]>
   runSubshell(script: string): Promise<{ stdout: string; stderr: string; exitCode: number }>
 }
 
@@ -123,6 +129,8 @@ interface ResolvedName { isSet: boolean; value: string; assignable: boolean }
 const VARNAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 /** `${...}` 안에서 이름이 시작될 수 있는 자리(위치 매개변수 토큰 또는 셸 변수 이름). */
 const NAME_RE = /^(?:[@*#]|[0-9]+|[A-Za-z_][A-Za-z0-9_]*)/
+/** 문자열 **접두**로서의 셸 변수 이름(배열 첨자 앞의 NAME 을 떼낼 때). 선형 매치(ReDoS 무관). */
+const VARNAME_PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]*/
 
 /**
  * `${...}` 안의 NAME 을 { 미설정여부, 값, (env에) 대입 가능여부 } 로 푼다. 위치 매개변수
@@ -150,6 +158,178 @@ function resolveName(ctx: ExpandCtx, name: string): ResolvedName {
   }
   // 이름이 아예 인식 안 되는 형태(`${}` 등) — 관대하게 미설정 취급, 크래시하지 않는다.
   return { isSet: false, value: '', assignable: false }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 배열 읽기(M3 Part 3 task 3). 저장은 ctx.arrays(sparse 가능 — 진짜 JS hole).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 첨자 읽기의 뒷단(backing) 원소 배열을 낸다:
+ *  - 진짜 배열이면 저장된 string[](sparse 가능 — JS array 의 length = 최대인덱스+1).
+ *  - 스칼라(env 에 동명)면 1-원소 `[value]`(bash: 스칼라는 `[0]`/`[@]` 에서 1-원소 배열처럼
+ *    행동, docker: `x=hello; ${x[0]}`→hello, `${x[@]}`→hello, `${#x[@]}`→1).
+ *  - 그 외(미정의) → undefined.
+ * 위치 매개변수/특수 토큰(@,*,#,숫자)에는 쓰지 않는다(호출부가 VARNAME 만 넘긴다).
+ */
+function arrayBacking(ctx: ExpandCtx, name: string): string[] | undefined {
+  const arr = ctx.arrays.get(name)
+  if (arr !== undefined) return arr
+  if (Object.prototype.hasOwnProperty.call(ctx.env, name)) return [ctx.env[name]!]
+  return undefined
+}
+
+/** 설정된 원소 값들을 인덱스 순으로(홀 skip). `${arr[@]}`/`${arr[*]}`/`${#arr[@]}` 재료. */
+function setValues(ctx: ExpandCtx, name: string): string[] {
+  const arr = arrayBacking(ctx, name)
+  if (arr === undefined) return []
+  const out: string[] = []
+  for (let i = 0; i < arr.length; i++) if (i in arr) out.push(arr[i]!)
+  return out
+}
+
+/** 설정된 원소의 인덱스들을 문자열로(홀 skip). `${!arr[@]}`/`${!arr[*]}` 재료. */
+function setIndices(ctx: ExpandCtx, name: string): string[] {
+  const arr = arrayBacking(ctx, name)
+  if (arr === undefined) return []
+  const out: string[] = []
+  for (let i = 0; i < arr.length; i++) if (i in arr) out.push(String(i))
+  return out
+}
+
+/**
+ * bare `$arr`/`${arr}`(첨자 없음)의 값 — 배열이면 **원소 0**(홀/미설정이면 ''), 아니면
+ * resolveName 그대로(스칼라·위치 매개변수). 스칼라 대입(`${x:=y}`)을 위해 배열이 아닐 때는
+ * assignable 을 보존한다(resolveName 위임).
+ */
+function resolveBare(ctx: ExpandCtx, name: string): ResolvedName {
+  const arr = ctx.arrays.get(name)
+  if (arr !== undefined) {
+    const has0 = 0 in arr
+    return { isSet: has0, value: has0 ? arr[0]! : '', assignable: false }
+  }
+  return resolveName(ctx, name)
+}
+
+/** `[` 의 짝 `]` 를 찾는다(대괄호 깊이). start 는 여는 `[` 다음 인덱스. 못 찾으면 -1. */
+function matchBracketClose(s: string, start: number): number {
+  let depth = 0
+  for (let j = start; j < s.length; j++) {
+    const c = s[j]
+    if (c === '[') depth++
+    else if (c === ']') { if (depth === 0) return j; depth-- }
+  }
+  return -1
+}
+
+/** `NAME` 또는 `NAME[subscript]` 를 분해한다(VARNAME 만; 위치 토큰이면 null). */
+function extractSubscript(s: string): { name: string; subscript: string | undefined } | null {
+  const m = VARNAME_PREFIX_RE.exec(s)
+  if (!m) return null
+  const name = m[0]
+  const after = s.slice(name.length)
+  if (after[0] === '[') {
+    const cl = matchBracketClose(after, 1)
+    if (cl !== -1) return { name, subscript: after.slice(1, cl) }
+  }
+  return { name, subscript: undefined }
+}
+
+/**
+ * 배열 첨자(산술식)를 평가한다. bash 는 첨자도 산술 문맥이다 — `$`-확장 선처리 후 evalArith
+ * (`${arr[$i]}`·`${arr[i+1]}`·`${arr[0x1]}` 전부 처리). 음수 첨자는 끝에서부터
+ * (`length + idx`, length = 배열의 최대인덱스+1 = JS array.length). docker 실측:
+ * `arr=(a b c); arr[5]=z; ${arr[-1]}`→z(=idx5), `${arr[-2]}`→''(=idx4 hole).
+ */
+async function evalSubscript(ctx: ExpandCtx, spec: string, length: number): Promise<number> {
+  const pre = await expandArithExpr(spec, ctx)
+  let idx = evalArith(pre, ctx)
+  if (idx < 0) idx += length
+  return idx
+}
+
+/** `${arr[i]}` — 원소 하나(홀/미설정/범위밖이면 ''). 음수 첨자는 끝에서부터. */
+async function readElement(ctx: ExpandCtx, name: string, spec: string): Promise<string> {
+  const arr = arrayBacking(ctx, name)
+  if (arr === undefined) return ''
+  const idx = await evalSubscript(ctx, spec, arr.length)
+  return idx >= 0 && idx in arr ? arr[idx]! : ''
+}
+
+/**
+ * `${arr[@]:off:len}` / `${arr[*]:off:len}` — **원소 리스트**를 슬라이스한다(문자열 아니라
+ * 원소 단위, docker: `arr=(a b c); ${arr[@]:1:2}`→`b c`). substringOp 과 같은 산술/음수/clamp
+ * 규칙을 원소 배열에 적용한다(offset 은 압축된 원소 리스트 상의 위치 — 브리프 명시
+ * "slice of the element list, offset 1 len 2"). 음수 length 로 구간이 뒤집히면 substringOp
+ * 과 동일하게 ArithError(그 명령만 exit 1, 스크립트는 계속).
+ */
+function sliceElements(spec: string, items: string[], ctx: ExpandCtx): string[] {
+  const sep = findTopLevelChar(spec, ':')
+  const offSource = sep === -1 ? spec : spec.slice(0, sep)
+  const lenSource = sep === -1 ? undefined : spec.slice(sep + 1)
+
+  const n = items.length
+  let offset = evalArith(offSource, ctx)
+  const rawLen = lenSource === undefined ? undefined : evalArith(lenSource, ctx)
+
+  if (offset < 0) offset += n
+  if (offset < 0 || offset > n) return []
+
+  if (rawLen === undefined) return items.slice(offset)
+
+  let end: number
+  if (rawLen < 0) {
+    end = n + rawLen
+    if (end < offset) throw new ArithError(`${rawLen}: substring expression < 0`)
+  } else {
+    end = offset + rawLen
+    if (end > n) end = n
+  }
+  return items.slice(offset, end)
+}
+
+/**
+ * `${...}` 안쪽이 per-arg 필드를 내는 `@`-형(`NAME[@]`, `!NAME[@]`, 각각 `:slice` 옵션)인지
+ * 판정한다. 맞으면 {bang, name, sliceSpec} 를, 아니면 null 을 낸다(그러면 expandBraceParam
+ * 이 문자열로 처리 — `[*]`·`[i]`·개수·스칼라 등). `[@]` 뒤에 `:` 슬라이스가 아닌 미지원
+ * 연산자(`[@]#pat` 등)가 오면 null 로 흘려 관대하게 처리한다.
+ */
+function parseAtForm(inner: string): { bang: boolean; name: string; sliceSpec: string | undefined } | null {
+  let s = inner
+  let bang = false
+  if (s[0] === '!') { bang = true; s = s.slice(1) }
+  const m = VARNAME_PREFIX_RE.exec(s)
+  if (!m) return null
+  const name = m[0]
+  const after = s.slice(name.length)
+  if (!after.startsWith('[@]')) return null
+  const tail = after.slice(3)
+  if (tail === '') return { bang, name, sliceSpec: undefined }
+  if (tail[0] === ':') return { bang, name, sliceSpec: tail.slice(1) }
+  return null
+}
+
+/** `@`-형이 낼 원소(값 또는 인덱스) 리스트 — 슬라이스 적용 후. `${arr[@]}`/`${!arr[@]}` 공용. */
+function atFormItems(ctx: ExpandCtx, at: { bang: boolean; name: string; sliceSpec: string | undefined }): string[] {
+  let items = at.bang ? setIndices(ctx, at.name) : setValues(ctx, at.name)
+  if (at.sliceSpec !== undefined) items = sliceElements(at.sliceSpec, items, ctx)
+  return items
+}
+
+/**
+ * dquote 조각 전체가 "원소 0개인 `@`-형"이라 빈 필드조차 남기면 안 되는가? — bare `"$@"`
+ * zero-arg 와 `"${arr[@]}"`/`"${!arr[@]}"`(빈 배열)만 참이다. 슬라이스 없는 순수 `[@]` 형만
+ * 특례로 본다(슬라이스로 0개가 되는 초에지 케이스는 무시 — sliceElements 재평가 부작용 회피).
+ */
+function isEmptyAtForm(text: string, ctx: ExpandCtx): boolean {
+  if (text === '$@' && ctx.positional.length === 0) return true
+  if (text.startsWith('${') && text.endsWith('}')) {
+    const at = parseAtForm(text.slice(2, -1))
+    if (at !== null && at.sliceSpec === undefined) {
+      return (at.bang ? setIndices(ctx, at.name) : setValues(ctx, at.name)).length === 0
+    }
+  }
+  return false
 }
 
 /**
@@ -392,18 +572,68 @@ async function expandBraceParam(inner: string, protectedResult: boolean, ctx: Ex
   if (inner[0] === '#') {
     const rest = inner.slice(1)
     if (rest === '' || rest === '@' || rest === '*') return String(ctx.positional.length)
+    // 배열 인지: `${#arr[@]}`/`${#arr[*]}`→설정 원소 **개수**, `${#arr[i]}`→원소 i 문자열 길이,
+    // `${#arr}`→원소 0 길이(배열)/스칼라 길이. 나머지(위치 매개변수 `${#1}` 등)는 기존 폴백.
+    const sub = extractSubscript(rest)
+    if (sub) {
+      if (sub.subscript === '@' || sub.subscript === '*') return String(setValues(ctx, sub.name).length)
+      if (sub.subscript !== undefined) return String((await readElement(ctx, sub.name, sub.subscript)).length)
+      return String(resolveBare(ctx, sub.name).value.length)
+    }
     return String(resolveName(ctx, rest).value.length)
+  }
+
+  // `${!arr[@]}`/`${!arr[*]}` — 인덱스(키) 목록. `[@]` 형은 보통 expandDollar 가 per-arg 필드로
+  // 가로채므로 여기 오는 건 `[*]`(IFS[0] 조인) 또는 collapsed/nested `[@]`(역시 조인)다.
+  // 그 외 `${!x}`(indirect) 는 이 서브셋 미지원 — 관대하게 빈 문자열.
+  if (inner[0] === '!') {
+    const sub = extractSubscript(inner.slice(1))
+    if (sub && (sub.subscript === '@' || sub.subscript === '*')) {
+      return setIndices(ctx, sub.name).join(ifsJoinSep(ctx))
+    }
+    return ''
   }
 
   const nameMatch = NAME_RE.exec(inner)
   const name = nameMatch ? nameMatch[0] : ''
-  const rest = inner.slice(name.length)
+  let rest = inner.slice(name.length)
 
-  if (rest === '') return resolveName(ctx, name).value // 연산자 없음 — 기존 ${NAME}/${N}
+  // 배열 첨자: `NAME[subscript]`(진짜 변수 이름에만 — 위치 토큰 @,*,#,숫자에는 안 붙는다).
+  // 첨자를 떼고 남은 rest 가 연산자(`:-`, `#pat`, `/a/b`, 슬라이스 …)로 이어진다.
+  let subscript: string | undefined
+  if (VARNAME_RE.test(name) && rest[0] === '[') {
+    const cl = matchBracketClose(rest, 1)
+    if (cl !== -1) { subscript = rest.slice(1, cl); rest = rest.slice(cl + 1) }
+  }
+
+  // `${arr[*]}`(및 collapsed/nested `${arr[@]}`) — 설정 원소를 IFS[0] 로 조인한 단일 문자열.
+  // 슬라이스 `:o:l` 은 원소 리스트에 적용 후 조인(docker: `${arr[*]:1:2}`→`b c`). per-arg 가
+  // 필요한 진짜 `"${arr[@]}"` 는 expandDollar 가 먼저 가로채므로 여기 안 온다.
+  if (subscript === '@' || subscript === '*') {
+    let items = setValues(ctx, name)
+    if (rest.startsWith(':')) items = sliceElements(rest.slice(1), items, ctx)
+    return items.join(ifsJoinSep(ctx))
+  }
+
+  // 첨자 있는 원소 참조는 그 원소를, 없으면 bare(배열→원소0/스칼라) 값을 연산자 대상으로 삼는다.
+  let resolved: ResolvedName
+  if (subscript !== undefined) {
+    const arr = arrayBacking(ctx, name)
+    if (arr === undefined) {
+      resolved = { isSet: false, value: '', assignable: false }
+    } else {
+      const idx = await evalSubscript(ctx, subscript, arr.length)
+      const has = idx >= 0 && idx in arr
+      resolved = { isSet: has, value: has ? arr[idx]! : '', assignable: false }
+    }
+  } else {
+    resolved = resolveBare(ctx, name)
+  }
+
+  if (rest === '') return resolved.value // 연산자 없음 — ${NAME}/${N}/${arr[i]}/${arr}
 
   const hasColon = rest[0] === ':'
   const opChar = hasColon ? rest[1] : rest[0]
-  const resolved = resolveName(ctx, name)
 
   // 부분문자열: `${name:offset[:length]}`. `:` 바로 다음 글자가 기존 4개 연산자
   // (`- = + ?`) 중 하나가 아닐 때만 여기로 분기한다 — `${S:-2}`는 `:-`(기본값) 연산자가
@@ -534,7 +764,29 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
     if (source[i + 1] === '{') {
       const close = findBraceClose(source, i + 2)
       if (close === -1) { appendLiteral(field, ch, protectedResult); i++; continue }
-      const value = await expandBraceParam(source.slice(i + 2, close), protectedResult, ctx)
+      const inner = source.slice(i + 2, close)
+
+      // `${arr[@]}` / `${!arr[@]}`(및 `:slice`) — `"$@"` 와 **똑같이** per-arg 필드로 낸다.
+      // 각 원소(또는 인덱스)를 개별 필드로 만들고 인접 원소 사이에 하드 경계(addBreak)를
+      // 넣는다. 비따옴표면 IFS[0] 로 조인 후 unprotected 로 넣어 splitFields 가 단어분할하게
+      // 한다(비따옴표 $@ 와 동일). 원소가 0개면 아무것도 안 남긴다(빈 필드조차 아님 —
+      // "$@" zero-arg 처럼, expandWord 의 hadQuotes 예외 참고).
+      const at = parseAtForm(inner)
+      if (at !== null) {
+        const items = atFormItems(ctx, at)
+        if (protectedResult) {
+          for (let a = 0; a < items.length; a++) {
+            if (a > 0) addBreak(field)
+            appendExpanded(field, items[a]!, true) // 보호됨: IFS 분할 안 됨(하드 경계로만 나뉨)
+          }
+        } else {
+          appendExpanded(field, items.join(ifsJoinSep(ctx)), false)
+        }
+        i = close + 1
+        continue
+      }
+
+      const value = await expandBraceParam(inner, protectedResult, ctx)
       appendExpanded(field, value, protectedResult)
       i = close + 1
       continue
@@ -580,10 +832,12 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
       continue
     }
 
-    // $NAME
-    const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(i + 1))
+    // $NAME — 배열이면 원소 0(bare `$arr`→`${arr[0]}`, docker 확인). 뒤에 `[0]` 같은 게 와도
+    // 중괄호 없는 `$arr[0]` 은 첨자가 아니라 리터럴(bash: `arr=(a b c); echo $arr[0]`→`a[0]`)
+    // 이라, 정규식은 이름만 먹고 나머지는 그대로 소스에 남긴다.
+    const match = VARNAME_PREFIX_RE.exec(source.slice(i + 1))
     if (!match) { appendLiteral(field, ch, protectedResult); i++; continue }
-    appendExpanded(field, ctx.env[match[0]] ?? '', protectedResult)
+    appendExpanded(field, resolveBare(ctx, match[0]).value, protectedResult)
     i += 1 + match[0].length
   }
 }
@@ -689,7 +943,9 @@ export async function expandWord(word: Word, ctx: ExpandCtx): Promise<string[]> 
       // "$@"; do echo x; done` → 무출력). 그러나 인자가 하나라도 있으면(빈 문자열이라도)
       // 각 인자는 필드를 남긴다(`f ""` → `[]` 한 개, `f "" ""` → `[][]`). `"$*"`·`""` 는
       // 언제나 빈 따옴표 null 을 남긴다 — `"$@"` 의 zero-arg 만 유일한 예외다.
-      if (!(part.text === '$@' && ctx.positional.length === 0)) field.hadQuotes = true
+      // `"${arr[@]}"`/`"${!arr[@]}"` 도 같은 규칙이다: 원소 0개면 필드조차 안 남긴다
+      // (docker: `u=(); set -- "${u[@]}"; echo $#`→0). `"${arr[*]}"` 는 항상 필드 하나.
+      if (!isEmptyAtForm(part.text, ctx)) field.hadQuotes = true
       await expandDollar(part.text, true, field, ctx)
       continue
     }

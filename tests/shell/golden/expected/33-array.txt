@@ -1,0 +1,20 @@
+a c []
+a b c
+[a b c]
+count=3 len1=1
+keys=0 1 2
+slice=b c rest=b c
+bare=a elem=a barelen=1
+sub=c arith=b
+neg=cb
+sparse=a b c z n=4 k=0 1 2 5 hole=[]
+scalar=hello|hello|1|0
+undef=[] n=0 zero=[]
+iter[p q]
+iter[r]
+assign=a b Z keys=0 1 2
+join=a,b,c
+
+===STDERR===
+===EXIT===
+0

@@ -1,0 +1,16 @@
+# 배열 읽기 (M3 Part 3 task 3): ${arr[i]} ${arr[@]} ${arr[*]} ${#arr[@]} ${!arr[@]} 슬라이스 bare $arr
+arr=(a b c); echo "${arr[0]} ${arr[2]} [${arr[9]}]"
+echo "${arr[@]}"
+echo "[${arr[*]}]"
+echo "count=${#arr[@]} len1=${#arr[1]}"
+echo "keys=${!arr[@]}"
+echo "slice=${arr[@]:1:2} rest=${arr[@]:1}"
+echo "bare=$arr elem=${arr} barelen=${#arr}"
+i=2; echo "sub=${arr[$i]} arith=${arr[i-1]}"
+echo "neg=${arr[-1]}${arr[-2]}"
+sp=(a b c); sp[5]=z; echo "sparse=${sp[@]} n=${#sp[@]} k=${!sp[@]} hole=[${sp[3]}]"
+x=hello; echo "scalar=${x[0]}|${x[@]}|${#x[@]}|${!x[@]}"
+echo "undef=[${nope[@]}] n=${#nope[@]} zero=[${nope[0]}]"
+words=("p q" r); for e in "${words[@]}"; do echo "iter[$e]"; done
+neg2=(a b c); neg2[-1]=Z; echo "assign=${neg2[@]} keys=${!neg2[@]}"
+IFS=,; echo "join=${arr[*]}"

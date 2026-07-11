@@ -130,6 +130,7 @@ function expandCtxFor(ctx: RunCtx): ExpandCtx {
     fs: ctx.fs,
     lastExitCode: ctx.state.lastExitCode,
     positional: ctx.positional,
+    arrays: ctx.state.arrays,
     // 서브셸은 같은 VFS와 예산을 공유하되, cwd/env 변경은 밖으로 새지 않는다.
     runSubshell: async (script) => {
       const child = childCtx(ctx, { copyFunctions: true })
@@ -497,7 +498,7 @@ async function applyAssignment(a: Assignment, ctx: RunCtx, expandCtx: ExpandCtx)
 
   if (a.index !== undefined) {
     const idxExpr = await expandArithExpr(wordSourceText(a.index), expandCtx)
-    const idx = evalArith(idxExpr, ctx.state)
+    const idxRaw = evalArith(idxExpr, ctx.state)
     const value = await expandForCase(a.value, expandCtx)
     const existing = ctx.state.arrays.get(a.name)
     let arr: string[]
@@ -510,6 +511,13 @@ async function applyAssignment(a: Assignment, ctx: RunCtx, expandCtx: ExpandCtx)
         delete ctx.state.env[a.name]
       }
     }
+    // 음수 첨자는 끝에서부터(bash: `arr=(a b c); arr[-1]=Z` → 마지막 원소 [2]=Z → `a b Z`).
+    // 기준 길이는 배열의 최대인덱스+1(= JS array.length, 스칼라 승격 후 값 반영). 재해석 후에도
+    // 음수면 범위 밖이라 대입하지 않고 던진다(bash: "bad array subscript" 로 실패, 대입 없음) —
+    // 예전엔 `arr[-1]` 이 JS 문자열 키 "-1" 을 만들어 ${!arr[@]} 반복을 오염시켰다(리뷰 지적).
+    let idx = idxRaw
+    if (idx < 0) idx += arr.length
+    if (idx < 0) throw new Error(`${a.name}: bad array subscript`)
     arr[idx] = value
     ctx.state.arrays.set(a.name, arr)
     return

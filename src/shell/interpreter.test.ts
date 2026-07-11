@@ -1937,4 +1937,83 @@ describe('배열 대입 실행 (M3 Part 3 task 2) — state.arrays 에 저장', 
     await run('arr=(a b c); ( arr[0]=X )', fs, state, 100_000)
     expect(state.arrays.get('arr')).toEqual(['a', 'b', 'c'])
   })
+
+  it('음수 첨자 대입은 끝에서부터 (task 3 fold-in): arr[-1]=Z → a b Z, 유령 "-1" 키 없음', async () => {
+    // docker: arr=(a b c); arr[-1]=Z → declare -p arr = ([0]="a" [1]="b" [2]="Z")
+    const state = freshState()
+    await run('arr=(a b c); arr[-1]=Z', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a', 'b', 'Z'])
+    expect(Object.keys(state.arrays.get('arr')!)).toEqual(['0', '1', '2']) // "-1" 유령 키 없음
+  })
+
+  it('음수 첨자 대입 arr[-2]=Y → a Y c', async () => {
+    const state = freshState()
+    await run('arr=(a b c); arr[-2]=Y', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a', 'Y', 'c'])
+  })
+
+  it('범위 밖 음수 첨자 대입 arr[-9]=x 는 크래시 없이 nonzero, 대입 안 함', async () => {
+    const state = freshState()
+    const r = await run('arr=(a b c); arr[-9]=x', fs, state, 100_000)
+    expect(r.exitCode).not.toBe(0)
+    expect(state.arrays.get('arr')).toEqual(['a', 'b', 'c']) // 그대로
+  })
+})
+
+describe('배열 읽기 end-to-end (M3 Part 3 task 3) — 대입→확장→echo (docker bash 5.2 대조)', () => {
+  function freshState(): ShellState {
+    return {
+      cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' },
+      lastExitCode: 0, home: '/home/player', functions: new Map(), arrays: new Map(),
+    }
+  }
+
+  it('echo ${arr[@]} / ${arr[0]} / ${#arr[@]} / ${!arr[@]}', async () => {
+    const state = freshState()
+    const r = await run(
+      'arr=(a b c); echo "${arr[@]}"; echo "${arr[0]}-${arr[2]}"; echo "${#arr[@]}"; echo "${!arr[@]}"',
+      fs, state, 100_000,
+    )
+    expect(r.stdout).toBe('a b c\na-c\n3\n0 1 2\n')
+  })
+
+  it('비따옴표 ${arr[@]} 는 공백 낀 원소를 단어분할 (for 루프 대조)', async () => {
+    // arr=("a b" c); for e in ${arr[@]} → [a][b][c] (따옴표 없으면 "a b" 도 쪼개진다)
+    const state = freshState()
+    const r = await run(
+      'arr=("a b" c); for e in ${arr[@]}; do echo "[$e]"; done',
+      fs, state, 100_000,
+    )
+    expect(r.stdout).toBe('[a]\n[b]\n[c]\n')
+  })
+
+  it('sparse: arr=(a b c); arr[5]=z → ${arr[@]}=a b c z, ${#arr[@]}=4, ${!arr[@]}=0 1 2 5', async () => {
+    const state = freshState()
+    const r = await run(
+      'arr=(a b c); arr[5]=z; echo "${arr[@]}|${#arr[@]}|${!arr[@]}"',
+      fs, state, 100_000,
+    )
+    expect(r.stdout).toBe('a b c z|4|0 1 2 5\n')
+  })
+
+  it('for 루프가 "${arr[@]}" 를 원소별로 순회 (공백 낀 원소 보존)', async () => {
+    const state = freshState()
+    const r = await run(
+      'arr=("x y" z); for e in "${arr[@]}"; do echo "[$e]"; done',
+      fs, state, 100_000,
+    )
+    expect(r.stdout).toBe('[x y]\n[z]\n')
+  })
+
+  it('IFS=, 로 "${arr[*]}" 조인', async () => {
+    const state = freshState()
+    const r = await run('arr=(a b c); IFS=,; echo "${arr[*]}"', fs, state, 100_000)
+    expect(r.stdout).toBe('a,b,c\n')
+  })
+
+  it('bare $arr 는 원소0 (a)', async () => {
+    const state = freshState()
+    const r = await run('arr=(a b c); echo $arr', fs, state, 100_000)
+    expect(r.stdout).toBe('a\n')
+  })
 })
