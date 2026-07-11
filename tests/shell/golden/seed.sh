@@ -19,3 +19,6 @@ printf '3\n' > tree/sub/three.txt
 printf 'hello\nworld\n' > diffA.txt
 printf 'hello\nworld\n' > diffB.txt
 printf 'hello\nWORLD\n' > diffC.txt
+printf 'x=5\ny=hello\n' > conf.sh
+printf '#!/bin/bash\necho hello from script\n' > greet.sh
+chmod +x greet.sh

@@ -1,0 +1,12 @@
+hi bob
+foo-bar
+one
+two
+three
+empty
+got:x
+code=7
+
+===STDERR===
+===EXIT===
+0

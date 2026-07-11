@@ -1,0 +1,6 @@
+5 hello
+dot:5-hello
+
+===STDERR===
+===EXIT===
+0

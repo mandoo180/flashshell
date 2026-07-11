@@ -31,6 +31,8 @@ function seedVfs(): VFS {
   fs.writeFile('/work/diffA.txt', 'hello\nworld\n')
   fs.writeFile('/work/diffB.txt', 'hello\nworld\n')
   fs.writeFile('/work/diffC.txt', 'hello\nWORLD\n')
+  fs.writeFile('/work/conf.sh', 'x=5\ny=hello\n')
+  fs.writeFile('/work/greet.sh', '#!/bin/bash\necho hello from script\n', 0o755)
   return fs
 }
 

@@ -1,0 +1,10 @@
+H
+other
+Y
+N
+other
+first
+
+===STDERR===
+===EXIT===
+0

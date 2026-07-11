@@ -1,0 +1,6 @@
+hello from script
+hello from script
+
+===STDERR===
+===EXIT===
+0

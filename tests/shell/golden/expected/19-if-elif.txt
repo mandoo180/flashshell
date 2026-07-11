@@ -1,0 +1,9 @@
+b
+a
+c
+has-a
+no-nope
+
+===STDERR===
+===EXIT===
+0
