@@ -2275,3 +2275,41 @@ describe('while/for read — 줄별 stdin 커서 (M3 Part 3 task 6, docker debia
     expect(r.stdout).toBe('[]\n')
   })
 })
+
+describe('중첩 read 루프 — 자체 리다이렉션 없는 안쪽 루프는 바깥 fd0 커서를 공유한다 (task 6 리뷰 수정, docker debian:stable-slim bash 5.2 로 확인됨)', () => {
+  it('버그 재현: while read x; do while read y; do …; done; done < f — 안쪽이 바깥 커서를 이어받아 진행한다', async () => {
+    // docker: printf 'a\nb\nc\nd\n' > f;
+    //   while read x; do while read y; do echo "$x=$y"; break; done; done < f
+    //   → a=b / c=d (안쪽 while 은 자기 리다이렉션이 없어 바깥 fd0 커서를 그대로 공유 —
+    //   고쳐지기 전엔 안쪽이 initialStdin='' 로 빈 커서를 새로 열어 본문이 아예 안 돈다)
+    fs.writeFile('/home/player/f', 'a\nb\nc\nd\n')
+    const r = await sh.exec('while read x; do while read y; do echo "$x=$y"; break; done; done < f')
+    expect(r.stdout).toBe('a=b\nc=d\n')
+  })
+
+  it('버그 재현: while read x; do for i in 1; do read y; …; done; done < f — for 본문도 바깥 커서를 이어받는다', async () => {
+    // docker: printf 'a\nb\nc\nd\n' > f2;
+    //   while read x; do for i in 1; do read y; echo "$x-$y"; done; done < f2
+    //   → a-b / c-d
+    fs.writeFile('/home/player/f2', 'a\nb\nc\nd\n')
+    const r = await sh.exec('while read x; do for i in 1; do read y; echo "$x-$y"; done; done < f2')
+    expect(r.stdout).toBe('a-b\nc-d\n')
+  })
+
+  it('회귀: while read x; do … < emptyfile; done — 안쪽 자체 리다이렉션은 여전히 새 빈 커서(0회) — 바깥 커서를 이어받지 않는다', async () => {
+    // 두 케이스(자체 리다이렉션 없음 vs `< emptyfile`)는 initialStdin 이 둘 다 '' 로 같지만
+    // 정반대로 동작해야 한다 — 이 회귀가 "own source" 를 boolean 으로 스레딩해야 하는 이유다.
+    fs.writeFile('/home/player/outer3', 'X\nY\n')
+    fs.writeFile('/home/player/empty3', '')
+    const r = await sh.exec(
+      'while read x; do while read y; do echo "$x=$y"; done < empty3; echo "after:$x"; done < outer3',
+    )
+    expect(r.stdout).toBe('after:X\nafter:Y\n')
+  })
+
+  it('회귀: 파이프로 들어온 while(안쪽 아님, 최상위)은 여전히 파이프에서 새 커서를 연다', async () => {
+    fs.writeFile('/home/player/nums3', '1\n2\n')
+    const r = await sh.exec('cat nums3 | while read n; do echo "n=$n"; done')
+    expect(r.stdout).toBe('n=1\nn=2\n')
+  })
+})

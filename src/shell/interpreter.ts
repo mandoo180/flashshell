@@ -277,13 +277,21 @@ async function runCompoundWithRedirs(
   redirs: Redir[],
   ctx: RunCtx,
   stdin: string,
-  runBody: (input: string) => Promise<ExecResult>,
+  hasPipedStdin: boolean,
+  runBody: (input: string, hasOwnStdinSource: boolean) => Promise<ExecResult>,
 ): Promise<ExecResult> {
   const rr = await resolveRedirs(redirs, ctx, stdin)
   if (!rr.ok) return rr.result
+  // "own stdin source"(fix: nested-loop cursor inheritance) = 이 복합 명령 자신의 `<` 리다이렉션
+  // (rr.inputFromFile) 이거나, 파이프라인에서 진짜로 이 단계로 먹여진 stdin(hasPipedStdin,
+  // runPipeline 이 계산해 runCommand 를 거쳐 여기까지 스레딩)이다. 이 값을 runWhile/runFor 에
+  // 넘겨 "자기 stdin 이 있을 때만 커서를 새로 연다" 판단에 쓴다(initialStdin 이 ''인지로
+  // 추측하지 않는다 — `< emptyfile`도 ''이지만 own-source, 중첩 루프 무-리다이렉션도 ''이지만
+  // non-own-source 로 서로 반대 동작이 필요하다).
+  const hasOwnStdinSource = rr.inputFromFile || hasPipedStdin
   let result: ExecResult
   try {
-    result = await runBody(rr.input)
+    result = await runBody(rr.input, hasOwnStdinSource)
   } catch (e) {
     if (e instanceof ControlSignal) {
       const applied = rr.applyOutput({ stdout: e.stdout, stderr: e.stderr, exitCode: 0 })
@@ -300,25 +308,27 @@ async function runCompoundWithRedirs(
  * 'command' 는 예전 그대로(runSimpleCommand). if/while 은 stdin 을 쓰지 않는다 —
  * 본문/조건은 runList 로 돌고, 그 결과 ExecResult 를 파이프라인이 이어받는다.
  */
-async function runCommand(node: Command, ctx: RunCtx, stdin: string): Promise<ExecResult> {
+async function runCommand(node: Command, ctx: RunCtx, stdin: string, hasPipedStdin = false): Promise<ExecResult> {
   switch (node.kind) {
     case 'command': return runSimpleCommand(node, ctx, stdin)
     // 복합 명령(if/while/for/case/{ }/( ))은 종결어 뒤 리다이렉션(task 5)을
     // runCompoundWithRedirs 로 씌운다 — 해석된 stdin(input)을 본문 첫 단계로 흘려보내고
     // (initialStdin), 본문 출력을 리다이렉션 대상에 쓴다. redirs 가 비면 input=stdin,
-    // applyOutput 은 그대로 통과라 redir 없는 복합 명령은 동작이 안 바뀐다.
-    case 'if': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runIf(node, ctx, input))
-    case 'while': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runWhile(node, ctx, input))
-    case 'for': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runFor(node, ctx, input))
-    case 'case': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runCase(node, ctx, input))
+    // applyOutput 은 그대로 통과라 redir 없는 복합 명령은 동작이 안 바뀐다. hasPipedStdin
+    // (fix: nested-loop cursor inheritance) 은 runPipeline 이 계산한 "이 단계가 진짜 파이프로
+    // 먹여졌는지" — while/for 만 이 값(own-source 판단)을 실제로 쓴다.
+    case 'if': return runCompoundWithRedirs(node.redirs, ctx, stdin, hasPipedStdin, (input) => runIf(node, ctx, input))
+    case 'while': return runCompoundWithRedirs(node.redirs, ctx, stdin, hasPipedStdin, (input, hasOwnStdinSource) => runWhile(node, ctx, input, hasOwnStdinSource))
+    case 'for': return runCompoundWithRedirs(node.redirs, ctx, stdin, hasPipedStdin, (input, hasOwnStdinSource) => runFor(node, ctx, input, hasOwnStdinSource))
+    case 'case': return runCompoundWithRedirs(node.redirs, ctx, stdin, hasPipedStdin, (input) => runCase(node, ctx, input))
     // 함수 정의: body 를 돌리지 않고 이름→body 를 등록만 한다(exit 0). 리다이렉션 없음.
     case 'funcdef': return runFuncDef(node, ctx)
     // 브레이스 그룹: 서브셸이 아니라 현재 ctx 에서 LIST 를 실행한다(env 공유).
-    case 'group': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runList(node.body, ctx, input))
+    case 'group': return runCompoundWithRedirs(node.redirs, ctx, stdin, hasPipedStdin, (input) => runList(node.body, ctx, input))
     // `(( expr ))` 산술 명령(task 2). 리다이렉션은 이 태스크 범위 밖.
     case 'arith': return runArith(node, ctx)
     // `( list )` 서브셸(task 3): 격리된 childCtx 에서 LIST 를 실행한다.
-    case 'subshell': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runSubshellCommand(node, ctx, input))
+    case 'subshell': return runCompoundWithRedirs(node.redirs, ctx, stdin, hasPipedStdin, (input) => runSubshellCommand(node, ctx, input))
   }
 }
 
@@ -891,17 +901,29 @@ async function runIf(node: IfNode, ctx: RunCtx, initialStdin = ''): Promise<Exec
  *   추가로 이 입력을 **첫 반복의 조건절**에도 그대로 흘려보낸다(condStdin) — read 는 커서를
  *   우선하므로 무해하고, 조건이 read 가 아닌 stdin 소비 명령(예: `cat`)일 때 첫 반복이
  *   입력을 보게 하는 Task 5 동작을 그대로 유지한다(회귀 방지). 반복 후 커서는 복원한다.
+ * @param hasOwnStdinSource fix: nested-loop cursor inheritance — 이 루프 자신이 stdin
+ *   출처(자체 `< file` 또는 파이프)를 가졌는지(runCommand/runCompoundWithRedirs 가 계산해
+ *   넘긴다). true 면 initialStdin 으로 **새** 커서를 연다(기존 동작, `< emptyfile` 도 포함 —
+ *   내용이 비어도 자기 출처면 새 빈 커서). false 면(중첩 루프인데 자체 리다이렉션/파이프가
+ *   없는 경우) ctx.stdinCursor 를 **건드리지 않는다** — 실제 bash 가 fd0 을 공유하듯, 이미
+ *   ctx 에 걸려 있는 바깥 루프의 커서(있으면 그 객체, 없으면 undefined)를 그대로 이어받아
+ *   본문의 read 가 같은 위치에서 이어 읽는다. initialStdin 이 ''인지로 이 여부를 추측하지
+ *   않는다 — `< emptyfile`(own, 새 빈 커서)와 무-리다이렉션 중첩(non-own, 상속)이 둘 다
+ *   initialStdin==='' 이면서 정반대 동작이 필요하기 때문이다(리뷰에서 발견된 버그).
  */
-async function runWhile(node: WhileNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
+async function runWhile(node: WhileNode, ctx: RunCtx, initialStdin = '', hasOwnStdinSource = false): Promise<ExecResult> {
   let stdout = ''
   let stderr = ''
   let exitCode = 0
   let condStdin = initialStdin // 첫 반복에만 흘려보낸다(비-read 조건의 Task 5 동작 유지). read 는 커서를 우선.
 
-  // task 6: 루프 stdin 을 가변 커서로 연다. 본문/조건의 read 가 이 커서에서 한 줄씩 먹는다.
-  // 중첩 루프가 같은 ctx 를 공유하므로 이전 커서를 저장했다 finally 에서 복원한다.
+  // task 6: 자기 stdin 출처가 있을 때만 루프 stdin 을 새 가변 커서로 연다. 없으면(중첩 루프가
+  // 바깥 fd0 을 공유해야 하는 경우) ctx.stdinCursor 를 그대로 둔다 — 이미 바깥 루프가 얹어둔
+  // 커서 객체를 이어받아 본문의 read 가 계속 그 위에서 전진한다. 두 경우 모두 중첩 루프가
+  // 같은 ctx 를 공유하므로 이전 값을 저장했다 finally 에서 복원한다(own 이면 새로 연 커서를
+  // 걷어내고, non-own 이면 애초에 안 바뀌었으므로 복원은 no-op).
   const savedCursor = ctx.stdinCursor
-  ctx.stdinCursor = { rest: initialStdin }
+  if (hasOwnStdinSource) ctx.stdinCursor = { rest: initialStdin }
 
   ctx.loopDepth++
   try {
@@ -963,8 +985,11 @@ async function runWhile(node: WhileNode, ctx: RunCtx, initialStdin = ''): Promis
  *   inputFromFile 일 때 주입 안 됨 — 브리프 case 7). 추가로 이 입력을 **첫 반복 본문**에도
  *   흘려보낸다(bodyStdin) — read 는 커서를 우선하므로 무해하고, 본문 첫 단계의 비-read
  *   stdin 소비(예: `cat`)에 대한 Task 5 동작을 그대로 유지한다. 반복 후 커서는 복원한다.
+ * @param hasOwnStdinSource fix: nested-loop cursor inheritance — runWhile 의 같은 이름
+ *   파라미터와 완전히 동일한 규칙(자기 stdin 출처가 있을 때만 새 커서, 없으면 ctx.stdinCursor
+ *   상속). runWhile 의 doc 주석 참고.
  */
-async function runFor(node: ForNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
+async function runFor(node: ForNode, ctx: RunCtx, initialStdin = '', hasOwnStdinSource = false): Promise<ExecResult> {
   let stdout = ''
   let stderr = ''
   let exitCode = 0
@@ -980,9 +1005,10 @@ async function runFor(node: ForNode, ctx: RunCtx, initialStdin = ''): Promise<Ex
     return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
   }
 
-  // task 6: 루프 stdin 을 가변 커서로 연다(runWhile 과 동일 — 본문 read 가 한 줄씩 먹는다).
+  // task 6: 자기 stdin 출처가 있을 때만 새 가변 커서를 연다(runWhile 과 동일 규칙). 없으면
+  // ctx.stdinCursor 를 그대로 둬 바깥 루프의 커서를 상속한다.
   const savedCursor = ctx.stdinCursor
-  ctx.stdinCursor = { rest: initialStdin }
+  if (hasOwnStdinSource) ctx.stdinCursor = { rest: initialStdin }
 
   ctx.loopDepth++
   try {
@@ -1083,9 +1109,16 @@ async function runPipeline(node: PipelineNode, ctx: RunCtx, initialStdin = ''): 
   let stderr = ''
   let last: ExecResult = { stdout: '', stderr: '', exitCode: 0 }
 
-  for (const command of node.commands) {
+  for (let i = 0; i < node.commands.length; i++) {
+    const command = node.commands[i]!
     const stageCtx = isolated ? childCtx(ctx) : ctx
-    last = await runCommand(command, stageCtx, stdin)
+    // fix: nested-loop cursor inheritance — 2단계 이상 파이프라인의 2번째 이후 단계는 이전
+    // 단계의 진짜 출력을 fd0 으로 받는다("own stdin source"). 첫 단계(i===0)는 이 파이프라인
+    // 밖에서 온 stdin(대개 '', 최상위/본문 스레딩 관례)을 그대로 받을 뿐 파이프가 먹인 게
+    // 아니므로 own source 가 아니다 — while/for 가 이 값을 받아 "자기 stdin 이 있을 때만
+    // 커서를 새로 연다"에 쓴다(runCommand → runCompoundWithRedirs 참고).
+    const hasPipedStdin = isolated && i > 0
+    last = await runCommand(command, stageCtx, stdin, hasPipedStdin)
     // stderr 는 파이프를 타지 않는다. 모아서 한꺼번에 밖으로 낸다.
     stderr += last.stderr
     stdin = last.stdout
