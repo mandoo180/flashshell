@@ -1303,6 +1303,23 @@ describe('( list ) 서브셸: 격리된 childCtx (task 3, docker debian:stable-s
   })
 })
 
+describe('$(...) 명령치환: 함수 정의도 격리된다 (M3 Part 2 fix, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('$(...) 안에서 정의한 함수는 바깥으로 안 샌다', async () => {
+    // docker: echo $(g(){ echo g;}; g); g
+    //   → g \n bash: line 1: g: command not found (exit 127)
+    const r = await sh.exec('echo $(g(){ echo g;}; g); g')
+    expect(r.stdout).toBe('g\n')
+    expect(r.exitCode).toBe(127)
+    expect(r.stderr).toContain('g: command not found')
+  })
+
+  it('$(...) 안 정의는 같은 이름의 바깥 함수를 덮어쓰지 않는다', async () => {
+    // docker: g(){ echo outer; }; echo $(g(){ echo inner;}; g); g → inner\nouter
+    const r = await sh.exec('g(){ echo outer; }; echo $(g(){ echo inner;}; g); g')
+    expect(r.stdout).toBe('inner\nouter\n')
+  })
+})
+
 describe('함수 재정의 / break·continue 함수 경계 / 무한재귀 방어 (task 2/7 정리, docker 로 확인됨)', () => {
   it('무한 재귀 함수는 스텝 예산을 소진해 exit 130 이지, JS 크래시가 아니다', async () => {
     const tiny = createShell({ fs, cwd: '/home/player', home: '/home/player', stepBudget: 5000 })

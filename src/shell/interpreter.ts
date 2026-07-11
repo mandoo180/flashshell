@@ -119,7 +119,7 @@ function expandCtxFor(ctx: RunCtx): ExpandCtx {
     positional: ctx.positional,
     // 서브셸은 같은 VFS와 예산을 공유하되, cwd/env 변경은 밖으로 새지 않는다.
     runSubshell: async (script) => {
-      const child = childCtx(ctx)
+      const child = childCtx(ctx, { copyFunctions: true })
       // 서브셸 안의 문법 오류가 exec 전체를 리젝트시켜서는 안 된다.
       // 다만 실행 한도 초과는 바깥까지 전파되어야 한다.
       try {
