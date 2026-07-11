@@ -1,0 +1,9 @@
+hell0 w0rld
+hell0 world
+hello
+world
+HI world
+
+===STDERR===
+===EXIT===
+0

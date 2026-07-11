@@ -1,0 +1,10 @@
+archive.tar
+archive
+tar.gz
+gz
+bin
+/usr/local
+
+===STDERR===
+===EXIT===
+0

@@ -1,0 +1,14 @@
+1024
+3
+20
+1
+6
+0
+1
+2
+arith-true
+arith-false
+
+===STDERR===
+===EXIT===
+0

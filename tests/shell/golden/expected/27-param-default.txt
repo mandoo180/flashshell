@@ -1,0 +1,12 @@
+5
+fallback
+world
+fb
+
+present
+assigned
+assigned
+
+===STDERR===
+===EXIT===
+0
