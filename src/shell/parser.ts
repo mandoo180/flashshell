@@ -30,6 +30,7 @@ export interface IfNode {
   then: ListNode
   elifs: { cond: ListNode; then: ListNode }[]
   else?: ListNode
+  redirs: Redir[]
 }
 
 /** `while COND; do BODY; done` / `until COND; do BODY; done` (until 이면 조건 반전). */
@@ -38,6 +39,7 @@ export interface WhileNode {
   cond: ListNode
   body: ListNode
   until: boolean
+  redirs: Redir[]
 }
 
 /**
@@ -49,6 +51,7 @@ export interface ForNode {
   var: string
   words: Word[]
   body: ListNode
+  redirs: Redir[]
 }
 
 /**
@@ -62,6 +65,7 @@ export interface CaseNode {
   kind: 'case'
   word: Word
   branches: { patterns: Word[]; body: ListNode }[]
+  redirs: Redir[]
 }
 
 /**
@@ -83,6 +87,7 @@ export interface FunctionDefNode {
 export interface GroupNode {
   kind: 'group'
   body: ListNode
+  redirs: Redir[]
 }
 
 /**
@@ -101,6 +106,7 @@ export interface GroupNode {
 export interface SubshellNode {
   kind: 'subshell'
   body: ListNode
+  redirs: Redir[]
 }
 
 /**
@@ -487,7 +493,8 @@ class Parser {
   }
 
   private parseGroup(): GroupNode {
-    return { kind: 'group', body: this.parseBraceGroupList() }
+    const body = this.parseBraceGroupList()
+    return { kind: 'group', body, redirs: this.parseRedirs() }
   }
 
   /**
@@ -505,7 +512,7 @@ class Parser {
     this.skipSeparators()
     const body = this.parseList(undefined, [')'])
     this.expectOp(')')
-    return { kind: 'subshell', body }
+    return { kind: 'subshell', body, redirs: this.parseRedirs() }
   }
 
   /** 다음 토큰이 정확히 이 연산자이길 요구하고 소비한다. 아니면 문법 오류. */
@@ -542,7 +549,7 @@ class Parser {
     }
 
     this.expectKeyword('fi')
-    return { kind: 'if', cond, then: thenList, elifs, else: elseList }
+    return { kind: 'if', cond, then: thenList, elifs, else: elseList, redirs: this.parseRedirs() }
   }
 
   private parseWhile(until: boolean): WhileNode {
@@ -552,7 +559,7 @@ class Parser {
     this.skipSeparators()
     const body = this.parseList(new Set(['done']))
     this.expectKeyword('done')
-    return { kind: 'while', cond, body, until }
+    return { kind: 'while', cond, body, until, redirs: this.parseRedirs() }
   }
 
   /**
@@ -585,7 +592,7 @@ class Parser {
     this.skipSeparators()
     const body = this.parseList(new Set(['done']))
     this.expectKeyword('done')
-    return { kind: 'for', var: varName, words, body }
+    return { kind: 'for', var: varName, words, body, redirs: this.parseRedirs() }
   }
 
   /**
@@ -617,7 +624,7 @@ class Parser {
       branches.push({ patterns, body })
     }
     this.expectKeyword('esac')
-    return { kind: 'case', word, branches }
+    return { kind: 'case', word, branches, redirs: this.parseRedirs() }
   }
 
   /**
@@ -647,6 +654,33 @@ class Parser {
     return patterns
   }
 
+  /**
+   * 현재 토큰(REDIR_OPS 중 하나여야 함 — 호출부가 확인)을 하나의 Redir 로 소비한다.
+   * `2>`/`2>>` → fd 2, `<` → fd 0, 나머지 → fd 1. 대상이 WORD 가 아니면 문법 오류.
+   * 단순 명령(parseCommand, 단어 사이 섞임)과 복합 명령(parseRedirs, 종결어 뒤)이 공유해
+   * 리다이렉션 파싱 규칙이 한 곳에만 있게 한다.
+   */
+  private parseOneRedir(): Redir {
+    const t = this.next() as { type: 'OP'; value: Operator }
+    const target = this.peek()
+    if (target.type !== 'WORD') syntaxError(t.value)
+    this.next()
+    const fd = t.value.startsWith('2') ? 2 : t.value === '<' ? 0 : 1
+    const op = t.value === '<' ? '<' : t.value.endsWith('>>') ? '>>' : '>'
+    return { fd, op, target: target.word }
+  }
+
+  /**
+   * 복합 명령의 종결어(`done`/`fi`/`esac`/`}`/`)`) 뒤에 이어지는 리다이렉션들을 0개 이상
+   * 모은다 (`for..done > o 2> e`, `{ }<f` 등, task 5). 리다이렉션 연산자가 안 나오면 빈
+   * 배열을 돌려주므로 기존 redir 없는 복합 명령은 동작이 전혀 안 바뀐다.
+   */
+  private parseRedirs(): Redir[] {
+    const redirs: Redir[] = []
+    while (this.atOp(...REDIR_OPS)) redirs.push(this.parseOneRedir())
+    return redirs
+  }
+
   private parseCommand(): CommandNode {
     const cmd: CommandNode = { kind: 'command', assignments: [], words: [], redirs: [] }
     let sawWord = false
@@ -655,13 +689,7 @@ class Parser {
       const t = this.peek()
 
       if (t.type === 'OP' && REDIR_OPS.includes(t.value)) {
-        this.next()
-        const target = this.peek()
-        if (target.type !== 'WORD') syntaxError(t.value)
-        this.next()
-        const fd = t.value.startsWith('2') ? 2 : t.value === '<' ? 0 : 1
-        const op = t.value === '<' ? '<' : t.value.endsWith('>>') ? '>>' : '>'
-        cmd.redirs.push({ fd, op, target: target.word })
+        cmd.redirs.push(this.parseOneRedir())
         continue
       }
 

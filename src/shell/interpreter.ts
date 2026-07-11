@@ -1,6 +1,6 @@
 import { VFS } from './vfs'
 import { ExecutionLimitError, ControlSignal, LoopSignal, BreakSignal, ReturnSignal, errnoText } from './errors'
-import { parse, type Assignment, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ArithCmdNode, type SubshellNode, type ListNode, type PipelineNode } from './parser'
+import { parse, type Assignment, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ArithCmdNode, type SubshellNode, type ListNode, type PipelineNode, type Redir } from './parser'
 import { expandWord, expandToSingle, expandForCase, expandArithExpr, type ExpandCtx } from './expand'
 import { matchSegment } from './glob'
 import { lookupCommand, isKnownUnimplemented } from './registry'
@@ -153,6 +153,140 @@ function expandCtxFor(ctx: RunCtx): ExpandCtx {
 interface ResolvedRedir { fd: 0 | 1 | 2; op: '>' | '>>' | '<'; path: string; word: string }
 
 /**
+ * 리다이렉션 목록을 해석하는 공유 헬퍼. 단순 명령(runSimpleCommand)과 6개 복합 명령
+ * (for/while/if/case/{ }/( ), task 5)이 **같은** 리다이렉션 규칙을 타게 해 코드 중복과
+ * 드리프트를 없앤다. 두 단계로 나뉜다:
+ *
+ *  1) **지금**(이 함수 호출 즉시): 대상 단어를 expandToSingle 로 확장하고, 텍스트에 나온
+ *     순서대로 왼→오로 "연다" — `<` 는 열 수 있는지만 확인(내용은 루프 종료 후 읽음),
+ *     `>` 는 즉시 비우고, `>>` 는 없으면 만든다. 부작용 순서/의미는 예전 runSimpleCommand
+ *     인라인 로직과 바이트 동일하다(회귀 방지). 확장/열기 실패는 `{ ok:false, result }` 로
+ *     얌전한 ExecResult 를 준다(ambiguous redirect / ENOENT / EISDIR 등). ExecutionLimitError
+ *     만은 그대로 위로 던진다.
+ *  2) **나중**(applyOutput): 명령/복합 본문이 낸 stdout/stderr 를 fd 별 **마지막** `>`/`>>`
+ *     대상에만 쓴다(같은 fd 로 두 번 리다이렉션되면 마지막 것만 내용을 받는다 — 나머지는
+ *     1단계에서 비워지기만 했다). 쓰기 실패도 얌전한 ExecResult 로 바꾼다.
+ *
+ * input: `< file` 이 있으면 그 파일 내용을, 없으면 넘겨받은 stdin(파이프 입력)을 그대로.
+ * 복합 명령은 이 input 을 본문의 첫 파이프라인 첫 단계로 흘려보낸다(initialStdin 스레딩).
+ */
+async function resolveRedirs(
+  redirsIn: Redir[],
+  ctx: RunCtx,
+  stdin: string,
+): Promise<
+  | { ok: false; result: ExecResult }
+  | { ok: true; input: string; inputFromFile: boolean; applyOutput: (result: ExecResult) => ExecResult }
+> {
+  const expandCtx = expandCtxFor(ctx)
+  const redirs: ResolvedRedir[] = []
+  let input = stdin
+  let inputFromFile = false
+  let stdinRedir: ResolvedRedir | null = null // 마지막 < 리다이렉션. 내용은 루프 종료 후 읽는다.
+
+  for (const redir of redirsIn) {
+    let word: string
+    try {
+      word = await expandToSingle(redir.target, expandCtx)
+    } catch (e) {
+      if (e instanceof ExecutionLimitError) throw e
+      // ambiguous redirect는 "펼쳐진 결과"가 아니라 사용자가 쓴 단어 원문을 보여준다.
+      return { ok: false, result: { stdout: '', stderr: `bash: ${wordSourceText(redir.target)}: ambiguous redirect\n`, exitCode: 1 } }
+    }
+    const path = ctx.fs.resolve(word, ctx.state.cwd)
+    const resolved: ResolvedRedir = { fd: redir.fd, op: redir.op, path, word }
+
+    try {
+      if (redir.op === '<') {
+        // 열 수 있는지만 확인한다 (없으면 ENOENT, 디렉터리면 EISDIR 등으로 여기서 던짐).
+        // 내용은 버리고, 진짜 읽기는 루프가 끝난 뒤에 한다.
+        ctx.fs.readFile(path)
+      } else if (redir.op === '>') {
+        ctx.fs.writeFile(path, '')
+      } else {
+        // '>>' — 이어쓰기는 기존 내용을 비우지 않지만, 없던 파일은 즉시 만든다.
+        if (!ctx.fs.exists(path)) ctx.fs.writeFile(path, '')
+      }
+    } catch (e) {
+      // 해석된 절대경로가 아니라 사용자가 쓴(확장까지는 된) 단어로 에러를 낸다.
+      return { ok: false, result: { stdout: '', stderr: `bash: ${word}: ${errnoText(e)}\n`, exitCode: 1 } }
+    }
+
+    redirs.push(resolved)
+    if (redir.op === '<') { inputFromFile = true; stdinRedir = resolved }
+  }
+
+  // 모든 리다이렉션의 open() 부작용이 끝난 뒤에야 실제 stdin 내용을 읽는다.
+  if (stdinRedir) {
+    try {
+      input = ctx.fs.readFile(stdinRedir.path)
+    } catch (e) {
+      // 루프 중 열기 확인을 통과했으므로 사실상 도달하지 않지만, 방어적으로 같은 형식을 지킨다.
+      return { ok: false, result: { stdout: '', stderr: `bash: ${stdinRedir.word}: ${errnoText(e)}\n`, exitCode: 1 } }
+    }
+  }
+
+  const applyOutput = (result: ExecResult): ExecResult => {
+    let stdout = result.stdout
+    let stderr = result.stderr
+    const lastIndexForFd = new Map<1 | 2, number>()
+    redirs.forEach((r, i) => { if (r.fd !== 0) lastIndexForFd.set(r.fd, i) })
+
+    for (let i = 0; i < redirs.length; i++) {
+      const redir = redirs[i]!
+      if (redir.fd === 0) continue
+      if (lastIndexForFd.get(redir.fd) !== i) continue
+      const text = redir.fd === 1 ? stdout : stderr
+      try {
+        if (redir.op === '>') ctx.fs.writeFile(redir.path, text)
+        else ctx.fs.appendFile(redir.path, text)
+      } catch (e) {
+        return { stdout: '', stderr: `bash: ${redir.word}: ${errnoText(e)}\n`, exitCode: 1 }
+      }
+      if (redir.fd === 1) stdout = ''
+      else stderr = ''
+    }
+
+    return { stdout, stderr, exitCode: result.exitCode }
+  }
+
+  return { ok: true, input, inputFromFile, applyOutput }
+}
+
+/**
+ * 복합 명령(for/while/if/case/{ }/( ))에 리다이렉션을 씌우는 공유 래퍼(task 5). 본문을
+ * 돌리기 전에 resolveRedirs 로 리다이렉션을 열고(`< file` → input), 본문 실행 결과의
+ * stdout/stderr 를 applyOutput 으로 대상 파일에 쓴다. runBody 는 input(해석된 stdin)을
+ * 받아 본문 첫 단계로 흘려보낸다(initialStdin 스레딩).
+ *
+ * 본문이 break/continue/return(ControlSignal)으로 빠져나가면 그 신호가 실어온 부분 출력도
+ * 리다이렉션 대상에 써야 한다 — 예: `while ...; do { echo x; break; } > out; done` 은
+ * out 에 x 를 남긴다(그룹의 `>` 가 break 직전 출력을 잡는다). 그래서 신호를 잡아
+ * applyOutput 을 태운 뒤 신호에 되싣고 다시 던진다.
+ */
+async function runCompoundWithRedirs(
+  redirs: Redir[],
+  ctx: RunCtx,
+  stdin: string,
+  runBody: (input: string) => Promise<ExecResult>,
+): Promise<ExecResult> {
+  const rr = await resolveRedirs(redirs, ctx, stdin)
+  if (!rr.ok) return rr.result
+  let result: ExecResult
+  try {
+    result = await runBody(rr.input)
+  } catch (e) {
+    if (e instanceof ControlSignal) {
+      const applied = rr.applyOutput({ stdout: e.stdout, stderr: e.stderr, exitCode: 0 })
+      e.stdout = applied.stdout
+      e.stderr = applied.stderr
+    }
+    throw e
+  }
+  return rr.applyOutput(result)
+}
+
+/**
  * 파이프라인 한 단계를 실행하는 진입점. node.kind 로 단순/복합 명령을 가른다.
  * 'command' 는 예전 그대로(runSimpleCommand). if/while 은 stdin 을 쓰지 않는다 —
  * 본문/조건은 runList 로 돌고, 그 결과 ExecResult 를 파이프라인이 이어받는다.
@@ -160,18 +294,22 @@ interface ResolvedRedir { fd: 0 | 1 | 2; op: '>' | '>>' | '<'; path: string; wor
 async function runCommand(node: Command, ctx: RunCtx, stdin: string): Promise<ExecResult> {
   switch (node.kind) {
     case 'command': return runSimpleCommand(node, ctx, stdin)
-    case 'if': return runIf(node, ctx)
-    case 'while': return runWhile(node, ctx)
-    case 'for': return runFor(node, ctx)
-    case 'case': return runCase(node, ctx)
-    // 함수 정의: body 를 돌리지 않고 이름→body 를 등록만 한다(exit 0).
+    // 복합 명령(if/while/for/case/{ }/( ))은 종결어 뒤 리다이렉션(task 5)을
+    // runCompoundWithRedirs 로 씌운다 — 해석된 stdin(input)을 본문 첫 단계로 흘려보내고
+    // (initialStdin), 본문 출력을 리다이렉션 대상에 쓴다. redirs 가 비면 input=stdin,
+    // applyOutput 은 그대로 통과라 redir 없는 복합 명령은 동작이 안 바뀐다.
+    case 'if': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runIf(node, ctx, input))
+    case 'while': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runWhile(node, ctx, input))
+    case 'for': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runFor(node, ctx, input))
+    case 'case': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runCase(node, ctx, input))
+    // 함수 정의: body 를 돌리지 않고 이름→body 를 등록만 한다(exit 0). 리다이렉션 없음.
     case 'funcdef': return runFuncDef(node, ctx)
     // 브레이스 그룹: 서브셸이 아니라 현재 ctx 에서 LIST 를 실행한다(env 공유).
-    case 'group': return runList(node.body, ctx)
-    // `(( expr ))` 산술 명령(task 2).
+    case 'group': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runList(node.body, ctx, input))
+    // `(( expr ))` 산술 명령(task 2). 리다이렉션은 이 태스크 범위 밖.
     case 'arith': return runArith(node, ctx)
     // `( list )` 서브셸(task 3): 격리된 childCtx 에서 LIST 를 실행한다.
-    case 'subshell': return runSubshellCommand(node, ctx, stdin)
+    case 'subshell': return runCompoundWithRedirs(node.redirs, ctx, stdin, (input) => runSubshellCommand(node, ctx, input))
   }
 }
 
@@ -588,71 +726,17 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
     return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
   }
 
-  // 4~6. 리다이렉션을 텍스트에 나온 순서 그대로 왼쪽에서 오른쪽으로 "연다". 실제 bash가
-  //    그렇게 하기 때문이다 — 대상 확장(ambiguous 여부)과 open()류 부작용(> 는 즉시 비우고,
-  //    >> 는 없으면 만들고, < 는 열 수 있는지만 확인한다)이 리다이렉션마다 함께 일어난다.
-  //    뒤의 리다이렉션이 실패해도 앞의 리다이렉션이 이미 만든 부작용(예: 파일 비움)은
-  //    되돌리지 않는다 — docker로 확인: `> out < gone` 은 out 을 비운 뒤에 실패하고,
-  //    `< gone > out` 은 out 을 건드리기도 전에 실패한다. 같은 fd 로 두 번 리다이렉션되면
-  //    (`> a > b`) 전부 비워지지만 실제 내용은 마지막 것만 받는다 — 그래서 여기서는
-  //    "비우기/만들기"만 하고, 실제 출력 내용 쓰기는 명령 실행 후 9번 단계에서 fd 별 마지막
-  //    리다이렉션에만 한다.
-  //
-  //    < 는 특히 "열기"와 "읽기"를 분리해야 한다: 커널이 그렇게 하듯, 여기서는 열 수
-  //    있는지(존재하고 읽을 수 있는지)만 확인하고 아직 내용을 읽지 않는다. 실제 내용은
-  //    루프가 전부 끝난 뒤(= 이 명령에 걸린 모든 리다이렉션의 open() 부작용이 다 반영된
-  //    뒤)에 읽는다. 그래야 `cat < f > f` 처럼 뒤에 나온 `>` 가 같은 파일을 비운 게
-  //    stdin에도 반영된다 — docker로 확인: `printf alpha > a; cat < a > a; echo [$(cat a)]`
-  //    → `[]` (a가 비어 있다). 왼→오로 즉시 읽어버리면 이 케이스에서 alpha가 그대로
-  //    살아남는 버그가 난다.
-  const redirs: ResolvedRedir[] = []
-  let input = stdin
-  let inputFromFile = false
-  let stdinRedir: ResolvedRedir | null = null // 마지막 < 리다이렉션. 내용은 루프 종료 후 읽는다.
-
-  for (const redir of node.redirs) {
-    let word: string
-    try {
-      word = await expandToSingle(redir.target, expandCtx)
-    } catch (e) {
-      if (e instanceof ExecutionLimitError) throw e
-      // ambiguous redirect는 "펼쳐진 결과"가 아니라 사용자가 쓴 단어 원문을 보여준다.
-      return { stdout: '', stderr: `bash: ${wordSourceText(redir.target)}: ambiguous redirect\n`, exitCode: 1 }
-    }
-    const path = ctx.fs.resolve(word, ctx.state.cwd)
-    const resolved: ResolvedRedir = { fd: redir.fd, op: redir.op, path, word }
-
-    try {
-      if (redir.op === '<') {
-        // 열 수 있는지만 확인한다 (없으면 ENOENT, 디렉터리면 EISDIR 등으로 여기서 던짐).
-        // 내용은 버리고, 진짜 읽기는 루프가 끝난 뒤에 한다.
-        ctx.fs.readFile(path)
-      } else if (redir.op === '>') {
-        ctx.fs.writeFile(path, '')
-      } else {
-        // '>>' — 이어쓰기는 기존 내용을 비우지 않지만, 없던 파일은 즉시 만든다
-        // (open(..., O_APPEND|O_CREAT) 이 하는 일과 같다).
-        if (!ctx.fs.exists(path)) ctx.fs.writeFile(path, '')
-      }
-    } catch (e) {
-      // 해석된 절대경로가 아니라 사용자가 쓴(확장까지는 된) 단어로 에러를 낸다 —
-      // docker로 확인: `cat < nope.txt` → "bash: nope.txt: ...", "/home/player/nope.txt"가 아님.
-      return { stdout: '', stderr: `bash: ${word}: ${errnoText(e)}\n`, exitCode: 1 }
-    }
-
-    redirs.push(resolved)
-    if (redir.op === '<') { inputFromFile = true; stdinRedir = resolved }
-  }
-
-  // 모든 리다이렉션의 open() 부작용이 끝난 뒤에야 실제 stdin 내용을 읽는다 (위 주석 참고).
-  if (stdinRedir) {
-    try {
-      input = ctx.fs.readFile(stdinRedir.path)
-    } catch (e) {
-      // 루프 중 열기 확인을 통과했으므로 사실상 도달하지 않지만, 방어적으로 같은 형식을 지킨다.
-      return { stdout: '', stderr: `bash: ${stdinRedir.word}: ${errnoText(e)}\n`, exitCode: 1 }
-    }
-  }
+  // 4~6. 리다이렉션을 해석한다 — 대상 확장(ambiguous 여부)과 open()류 부작용(> 는 즉시
+  //    비우고, >> 는 없으면 만들고, < 는 열 수 있는지만 확인)을 텍스트 순서 그대로 왼→오로
+  //    수행하고, 마지막 `< file` 내용을 input 으로 읽는다. 이 로직은 복합 명령(task 5)과
+  //    공유하는 resolveRedirs 헬퍼로 뽑았다 — 부작용 순서·에러 문구·"열기/읽기 분리"·"같은
+  //    fd 는 마지막만 내용 수신"이 예전 인라인 로직과 바이트 동일하다(회귀 방지, 관련
+  //    docker 확인 근거는 resolveRedirs 주석 참고). 확장/열기 실패는 여기서 얌전한
+  //    ExecResult 로 즉시 반환한다.
+  const rr = await resolveRedirs(node.redirs, ctx, stdin)
+  if (!rr.ok) return rr.result
+  const input = rr.input
+  const inputFromFile = rr.inputFromFile
 
   // 7~8. 결과 ExecResult(result)를 만든다 — 세 경로(함수 / source / 외부 명령·스크립트)가
   //    여기서 갈리지만, 모두 위에서 해석한 stdin(input)·프리픽스·리다이렉션(redirs)을 공유하고
@@ -738,32 +822,11 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
     }
   }
 
-  // 9. 출력 리다이렉션을 적용한다. 같은 fd 로 두 번 이상 리다이렉션됐다면 실제 내용은
-  //    그 fd 의 마지막 리다이렉션만 받는다 — 앞선 것들은 4~6단계에서 이미 비워졌을
-  //    뿐, 진짜 내용은 못 받는다 (docker로 확인: `echo hi > a > b` → a=[](비워짐),
-  //    b=[hi]).
-  let stdout = result.stdout
-  let stderr = result.stderr
-  const lastIndexForFd = new Map<1 | 2, number>()
-  redirs.forEach((r, i) => { if (r.fd !== 0) lastIndexForFd.set(r.fd, i) })
-
-  for (let i = 0; i < redirs.length; i++) {
-    const redir = redirs[i]!
-    if (redir.fd === 0) continue
-    if (lastIndexForFd.get(redir.fd) !== i) continue
-    const text = redir.fd === 1 ? stdout : stderr
-    try {
-      if (redir.op === '>') ctx.fs.writeFile(redir.path, text)
-      else ctx.fs.appendFile(redir.path, text)
-    } catch (e) {
-      // 여기도 해석된 절대경로가 아니라 사용자가 쓴 단어로 에러를 낸다 (finding 2와 동일 원칙).
-      return { stdout: '', stderr: `bash: ${redir.word}: ${errnoText(e)}\n`, exitCode: 1 }
-    }
-    if (redir.fd === 1) stdout = ''
-    else stderr = ''
-  }
-
-  return { stdout, stderr, exitCode: result.exitCode }
+  // 9. 출력 리다이렉션을 적용한다(resolveRedirs.applyOutput 공유): 같은 fd 로 두 번 이상
+  //    리다이렉션됐다면 실제 내용은 그 fd 의 마지막 리다이렉션만 받는다 — 앞선 것들은
+  //    4~6단계에서 이미 비워졌을 뿐, 진짜 내용은 못 받는다 (docker: `echo hi > a > b` →
+  //    a=[](비워짐), b=[hi]).
+  return rr.applyOutput(result)
 }
 
 /**
@@ -772,8 +835,13 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
  * 출력(stdout/stderr)은 모두 이어붙여 낸다 — bash 는 `if echo cond; then ...` 에서 cond
  * 를 그대로 출력한다. then 안의 $? 는 조건의 exit code 를 본다 — runList(cond) 가
  * lastExitCode 를 갱신한 뒤에 then 이 돌기 때문에 자연히 맞다.
+ *
+ * @param initialStdin `if..fi < file`(task 5)에서 온 입력을 **실행되는 가지(then/elif-then/
+ *   else)의 첫 파이프라인 첫 단계**로 흘려보낸다(기본값 `''`). 조건절에는 안 넘긴다 —
+ *   요구 케이스(`if true; then cat; fi < f`)의 소비자는 본문(cat)이고 조건(true)은 stdin 을
+ *   안 읽기 때문이다. 조건이 stdin 을 읽는 경우까지의 온전한 스레딩은 Task 6 범위다.
  */
-async function runIf(node: IfNode, ctx: RunCtx): Promise<ExecResult> {
+async function runIf(node: IfNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
   let stdout = ''
   let stderr = ''
   const branches = [{ cond: node.cond, then: node.then }, ...node.elifs]
@@ -783,13 +851,13 @@ async function runIf(node: IfNode, ctx: RunCtx): Promise<ExecResult> {
     stdout += c.stdout
     stderr += c.stderr
     if (c.exitCode === 0) {
-      const b = await runList(branch.then, ctx)
+      const b = await runList(branch.then, ctx, initialStdin)
       return { stdout: stdout + b.stdout, stderr: stderr + b.stderr, exitCode: b.exitCode }
     }
   }
 
   if (node.else) {
-    const e = await runList(node.else, ctx)
+    const e = await runList(node.else, ctx, initialStdin)
     return { stdout: stdout + e.stdout, stderr: stderr + e.stderr, exitCode: e.exitCode }
   }
   // 참인 가지도 else 도 없음 → exit 0. 바깥 runList 가 lastExitCode 를 이 0 으로 갱신한다.
@@ -801,17 +869,24 @@ async function runIf(node: IfNode, ctx: RunCtx): Promise<ExecResult> {
  * true; do :; done`)도 무한루프 방어에 걸리게 하기 위함이다. 조건을 돌려(until 이면
  * 반전) 참인 동안 본문을 실행한다. 본문에서 올라온 break/continue 신호를 여기서 잡는다.
  * 반복 0회면 exit 0, 그 외엔 마지막으로 정상 완료된 본문의 exitCode (bash 확인).
+ *
+ * @param initialStdin `while..done < file`(task 5)에서 온 입력을 **첫 반복의 조건절**로만
+ *   흘려보낸다(기본값 `''`). while 의 stdin 소비자는 대개 조건의 `read`(`while read x`)라
+ *   조건에 넘긴다 — 첫 반복에서 read 가 첫 줄을 먹고, 둘째 반복부터는 `''`(EOF)라 루프가
+ *   끝난다(첫 줄만 처리). 줄별 커서로 매 반복 한 줄씩 먹는 온전한 동작은 Task 6 범위다.
  */
-async function runWhile(node: WhileNode, ctx: RunCtx): Promise<ExecResult> {
+async function runWhile(node: WhileNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
   let stdout = ''
   let stderr = ''
   let exitCode = 0
+  let condStdin = initialStdin // 첫 반복에만 흘려보내고, 이후엔 '' 로 리셋한다(Task 6 커서 전 최소 동작).
 
   ctx.loopDepth++
   try {
     for (;;) {
       spend(ctx)
-      const c = await runList(node.cond, ctx)
+      const c = await runList(node.cond, ctx, condStdin)
+      condStdin = ''
       stdout += c.stdout
       stderr += c.stderr
       const proceed = node.until ? c.exitCode !== 0 : c.exitCode === 0
@@ -858,11 +933,15 @@ async function runWhile(node: WhileNode, ctx: RunCtx): Promise<ExecResult> {
  * 확인: 빈 for 는 변수를 아예 set 하지 않는다). 반복 후엔 var 가 마지막 값으로 남는다
  * (bash 확인: `for x in a b; do :; done; echo $x` → b) — 여기서 값을 되돌리지 않으므로
  * 자연히 그렇게 된다.
+ *
+ * @param initialStdin `for..done < file`(task 5)에서 온 입력을 **첫 반복의 본문**으로만
+ *   흘려보낸다(기본값 `''`, while 과 같은 최소 스레딩 — Task 6 커서 전까지 첫 반복 한정).
  */
-async function runFor(node: ForNode, ctx: RunCtx): Promise<ExecResult> {
+async function runFor(node: ForNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
   let stdout = ''
   let stderr = ''
   let exitCode = 0
+  let bodyStdin = initialStdin // 첫 반복 본문에만 흘려보내고 이후엔 '' (Task 6 커서 전 최소 동작).
 
   const expandCtx = expandCtxFor(ctx)
   let values: string[]
@@ -881,7 +960,8 @@ async function runFor(node: ForNode, ctx: RunCtx): Promise<ExecResult> {
       ctx.state.env[node.var] = value
 
       try {
-        const b = await runList(node.body, ctx)
+        const b = await runList(node.body, ctx, bodyStdin)
+        bodyStdin = ''
         stdout += b.stdout
         stderr += b.stderr
         exitCode = b.exitCode
@@ -923,8 +1003,11 @@ async function runFor(node: ForNode, ctx: RunCtx): Promise<ExecResult> {
  * break/continue(LoopSignal)를 여기서 따로 안 잡는다 — runIf 와 같은 설계다: case 안의
  * break 가 runList(branch.body, ctx) 를 뚫고 그대로 위로 새어나가면, 이 case 를 감싼
  * runWhile/runFor 의 catch 가 (몇 겹을 거치든) 자연히 잡는다.
+ *
+ * @param initialStdin `case..esac < file`(task 5)에서 온 입력을 **매치된 branch 본문**의
+ *   첫 파이프라인 첫 단계로 흘려보낸다(기본값 `''`).
  */
-async function runCase(node: CaseNode, ctx: RunCtx): Promise<ExecResult> {
+async function runCase(node: CaseNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
   const expandCtx = expandCtxFor(ctx)
   let subject: string
   try {
@@ -946,7 +1029,7 @@ async function runCase(node: CaseNode, ctx: RunCtx): Promise<ExecResult> {
       }
       if (matchSegment(pattern, subject, { dotglob: true })) { matched = true; break }
     }
-    if (matched) return runList(branch.body, ctx)
+    if (matched) return runList(branch.body, ctx, initialStdin)
   }
 
   return { stdout: '', stderr: '', exitCode: 0 }

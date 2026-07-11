@@ -2017,3 +2017,126 @@ describe('배열 읽기 end-to-end (M3 Part 3 task 3) — 대입→확장→echo
     expect(r.stdout).toBe('a\n')
   })
 })
+
+describe('복합 명령 리다이렉션 실행 (M3 Part 3 task 5, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('for..done > out — 본문 stdout 이 파일로 가고 터미널엔 안 나온다', async () => {
+    // docker: for i in a b c; do echo $i; done > out.txt; cat out.txt → a\nb\nc
+    const r = await sh.exec('for i in a b c; do echo $i; done > out.txt')
+    expect(r.stdout).toBe('')
+    expect(fs.readFile('/home/player/out.txt')).toBe('a\nb\nc\n')
+  })
+
+  it('while false > out — 0회 반복이라 out 은 빈 파일로 생성된다', async () => {
+    // docker: while false; do echo x; done > o2.txt → o2.txt 빈 파일(생성됨)
+    await sh.exec('while false; do echo x; done > o2.txt')
+    expect(fs.readFile('/home/player/o2.txt')).toBe('')
+  })
+
+  it('if true; then ...; fi > out', async () => {
+    // docker: if true; then echo hi; fi > o.txt; cat o.txt → hi
+    const r = await sh.exec('if true; then echo hi; fi > o.txt')
+    expect(r.stdout).toBe('')
+    expect(fs.readFile('/home/player/o.txt')).toBe('hi\n')
+  })
+
+  it('if-else 의 else 가지도 리다이렉션된다', async () => {
+    // docker: if false; then echo a; else echo b; fi > o.txt → b
+    await sh.exec('if false; then echo a; else echo b; fi > o.txt')
+    expect(fs.readFile('/home/player/o.txt')).toBe('b\n')
+  })
+
+  it('case..esac > out', async () => {
+    // docker: case x in x) echo matched;; esac > o.txt → matched
+    await sh.exec('case x in x) echo matched;; esac > o.txt')
+    expect(fs.readFile('/home/player/o.txt')).toBe('matched\n')
+  })
+
+  it('{ ...; } > out — 브레이스 그룹', async () => {
+    // docker: { echo a; echo b; } > o.txt → a\nb
+    const r = await sh.exec('{ echo a; echo b; } > o.txt')
+    expect(r.stdout).toBe('')
+    expect(fs.readFile('/home/player/o.txt')).toBe('a\nb\n')
+  })
+
+  it('( ... ) > out — 서브셸 (Part 2 carried minor)', async () => {
+    // docker: ( echo sub ) > o.txt → sub
+    const r = await sh.exec('( echo sub ) > o.txt')
+    expect(r.stdout).toBe('')
+    expect(fs.readFile('/home/player/o.txt')).toBe('sub\n')
+  })
+
+  it('>> 이어쓰기: 두 번 돌리면 누적된다', async () => {
+    // docker: for i in 1 2; do echo $i; done >> o7.txt (두 번) → 1\n2\n1\n2\n
+    await sh.exec('for i in 1 2; do echo $i; done >> o7.txt')
+    await sh.exec('for i in 1 2; do echo $i; done >> o7.txt')
+    expect(fs.readFile('/home/player/o7.txt')).toBe('1\n2\n1\n2\n')
+  })
+
+  it('{ ...; } 2> e — 본문 stderr 만 파일로 잡고 exit code 는 보존한다', async () => {
+    // docker: { ls /nonexistent; } 2> e.txt → e.txt 에 에러, 터미널 stderr 없음
+    const r = await sh.exec('{ ls /nonexistent; } 2> e8.txt')
+    expect(r.stderr).toBe('')
+    expect(r.exitCode).not.toBe(0)
+    expect(fs.readFile('/home/player/e8.txt')).toMatch(/nonexistent/)
+  })
+
+  it('for..done > o 2> e — stdout/stderr 를 서로 다른 파일로 가른다', async () => {
+    // docker: for i in a; do echo $i; done > o.txt 2> e.txt → o=a, e=빈파일
+    const r = await sh.exec('for i in a; do echo $i; done > o9.txt 2> e9.txt')
+    expect(r.stdout).toBe('')
+    expect(fs.readFile('/home/player/o9.txt')).toBe('a\n')
+    expect(fs.readFile('/home/player/e9.txt')).toBe('')
+  })
+
+  it('입력 redir: if true; then cat; fi < file — 본문 cat 이 파일을 stdin 으로 읽는다', async () => {
+    // docker: printf hello\n > in.txt; if true; then cat; fi < in.txt → hello
+    fs.writeFile('/home/player/in.txt', 'hello\n')
+    const r = await sh.exec('if true; then cat; fi < in.txt')
+    expect(r.stdout).toBe('hello\n')
+  })
+
+  it('입력 redir: { cat; } < file — 그룹 본문이 파일을 stdin 으로 읽는다', async () => {
+    fs.writeFile('/home/player/in.txt', 'hello\n')
+    const r = await sh.exec('{ cat; } < in.txt')
+    expect(r.stdout).toBe('hello\n')
+  })
+
+  it('입력 redir: ( cat ) < file — 서브셸 본문이 파일을 stdin 으로 읽는다', async () => {
+    fs.writeFile('/home/player/in.txt', 'hello\n')
+    const r = await sh.exec('( cat ) < in.txt')
+    expect(r.stdout).toBe('hello\n')
+  })
+
+  it('Task 6 경계: while read x; do echo $x; done < file — 파싱/실행이 크래시하지 않는다 (첫 줄만, 커서는 task 6)', async () => {
+    // 이 태스크는 파싱 + 최소 실행만 보장한다. 줄별 커서(매 반복 한 줄)는 task 6 이라
+    // 지금은 첫 줄만 처리된다 — 크래시/무한루프 없이 얌전히 끝나기만 하면 된다.
+    fs.writeFile('/home/player/lines.txt', 'l1\nl2\nl3\n')
+    const r = await sh.exec('while read x; do echo $x; done < lines.txt')
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout).toBe('l1\n') // 첫 줄만 (task 6 커서 전 최소 동작)
+  })
+
+  it('회귀: redir 없는 복합 명령은 그대로 터미널로 출력한다', async () => {
+    const r = await sh.exec('for i in a b; do echo $i; done')
+    expect(r.stdout).toBe('a\nb\n')
+  })
+
+  it('ambiguous redirect: 대상이 여러 개로 확장되면 본문을 안 돌리고 exit 1', async () => {
+    // a.txt/b.txt 두 파일이 매치 → ambiguous. 본문 echo 는 실행되지 않는다.
+    const r = await sh.exec('for i in a; do echo ran; done > *.txt')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toMatch(/ambiguous redirect/)
+    expect(r.stdout).toBe('')
+  })
+
+  it('malformed: done 뒤 redir 대상이 없으면 문법 오류(exit 2), 크래시 아님', async () => {
+    const r = await sh.exec('for i in a; do echo $i; done >')
+    expect(r.exitCode).toBe(2)
+    expect(r.stderr).toMatch(/syntax error/)
+  })
+
+  it('회귀: 단순 명령 리다이렉션은 그대로 동작한다 (echo hi > out)', async () => {
+    await sh.exec('echo hi > simple.txt')
+    expect(fs.readFile('/home/player/simple.txt')).toBe('hi\n')
+  })
+})

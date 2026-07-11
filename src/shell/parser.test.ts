@@ -744,3 +744,86 @@ describe('배열 대입 파싱 (M3 Part 3 task 2)', () => {
     expect(a.value).toEqual(raw('(a b)x'))
   })
 })
+
+describe('복합 명령 리다이렉션 파싱 (M3 Part 3 task 5)', () => {
+  function firstCompound(input: string) {
+    return parse(input).items[0]!.pipeline.commands[0]!
+  }
+
+  it('for..done > out — ForNode 에 redirs 를 단다', () => {
+    const c = firstCompound('for i in a b c; do echo $i; done > out.txt')
+    expect(c.kind).toBe('for')
+    if (c.kind !== 'for') throw new Error('not for')
+    expect(c.redirs).toEqual([{ fd: 1, op: '>', target: raw('out.txt') }])
+    expect(c.body.items).toHaveLength(1) // 본문은 그대로
+  })
+
+  it('while..done < in — WhileNode 에 입력 redir', () => {
+    const c = firstCompound('while read x; do echo $x; done < in.txt')
+    expect(c.kind).toBe('while')
+    if (c.kind !== 'while') throw new Error('not while')
+    expect(c.redirs).toEqual([{ fd: 0, op: '<', target: raw('in.txt') }])
+  })
+
+  it('if..fi > out — IfNode 에 redirs', () => {
+    const c = firstCompound('if true; then echo hi; fi > o.txt')
+    expect(c.kind).toBe('if')
+    if (c.kind !== 'if') throw new Error('not if')
+    expect(c.redirs).toEqual([{ fd: 1, op: '>', target: raw('o.txt') }])
+  })
+
+  it('case..esac > out — CaseNode 에 redirs', () => {
+    const c = firstCompound('case x in x) echo m;; esac > o.txt')
+    expect(c.kind).toBe('case')
+    if (c.kind !== 'case') throw new Error('not case')
+    expect(c.redirs).toEqual([{ fd: 1, op: '>', target: raw('o.txt') }])
+  })
+
+  it('{ ...; } > out — GroupNode 에 redirs', () => {
+    const c = firstCompound('{ echo a; echo b; } > o.txt')
+    expect(c.kind).toBe('group')
+    if (c.kind !== 'group') throw new Error('not group')
+    expect(c.redirs).toEqual([{ fd: 1, op: '>', target: raw('o.txt') }])
+  })
+
+  it('( ... ) > out — SubshellNode 에 redirs (Part 2 carried minor)', () => {
+    const c = firstCompound('( echo sub ) > o.txt')
+    expect(c.kind).toBe('subshell')
+    if (c.kind !== 'subshell') throw new Error('not subshell')
+    expect(c.redirs).toEqual([{ fd: 1, op: '>', target: raw('o.txt') }])
+  })
+
+  it('종결어 뒤 여러 리다이렉션을 순서대로 모은다 (> o 2> e)', () => {
+    const c = firstCompound('for i in a; do echo $i; done > o.txt 2> e.txt')
+    if (c.kind !== 'for') throw new Error('not for')
+    expect(c.redirs).toEqual([
+      { fd: 1, op: '>', target: raw('o.txt') },
+      { fd: 2, op: '>', target: raw('e.txt') },
+    ])
+  })
+
+  it('>> 이어쓰기 리다이렉션도 종결어 뒤에서 잡는다', () => {
+    const c = firstCompound('for i in 1 2; do echo $i; done >> o.txt')
+    if (c.kind !== 'for') throw new Error('not for')
+    expect(c.redirs).toEqual([{ fd: 1, op: '>>', target: raw('o.txt') }])
+  })
+
+  it('회귀: redir 없는 복합 명령은 redirs 가 빈 배열이다', () => {
+    const c = firstCompound('for i in a; do echo $i; done')
+    if (c.kind !== 'for') throw new Error('not for')
+    expect(c.redirs).toEqual([])
+  })
+
+  it('redir 뒤 파이프/리스트 연결자는 여전히 정상 파싱된다', () => {
+    // done 뒤 redir 을 먹은 뒤에도 | 는 파이프로, && 는 리스트 연결자로 남아야 한다.
+    const piped = parse('{ echo a; } > o.txt | cat')
+    expect(piped.items[0]!.pipeline.commands).toHaveLength(2)
+    const listed = parse('if true; then echo a; fi > o.txt && echo done')
+    expect(listed.items).toHaveLength(2)
+    expect(listed.items[1]!.op).toBe('&&')
+  })
+
+  it('종결어 뒤 리다이렉션 대상이 없으면 문법 오류다', () => {
+    expect(() => parse('for i in a; do echo $i; done >')).toThrow(/syntax error/)
+  })
+})
