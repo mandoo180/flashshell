@@ -355,6 +355,178 @@ describe('expandWord — 파라미터 확장: ${name:?word} 오류 경로 (task 
   })
 })
 
+describe('expandWord — 파라미터 확장: 접두/접미 패턴 제거 (task 4, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  beforeEach(() => {
+    ctx.env.F = 'a.b.txt'
+    ctx.env.P = '/a/b/c'
+  })
+  // docker: F=a.b.txt; echo ${F%.txt} ${F##*.} ${F#*.} => a.b txt b.txt
+  it('${F%.txt} 는 최短 접미(리터럴) 제거 → a.b', async () => {
+    expect(await expandWord(wordOf('${F%.txt}'), ctx)).toEqual(['a.b'])
+  })
+  it('${F%%.*} 는 최長 접미 제거(첫 . 부터 끝까지) → a', async () => {
+    expect(await expandWord(wordOf('${F%%.*}'), ctx)).toEqual(['a'])
+  })
+  it('${F#*.} 는 최短 접두 제거(첫 . 까지) → b.txt', async () => {
+    expect(await expandWord(wordOf('${F#*.}'), ctx)).toEqual(['b.txt'])
+  })
+  it('${F##*.} 는 최長 접두 제거(마지막 . 까지) → txt', async () => {
+    expect(await expandWord(wordOf('${F##*.}'), ctx)).toEqual(['txt'])
+  })
+  // docker: P=/a/b/c; echo ${P##*/} ${P%/*} => c /a/b
+  it('${P##*/} 는 basename → c', async () => {
+    expect(await expandWord(wordOf('${P##*/}'), ctx)).toEqual(['c'])
+  })
+  it('${P%/*} 는 dirname → /a/b', async () => {
+    expect(await expandWord(wordOf('${P%/*}'), ctx)).toEqual(['/a/b'])
+  })
+  // docker: echo ${F%.zzz} => a.b.txt (매치 없음 — no-op)
+  it('매치가 없으면 원본 그대로(no-op)', async () => {
+    expect(await expandWord(wordOf('${F%.zzz}'), ctx)).toEqual(['a.b.txt'])
+    expect(await expandWord(wordOf('${F#zzz}'), ctx)).toEqual(['a.b.txt'])
+  })
+  // docker: H=.hidden.txt; echo ${H#*.} ${H##*.} ${H%.*} => hidden.txt txt .hidden
+  it('선행 점 보호를 받지 않는다 — 경로명 글롭이 아니라 문자열 패턴이다', async () => {
+    ctx.env.H = '.hidden.txt'
+    expect(await expandWord(wordOf('${H#*.}'), ctx)).toEqual(['hidden.txt'])
+    expect(await expandWord(wordOf('${H##*.}'), ctx)).toEqual(['txt'])
+    expect(await expandWord(wordOf('${H%.*}'), ctx)).toEqual(['.hidden'])
+  })
+  it('빈 패턴은 no-op', async () => {
+    expect(await expandWord(wordOf('${F#}'), ctx)).toEqual(['a.b.txt'])
+  })
+  it('패턴은 재확장 대상이다: ${F#$P2} (변수에서 나온 패턴)', async () => {
+    ctx.env.P2 = '*.'
+    expect(await expandWord(wordOf('${F#$P2}'), ctx)).toEqual(['b.txt'])
+  })
+  it('미설정 변수에 적용해도 크래시 없이 빈 문자열 그대로', async () => {
+    expect(await expandWord(wordOf('${UNSET#*.}'), ctx)).toEqual([])
+  })
+})
+
+describe('expandWord — 파라미터 확장: 패턴 치환 (task 4, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  // docker: S=hello; echo ${S/l/L} ${S//l/L} ${S/#he/HE} ${S/%lo/LO} ${S//l/}
+  //   => heLlo heLLo HEllo helLO heo
+  it('${S/l/L} 은 첫 매치만 치환', async () => {
+    ctx.env.S = 'hello'
+    expect(await expandWord(wordOf('${S/l/L}'), ctx)).toEqual(['heLlo'])
+  })
+  it('${S//l/L} 은 전체 매치를 치환', async () => {
+    ctx.env.S = 'hello'
+    expect(await expandWord(wordOf('${S//l/L}'), ctx)).toEqual(['heLLo'])
+  })
+  it('${S/#he/HE} 는 시작 지점 고정 매치', async () => {
+    ctx.env.S = 'hello'
+    expect(await expandWord(wordOf('${S/#he/HE}'), ctx)).toEqual(['HEllo'])
+  })
+  it('${S/%lo/LO} 는 끝 지점 고정 매치', async () => {
+    ctx.env.S = 'hello'
+    expect(await expandWord(wordOf('${S/%lo/LO}'), ctx)).toEqual(['helLO'])
+  })
+  it('${S//l/} 는 빈 rep — 전체 삭제', async () => {
+    ctx.env.S = 'hello'
+    expect(await expandWord(wordOf('${S//l/}'), ctx)).toEqual(['heo'])
+  })
+  it('매치가 없으면 원본 그대로 (기본형/anchored 전부)', async () => {
+    ctx.env.S = 'hello'
+    expect(await expandWord(wordOf('${S/nomatch/Y}'), ctx)).toEqual(['hello'])
+    expect(await expandWord(wordOf('${S/#nomatch/Y}'), ctx)).toEqual(['hello'])
+    expect(await expandWord(wordOf('${S/%nomatch/Y}'), ctx)).toEqual(['hello'])
+  })
+  // docker: echo ${S/l*/X} ${S/*l/X} => heX Xo — leftmost-longest 글롭 매치
+  it('leftmost-longest: ${S/l*/X} 는 pos=2 에서 "llo" 전체를 삼킨다', async () => {
+    ctx.env.S = 'hello'
+    expect(await expandWord(wordOf('${S/l*/X}'), ctx)).toEqual(['heX'])
+  })
+  it('leftmost-longest: ${S/*l/X} 는 pos=0 에서 "hell" 을 삼킨다(마지막 l 까지)', async () => {
+    ctx.env.S = 'hello'
+    expect(await expandWord(wordOf('${S/*l/X}'), ctx)).toEqual(['Xo'])
+  })
+  it('${S/?/X} 는 한 글자만, ${S//?/X} 는 전부', async () => {
+    ctx.env.S = 'hello'
+    expect(await expandWord(wordOf('${S/?/X}'), ctx)).toEqual(['Xello'])
+    expect(await expandWord(wordOf('${S//?/X}'), ctx)).toEqual(['XXXXX'])
+  })
+  // docker: R=banana; echo ${R/an/X} ${R//an/X} => bXana bXXa (전체는 비중첩 순차 매치)
+  it('전체 치환은 비중첩·왼쪽부터 순차 진행', async () => {
+    ctx.env.R = 'banana'
+    expect(await expandWord(wordOf('${R/an/X}'), ctx)).toEqual(['bXana'])
+    expect(await expandWord(wordOf('${R//an/X}'), ctx)).toEqual(['bXXa'])
+  })
+  it('pat/rep 는 재확장 대상이다: ${S/$a/$b}', async () => {
+    ctx.env.S = 'hello'
+    ctx.env.a = 'l'
+    ctx.env.b = 'L'
+    expect(await expandWord(wordOf('${S/$a/$b}'), ctx)).toEqual(['heLlo'])
+  })
+  it('미설정 변수에 적용해도 크래시 없이 빈 문자열', async () => {
+    expect(await expandWord(wordOf('${UNSET/x/y}'), ctx)).toEqual([])
+  })
+})
+
+describe('expandWord — 파라미터 확장: 부분문자열 (task 4, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  beforeEach(() => { ctx.env.S = 'hello' })
+
+  // docker: S=hello; echo ${S:1:3} ${S:2} "${S: -2}" ${S:1:-1} => ell llo lo ell
+  it('${S:1:3} 은 offset 1, length 3', async () => {
+    expect(await expandWord(wordOf('${S:1:3}'), ctx)).toEqual(['ell'])
+  })
+  it('${S:2} 는 length 생략 — 끝까지', async () => {
+    expect(await expandWord(wordOf('${S:2}'), ctx)).toEqual(['llo'])
+  })
+  it('${S: -2} 는 음수 offset(공백 필요) — 끝에서부터', async () => {
+    expect(await expandWord(wordOf('${S: -2}'), ctx)).toEqual(['lo'])
+  })
+  it('${S:(-2)} 는 괄호로도 음수 offset 을 명확히 할 수 있다', async () => {
+    expect(await expandWord(wordOf('${S:(-2)}'), ctx)).toEqual(['lo'])
+  })
+  it('${S:1:-1} 은 음수 length — 끝에서 1 뺀 위치까지', async () => {
+    expect(await expandWord(wordOf('${S:1:-1}'), ctx)).toEqual(['ell'])
+  })
+  // docker: echo ${S:-2} => hello (S 가 설정돼 있으므로 `:-` 기본값 연산자가 이김,
+  // substring 이 아니다 — 공백/괄호 없는 음수 offset 은 항상 `:-` 로 먼저 소비된다)
+  it('공백 없는 ${S:-2} 는 substring 이 아니라 `:-` 기본값 연산자 — S 가 설정돼 있으므로 그대로 hello', async () => {
+    expect(await expandWord(wordOf('${S:-2}'), ctx)).toEqual(['hello'])
+  })
+  it('offset/length 는 산술식이다(evalArith 재사용): ${S:1+1:1+1}', async () => {
+    expect(await expandWord(wordOf('${S:1+1:1+1}'), ctx)).toEqual(['ll'])
+  })
+  // docker: echo ${S:0:100} ${S:100} ${S:100:2} => hello (빈줄) (빈줄) — clamp, 범위 밖은 빈 문자열
+  it('length 가 문자열 길이를 넘으면 clamp', async () => {
+    expect(await expandWord(wordOf('${S:0:100}'), ctx)).toEqual(['hello'])
+  })
+  it('offset 이 문자열 길이를 넘으면 빈 문자열(에러 아님)', async () => {
+    expect(await expandWord(wordOf('${S:100}'), ctx)).toEqual([])
+    expect(await expandWord(wordOf('${S:100:2}'), ctx)).toEqual([])
+  })
+  // docker: echo "${S: -100}" "${S: -6}" "${S: -5}" => (빈줄) (빈줄) hello — 음수 offset이
+  // 왼쪽으로 넘치면 그냥 빈 문자열(에러 아님), 정확히 0 이면 전체
+  it('음수 offset 이 문자열 시작보다 왼쪽으로 넘치면 빈 문자열(에러 아님)', async () => {
+    expect(await expandWord(wordOf('"${S: -100}"'), ctx)).toEqual([''])
+    expect(await expandWord(wordOf('"${S: -6}"'), ctx)).toEqual([''])
+  })
+  it('음수 offset 이 정확히 0 이 되면 전체 문자열', async () => {
+    expect(await expandWord(wordOf('${S: -5}'), ctx)).toEqual(['hello'])
+  })
+  // docker: echo "${S:6:-1}" => (빈줄), exit 0 — offset(6) > len(5) 라 length 검사 전에
+  // 조기 반환된다(length 오류조차 안 낸다)
+  it('offset 이 이미 범위 밖이면 length 오류 검사 없이 그냥 빈 문자열', async () => {
+    expect(await expandWord(wordOf('"${S:6:-1}"'), ctx)).toEqual([''])
+  })
+  it('음수 length 라도 구간이 뒤집히지 않으면(end===offset) 그냥 빈 문자열(에러 아님): ${S:2:-3}', async () => {
+    expect(await expandWord(wordOf('"${S:2:-3}"'), ctx)).toEqual([''])
+  })
+  // docker: echo ${S:0:-100} => bash: line 1: -100: substring expression < 0 (해당 명령만
+  // 실패, 실제 bash 는 스크립트 전체가 죽지만 이 서브셋은 task 1/3 의 기존 단순화를 따라
+  // 이 명령 하나만 실패시킨다)
+  it('음수 length 로 구간이 뒤집히면(end<offset) ArithError 를 던진다(task1/3 과 같은 계약)', async () => {
+    await expect(expandWord(wordOf('${S:0:-100}'), ctx)).rejects.toThrow(/substring expression < 0/)
+  })
+  it('미설정 변수의 substring 은 크래시 없이 빈 문자열', async () => {
+    expect(await expandWord(wordOf('${UNSET:1:2}'), ctx)).toEqual([])
+  })
+})
+
 describe('expandForCase (task 6) — case 문의 WORD/PATTERN 전용 확장', () => {
   // expandWord 와 달리 단어분리(IFS)도 파일시스템 글롭(expandGlob)도 하지 않는다 —
   // 문자열 하나만 낸다(case 패턴은 matchSegment 로 별도 매칭한다).

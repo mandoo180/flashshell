@@ -1,8 +1,8 @@
 import type { VFS } from './vfs'
 import type { Word } from './lexer'
-import { expandGlob } from './glob'
+import { expandGlob, matchSegment } from './glob'
 import { matchSubstitutionEnd } from './subst'
-import { evalArith } from './arith'
+import { evalArith, ArithError } from './arith'
 
 export interface ExpandCtx {
   env: Record<string, string>
@@ -130,18 +130,181 @@ async function expandNested(source: string, protectedResult: boolean, ctx: Expan
 }
 
 /**
+ * 문자열 s 안에서 `(`/`{` 깊이가 0인 지점에 있는 target 문자의 첫 인덱스를 찾는다
+ * (findBraceClose 와 같은 "pragmatic" 단순화 — 따옴표는 추적하지 않는다). task 4가
+ * 두 군데에 쓴다:
+ *  - substring `${x:off:len}` 의 두 번째 `:` — off 안에 괄호 낀 산술식(`${x:(a?1:2):3}`)
+ *    이 있어도 안쪽 `:`를 분리자로 착각하지 않는다.
+ *  - substitution `${x/pat/rep}` 의 pat/rep 구분자 `/` — pat/rep 안에 `$(...)`나
+ *    `${...}` 가 있으면(`${x/$(echo a/b)/c}`) 그 안의 `/`를 분리자로 착각하지 않는다.
+ */
+function findTopLevelChar(s: string, target: string): number {
+  let depth = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!
+    if (c === '(' || c === '{') depth++
+    else if (c === ')' || c === '}') { if (depth > 0) depth-- }
+    else if (depth === 0 && c === target) return i
+  }
+  return -1
+}
+
+/**
+ * `${x#pat}`/`${x##pat}` 접두 제거. glob 엔진(matchSegment, glob.ts)으로 후보
+ * 접두사를 짧은 쪽부터(`#`, shortest) 또는 긴 쪽부터(`##`, longest) 시험해 첫 매치를
+ * 취한다. **`new RegExp(pattern)`으로 컴파일하지 않는다** — 이 서브셋 전체가 ReDoS
+ * 회피를 위해 정규식 대신 matchSegment 의 선형 시간 두-포인터 매처를 쓰기로 한
+ * 설계이고(glob.ts 주석 참고), 여기서 RegExp 로 되돌아가면 그 안전장치가 무의미해진다.
+ * `dotglob:true` 를 쓴다 — 이건 경로명 글롭이 아니라 순수 문자열 패턴 매칭이라 선행
+ * 점 보호가 적용되면 안 된다(docker 확인: `H=.hidden.txt; echo ${H#*.}` → `hidden.txt`;
+ * dotglob:false 였다면 `*.`가 `.`로 시작하는 모든 후보를 거부해 매치가 전혀 안 됐을 것).
+ * 매치가 하나도 없으면 원본 그대로(no-op) — 브리프 명시(`${F%.zzz}` → 그대로, docker 확인).
+ */
+function removePrefix(value: string, pattern: string, longest: boolean): string {
+  if (pattern === '') return value
+  if (longest) {
+    for (let k = value.length; k >= 0; k--) {
+      if (matchSegment(pattern, value.slice(0, k), { dotglob: true })) return value.slice(k)
+    }
+  } else {
+    for (let k = 0; k <= value.length; k++) {
+      if (matchSegment(pattern, value.slice(0, k), { dotglob: true })) return value.slice(k)
+    }
+  }
+  return value
+}
+
+/** `${x%pat}`/`${x%%pat}` 접미 제거 — removePrefix 와 대칭(후보를 오른쪽에서부터 자른다). */
+function removeSuffix(value: string, pattern: string, longest: boolean): string {
+  if (pattern === '') return value
+  const len = value.length
+  if (longest) {
+    for (let k = len; k >= 0; k--) {
+      if (matchSegment(pattern, value.slice(len - k), { dotglob: true })) return value.slice(0, len - k)
+    }
+  } else {
+    for (let k = 0; k <= len; k++) {
+      if (matchSegment(pattern, value.slice(len - k), { dotglob: true })) return value.slice(0, len - k)
+    }
+  }
+  return value
+}
+
+/**
+ * pos 위치에서 시작하는 가장 긴 매치의 끝 인덱스를 찾는다 — bash 의 "leftmost longest"
+ * 규칙 중 longest 부분(leftmost 는 호출부가 pos 를 왼쪽부터 늘려가며 담당한다). 후보를
+ * 긴 것부터(value.length 부터 pos+1 까지 내려오며) 시험한다 — docker 확인:
+ * `S=hello; echo ${S/l*\/X}` → `heX`. pos=2 에서 짧은 쪽부터 시험했다면 "l" 한 글자만
+ * 먹고 `heXlo`가 됐을 것 — longest-at-leftmost 가 아니면 틀린다. 매치 없으면 -1.
+ */
+function longestMatchAt(pattern: string, value: string, pos: number): number {
+  for (let end = value.length; end > pos; end--) {
+    if (matchSegment(pattern, value.slice(pos, end), { dotglob: true })) return end
+  }
+  if (matchSegment(pattern, '', { dotglob: true })) return pos // 빈 문자열에도 매치하는 패턴(예: `*`)
+  return -1
+}
+
+/** `${x/pat/rep}`(all=false, 첫 매치만) / `${x//pat/rep}`(all=true, 전체 — 비중첩, 왼쪽부터 순차). */
+function substituteScan(value: string, pattern: string, rep: string, all: boolean): string {
+  if (pattern === '') return value
+  let result = ''
+  let i = 0
+  let replaced = false
+  while (i < value.length) {
+    if (all || !replaced) {
+      const end = longestMatchAt(pattern, value, i)
+      if (end !== -1 && end > i) {
+        result += rep
+        i = end
+        replaced = true
+        continue
+      }
+    }
+    result += value[i]
+    i++
+  }
+  return result
+}
+
+/** `${x/#pat/rep}` — pat 이 문자열 시작에서 매치할 때만 치환(최長 접두, `##`와 같은 방향). */
+function substituteAnchoredStart(value: string, pattern: string, rep: string): string {
+  if (pattern === '') return value
+  for (let end = value.length; end >= 0; end--) {
+    if (matchSegment(pattern, value.slice(0, end), { dotglob: true })) return rep + value.slice(end)
+  }
+  return value
+}
+
+/** `${x/%pat/rep}` — pat 이 문자열 끝에서 매치할 때만 치환(최長 접미, `%%`와 같은 방향). */
+function substituteAnchoredEnd(value: string, pattern: string, rep: string): string {
+  if (pattern === '') return value
+  for (let pos = 0; pos <= value.length; pos++) {
+    if (matchSegment(pattern, value.slice(pos), { dotglob: true })) return value.slice(0, pos) + rep
+  }
+  return value
+}
+
+/**
+ * `${x:offset}` / `${x:offset:length}` 부분 문자열. offset/length 는 산술식이다 —
+ * task 1의 evalArith 를 그대로 재사용한다(`${x:1+1:1+1}` 도 동작). bash 실측
+ * (docker debian:stable-slim bash 5, 전부 확인):
+ *  - offset < 0 이면 문자열 끝에서부터 재해석한다(`len+offset`). 재해석 후에도 0보다
+ *    작거나 len 보다 크면 그냥 빈 문자열이다 — 에러가 아니다(`${S: -100}` → ''). 이
+ *    시점에 이미 범위를 벗어났으면 length 는 평가는 하되(부작용 보존) 검사하지 않고
+ *    바로 빈 문자열을 반환한다(`${S:6:-1}` → '' — length 오류조차 안 낸다, docker로
+ *    offset(6) > len(5) 케이스에서 확인. 이건 length 검사 전에 조기 반환되기 때문).
+ *  - length 생략 → 끝까지.
+ *  - length >= 0 → offset+length 까지(len 넘으면 clamp) — `${S:0:100}` → 'hello'.
+ *  - length < 0 → "문자열 끝에서 |length| 만큼 뺀 위치까지"(`end = len+length`,
+ *    offset 기준이 아니라 전체 길이 기준). 이 end 가 offset 보다 작으면(구간이
+ *    뒤집히면) 실제 bash 는 그 명령을 런타임 에러 "N: substring expression < 0"로
+ *    실패시키고, non-interactive 스크립트 전체가 죽는다(docker: `${S:0:-6}` 이후
+ *    출력이 전부 사라짐). 이 서브셋은 task 1(`$((1/0))`)·task 3(`${:?}`)이 이미 정한
+ *    단순화를 그대로 따른다 — ArithError 를 던져 그 명령 하나만 실패시키고 스크립트는
+ *    계속한다(interpreter.ts 의 기존 generic catch가 ArithError 를 이미
+ *    `bash: ${errnoText}\n`/exit 1 로 처리하므로 interpreter.ts 는 한 글자도 안
+ *    고쳐도 된다).
+ */
+function substringOp(spec: string, value: string, ctx: ExpandCtx): string {
+  const sep = findTopLevelChar(spec, ':')
+  const offSource = sep === -1 ? spec : spec.slice(0, sep)
+  const lenSource = sep === -1 ? undefined : spec.slice(sep + 1)
+
+  const len = value.length
+  let offset = evalArith(offSource, ctx)
+  const rawLen = lenSource === undefined ? undefined : evalArith(lenSource, ctx)
+
+  if (offset < 0) offset += len
+  if (offset < 0 || offset > len) return ''
+
+  if (rawLen === undefined) return value.slice(offset)
+
+  let end: number
+  if (rawLen < 0) {
+    end = len + rawLen
+    if (end < offset) throw new ArithError(`${rawLen}: substring expression < 0`)
+  } else {
+    end = offset + rawLen
+    if (end > len) end = len
+  }
+  return value.slice(offset, end)
+}
+
+/**
  * `${...}` 안쪽 문자열(`inner`, 여닫는 중괄호 제외)을 해석해 최종 문자열을 낸다.
- * task 3 서브파서: 선행 `#`(길이) → NAME(VARNAME 또는 위치 매개변수 토큰) → 연산자
- * (`:` 유무 + 한 글자 `- = + ?`) → arg. 연산자가 없으면(rest==='') 기존 `${NAME}`/`${N}`
- * 동작 그대로다.
+ * 서브파서 문법: 선행 `#`(길이) → NAME(VARNAME 또는 위치 매개변수 토큰) → 연산자
+ * (`:` 유무 + 한 글자 `- = + ?` [task 3], 또는 `# ## % %%`[접두/접미 제거], `/ // /# /%`
+ * [치환], `:off[:len]`[부분문자열] [task 4]) → arg. 연산자가 없으면(rest==='') 기존
+ * `${NAME}`/`${N}` 동작 그대로다.
  *
- * 확장 지점(task 4가 여기에 케이스를 추가한다): `switch (opChar)` 에 `'#'`(최短
- * prefix 제거)/`'%'`(suffix 제거)/`'/'`(substitution) 케이스를 추가하면 된다 —
- * hasColon/unsetOrNull 계산은 그 케이스들엔 안 쓰이지만(bash에 `:#`/`:%`/`:/` 콜론
- * 변형이 없다) 구조상 방해되지 않는다. `##`/`%%`/`//`(최長/전역)는 opChar 다음 글자를
- * 한 번 더 봐서 갈라야 한다. 콜론+숫자(substring, `${x:off:len}`)는 연산자 문자가 아니라
- * 숫자/`-`로 시작하므로 `hasColon` 판정 직후, opChar 스위치보다 먼저 별도 분기가
- * 필요하다(`rest[1]`이 숫자 또는 `-` 인지 확인).
+ * substring 은 opChar 스위치에 들어가지 않고 그 앞에서 따로 갈린다 — 연산자 문자가
+ * 아니라 산술식(숫자/`-`/`(`/공백 등)으로 시작하기 때문이다. `hasColon` 판정 직후,
+ * opChar 가 기존 4개 연산자(`- = + ?`) 중 하나가 *아닐* 때만 substring 으로 분기한다.
+ * 이 판정이 바로 `${S:-2}`(→ `:-` 기본값 연산자, S 가 설정돼 있으므로 결과는 S 자신)와
+ * `${S: -2}`/`${S:(-2)}`(→ substring, offset -2) 의 차이다 — 실제 bash 도 정확히 이렇게
+ * 갈린다(docker 확인). 브리프가 언급한 "음수 offset 은 공백/괄호가 필요하다"는 지시가
+ * 바로 이 충돌 회피 규칙이다.
  */
 async function expandBraceParam(inner: string, protectedResult: boolean, ctx: ExpandCtx): Promise<string> {
   // 길이형: ${#name} / ${#}(=$#) / ${#@} / ${#*}(브리프 지시대로 개수로 단순화). 선행
@@ -162,9 +325,16 @@ async function expandBraceParam(inner: string, protectedResult: boolean, ctx: Ex
 
   const hasColon = rest[0] === ':'
   const opChar = hasColon ? rest[1] : rest[0]
-  const argSource = rest.slice(hasColon ? 2 : 1)
-
   const resolved = resolveName(ctx, name)
+
+  // 부분문자열: `${name:offset[:length]}`. `:` 바로 다음 글자가 기존 4개 연산자
+  // (`- = + ?`) 중 하나가 아닐 때만 여기로 분기한다 — `${S:-2}`는 `:-`(기본값) 연산자가
+  // 먼저 먹는다(실제 bash 동작, docker 확인).
+  if (hasColon && opChar !== '-' && opChar !== '=' && opChar !== '+' && opChar !== '?') {
+    return substringOp(rest.slice(1), resolved.value, ctx)
+  }
+
+  const argSource = rest.slice(hasColon ? 2 : 1)
   // `:` 있으면 "미설정 또는 빈 값" 둘 다 대상(:-/:=/:+/:?), `:` 없으면 "미설정만"
   // (-/=/+/?) — 브리프가 명시한 핵심 구분(`${EMPTY:-fb}`→fb 지만 `${EMPTY-fb}`→'').
   const unsetOrNull = !resolved.isSet || (hasColon && resolved.value === '')
@@ -189,9 +359,43 @@ async function expandBraceParam(inner: string, protectedResult: boolean, ctx: Ex
       const detail = await expandNested(argSource, protectedResult, ctx)
       throw new ParamExpansionError(name, detail, hasColon)
     }
+    // 아래 세 케이스는 `:` 콜론 변형이 없다(hasColon 은 항상 false로 여기 도달) — 이름
+    // 바로 뒤에 `# % /` 가 온다. rest[1]을 한 번 더 봐서 `## %% //`(최長/전역)를 가른다.
+    case '#': {
+      const long = rest[1] === '#'
+      const patSource = rest.slice(long ? 2 : 1)
+      const pattern = await expandNested(patSource, protectedResult, ctx)
+      return removePrefix(resolved.value, pattern, long)
+    }
+    case '%': {
+      const long = rest[1] === '%'
+      const patSource = rest.slice(long ? 2 : 1)
+      const pattern = await expandNested(patSource, protectedResult, ctx)
+      return removeSuffix(resolved.value, pattern, long)
+    }
+    case '/': {
+      // ${x/pat/rep} 첫 매치, ${x//pat/rep} 전체, ${x/#pat/rep} 시작 고정, ${x/%pat/rep} 끝 고정.
+      let mode: 'first' | 'all' | 'start' | 'end' = 'first'
+      let specStart = 1
+      if (rest[1] === '/') { mode = 'all'; specStart = 2 }
+      else if (rest[1] === '#') { mode = 'start'; specStart = 2 }
+      else if (rest[1] === '%') { mode = 'end'; specStart = 2 }
+      const spec = rest.slice(specStart)
+      // pat/rep 구분자 `/`는 depth-0(괄호/중괄호 밖)인 첫 자리 — pat/rep 안의 $(...)나
+      // ${...}에 낀 `/`를 분리자로 착각하지 않는다(findTopLevelChar).
+      const sepIdx = findTopLevelChar(spec, '/')
+      const patSource = sepIdx === -1 ? spec : spec.slice(0, sepIdx)
+      const repSource = sepIdx === -1 ? '' : spec.slice(sepIdx + 1)
+      // pat/rep 는 그 자체로 재확장 대상이다(task 3 이 default-value arg 에 쓴 것과 같은
+      // expandNested 재사용) — `${x/$a/$b}`. rep 는 비어 있을 수 있다(`${x//pat/}` → 삭제).
+      const pattern = await expandNested(patSource, protectedResult, ctx)
+      const rep = await expandNested(repSource, protectedResult, ctx)
+      if (mode === 'start') return substituteAnchoredStart(resolved.value, pattern, rep)
+      if (mode === 'end') return substituteAnchoredEnd(resolved.value, pattern, rep)
+      return substituteScan(resolved.value, pattern, rep, mode === 'all')
+    }
     default:
-      // 미구현 연산자(task 4가 `# ## % %% / // :off:len` 을 여기 채운다) — 크래시 대신
-      // NAME 그대로의 값을 낸다(무연산자 폴백과 동일 취급).
+      // 알 수 없는/미지원 연산자 — 크래시 대신 NAME 그대로의 값을 낸다(무연산자 폴백과 동일).
       return resolved.value
   }
 }
