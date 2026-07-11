@@ -673,6 +673,47 @@ describe('산술 확장 $(( )) 통합 (task-1)', () => {
   })
 })
 
+describe('산술 안 ${...}/$(...) 확장 (M3 Part 2 task 1, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('${#NAME} (docker: NAME=world; echo $(( ${#NAME} + 1 )) → 6)', async () => {
+    const r = await sh.exec('NAME=world; echo $(( ${#NAME} + 1 ))')
+    expect(r.stdout).toBe('6\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('${x:-3} 기본값 (docker: unset x; echo $(( ${x:-3} * 2 )) → 6)', async () => {
+    const r = await sh.exec('echo $(( ${x:-3} * 2 ))')
+    expect(r.stdout).toBe('6\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('$(...) 명령치환 (docker: echo $(( $(echo 5) + 1 )) → 6)', async () => {
+    const r = await sh.exec('echo $(( $(echo 5) + 1 ))')
+    expect(r.stdout).toBe('6\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('회귀: n=${#NAME}; echo $((n+1)) 는 그대로 동작한다 (docker → 6)', async () => {
+    const r = await sh.exec('NAME=world; n=${#NAME}; echo $((n+1))')
+    expect(r.stdout).toBe('6\n')
+  })
+
+  it('역방향 회귀: ${x:-$((1+2))} (docker → 3)', async () => {
+    const r = await sh.exec('echo ${x:-$((1+2))}')
+    expect(r.stdout).toBe('3\n')
+  })
+
+  it('대입 부작용은 확장 후에도 셸 상태에 남는다 (docker: unset x y; echo $(( x = ${y:-0} + 1 )); echo $x → 1 / 1)', async () => {
+    const r = await sh.exec('echo $(( x = ${y:-0} + 1 )); echo $x')
+    expect(r.stdout).toBe('1\n1\n')
+  })
+
+  it('깨진 ${ 는 exec 을 reject 시키지 않고 exit 1 로 surface, 스크립트도 계속된다 (docker 확인: 해당 명령만 실패)', async () => {
+    const r = await sh.exec('echo before; echo $(( ${ )); echo "mid=$?"; echo after')
+    expect(r.stdout).toBe('before\nmid=1\nafter\n')
+    expect(r.stderr).not.toBe('')
+  })
+})
+
 describe('(( expr )) 산술 명령 (task-2, docker debian:stable-slim bash 5 로 확인됨)', () => {
   it('결과 ≠ 0 이면 참 → exit 0 (docker: (( 1+2 )); echo $? → 0)', async () => {
     const r = await sh.exec('(( 1 + 2 )); echo $?')
@@ -729,6 +770,22 @@ describe('(( expr )) 산술 명령 (task-2, docker debian:stable-slim bash 5 로
   it('회귀: 기존 리다이렉션(단일 ( 아님)은 영향받지 않는다', async () => {
     const r = await sh.exec('echo a > f; cat f')
     expect(r.stdout).toBe('a\n')
+  })
+
+  it('(M3 Part 2 task 1) ${...}/$(...) 는 (( )) 명령 안에서도 evalArith 전에 확장된다 (docker: NAME=world; (( ${#NAME} == 5 )); echo $? → 0)', async () => {
+    const r = await sh.exec('NAME=world; (( ${#NAME} == 5 )); echo $?')
+    expect(r.stdout).toBe('0\n')
+  })
+
+  it('(M3 Part 2 task 1) 대입 부작용이 확장 후에도 셸 상태에 남는다 (docker: unset x y; (( x = ${y:-0} + 1 )); echo $x → 1)', async () => {
+    const r = await sh.exec('(( x = ${y:-0} + 1 )); echo $x')
+    expect(r.stdout).toBe('1\n')
+  })
+
+  it('(M3 Part 2 task 1) 깨진 ${ 는 exec 을 reject 시키지 않고 exit 1 로 surface, 스크립트도 계속된다', async () => {
+    const r = await sh.exec('echo before; (( ${ )); echo "mid=$?"; echo after')
+    expect(r.stdout).toBe('before\nmid=1\nafter\n')
+    expect(r.stderr).not.toBe('')
   })
 })
 

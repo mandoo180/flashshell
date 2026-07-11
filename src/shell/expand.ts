@@ -186,6 +186,28 @@ async function expandNested(source: string, protectedResult: boolean, ctx: Expan
 }
 
 /**
+ * `$(( expr ))` / `(( expr ))` 산술 문맥 전용 사전 확장(M3 Part 2 task 1). bash 는 산술
+ * 문자열을 evalArith 에 넘기기 전에 `$`-확장(파라미터·명령·중첩산술)만 먼저 값으로
+ * 치환한다 — 단어분할·글롭은 하지 않는다(산술 문맥, docker 실측). expandNested 를 그대로
+ * 재사용한다: `$`로 시작하는 형태(`${...}`, `$(...)`, `$((...))`, `$NAME`, `$?`, `$N`)만
+ * 확장하고 그 외 문자(bare 식별자 포함)는 리터럴로 남긴다 — `$(( x + 1 ))`의 bare `x`나
+ * `$(( x = 3 ))`의 대입 대상이 그대로 살아남아야 evalArith 가 직접 env 를 읽고 쓸 수
+ * 있다(대입 부작용 유지, `$(( x = ${y:-0} + 1 ))` → 확장 후 "x = 0 + 1" → evalArith 가
+ * x= 대입 처리).
+ *
+ * 주의: `$NAME`(예: `$x`)은 여기서 값으로 텍스트 그대로 치환된다 — evalArith 자체의 bare
+ * 변수 재귀평가(값이 다시 산술식이면 통째로 재평가해 괄호 친 것처럼 묶인다)와는 다르다.
+ * 이 치환은 자리에 원문 텍스트만 끼워넣으므로 바깥 식과 우선순위가 섞일 수 있다 —
+ * docker 실측: `x="1+2"; echo $((x*3))` → 9(bare, 괄호친 것처럼 묶임), `echo $(($x*3))`
+ * → 7(텍스트 치환, "1+2*3"으로 우선순위가 섞임). evalArith 는 원래도 `$NAME` 을 bare 와
+ * 동일하게 취급했으므로(arith.ts 자체 토크나이저), 이 사전 확장이 산술 파이프라인
+ * 전체에서 그 divergence 를 실제 bash 와 일치시킨다(부수 효과지만 올바른 방향).
+ */
+export async function expandArithExpr(expr: string, ctx: ExpandCtx): Promise<string> {
+  return expandNested(expr, true, ctx)
+}
+
+/**
  * 문자열 s 안에서 `(`/`{` 깊이가 0인 지점에 있는 target 문자의 첫 인덱스를 찾는다
  * (findBraceClose 와 같은 "pragmatic" 단순화 — 따옴표는 추적하지 않는다). task 4가
  * 두 군데에 쓴다:
@@ -474,7 +496,11 @@ async function expandDollar(source: string, protectedResult: boolean, field: Fie
     if (source[i + 1] === '(' && source[i + 2] === '(') {
       const closeIndex = matchSubstitutionEnd(source, i)
       const expr = source.slice(i + 3, closeIndex - 1)
-      appendExpanded(field, String(evalArith(expr, ctx)), protectedResult)
+      // evalArith 에 넘기기 전에 `${...}`/`$(...)`/`$x` 를 값으로 먼저 확장한다(M3 Part 2
+      // task 1) — expandArithExpr 참고. bare 식별자·대입 대상은 손대지 않고 그대로 두어
+      // evalArith 가 직접 env 를 읽고 쓴다.
+      const preExpanded = await expandArithExpr(expr, ctx)
+      appendExpanded(field, String(evalArith(preExpanded, ctx)), protectedResult)
       i = closeIndex + 1
       continue
     }

@@ -1,10 +1,10 @@
 import { VFS } from './vfs'
 import { ExecutionLimitError, ControlSignal, LoopSignal, BreakSignal, ReturnSignal, errnoText } from './errors'
 import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ArithCmdNode, type ListNode, type PipelineNode } from './parser'
-import { expandWord, expandToSingle, expandForCase, type ExpandCtx } from './expand'
+import { expandWord, expandToSingle, expandForCase, expandArithExpr, type ExpandCtx } from './expand'
 import { matchSegment } from './glob'
 import { lookupCommand, isKnownUnimplemented } from './registry'
-import { evalArith, ArithError } from './arith'
+import { evalArith } from './arith'
 import type { CommandEnv, ExecResult, ShellState } from './types'
 import type { Word } from './lexer'
 
@@ -155,21 +155,28 @@ async function runCommand(node: Command, ctx: RunCtx, stdin: string): Promise<Ex
  * 부작용이 셸 상태에 영구히 남는다(ExpandCtx 의 env 참조 공유와 같은 원리, docker 확인:
  * `x=1; (( x++ )); echo $x` → 2).
  *
+ * evalArith 를 부르기 전에 expandArithExpr 로 `${...}`/`$(...)`/`$x` 를 값으로 먼저
+ * 확장한다(M3 Part 2 task 1) — `$(( ))` 확장(expand.ts 의 `$((` 분기)과 같은 사전확장을
+ * 이 두 번째 진입점(`(( ))` 명령)에도 적용해 `NAME=world; (( ${#NAME} == 5 ))` 같은 식이
+ * 동작하게 한다. bare 식별자·대입 대상은 손대지 않고 남겨 evalArith 가 직접 env 를
+ * 읽고 쓴다(대입 부작용 유지).
+ *
  * exit code 는 bash 산술-명령 규약대로 "결과 ≠ 0 이면 참(exit 0), 0 이면 거짓(exit 1)" —
- * `$(( ))` 확장(값을 문자열로 돌려줌)과 정반대 극성이다. 0 나누기/문법 오류 등 ArithError 는
- * runSimpleCommand 의 확장-오류 처리와 같은 패턴으로 stderr + exit 1 의 얌전한 ExecResult 로
- * 바꾼다(reject 하지 않음, docker 확인: `(( 1/0 ))` → stderr "division by 0", exit 1).
- * ArithError 가 아닌 예외(특히 ExecutionLimitError)는 그대로 위로 던진다 — 무한루프 방어를
- * 삼키면 안 되기 때문이다.
+ * `$(( ))` 확장(값을 문자열로 돌려줌)과 정반대 극성이다. 산술 오류(0 나누기/문법 오류)뿐
+ * 아니라 사전 확장 단계의 오류(예: `${x:?msg}`, 깨진 `${`)도 runSimpleCommand 의
+ * 확장-오류 처리와 같은 패턴으로 stderr + exit 1 의 얌전한 ExecResult 로 바꾼다(reject
+ * 하지 않음, docker 확인: `(( 1/0 ))` → stderr "division by 0", exit 1). ExecutionLimitError
+ * 만은 그대로 위로 던진다 — 무한루프 방어를 삼키면 안 되기 때문이다.
  */
-function runArith(node: ArithCmdNode, ctx: RunCtx): ExecResult {
+async function runArith(node: ArithCmdNode, ctx: RunCtx): Promise<ExecResult> {
   spend(ctx)
   try {
-    const value = evalArith(node.expr, ctx.state)
+    const expr = await expandArithExpr(node.expr, expandCtxFor(ctx))
+    const value = evalArith(expr, ctx.state)
     return { stdout: '', stderr: '', exitCode: value !== 0 ? 0 : 1 }
   } catch (e) {
-    if (e instanceof ArithError) return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
-    throw e
+    if (e instanceof ExecutionLimitError) throw e
+    return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
   }
 }
 

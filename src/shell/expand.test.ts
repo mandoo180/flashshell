@@ -189,6 +189,50 @@ describe('expandWord — 산술 확장 $(( ))', () => {
   })
 })
 
+describe('expandWord — 산술 안 ${...}/$(...) 확장 (M3 Part 2 task 1)', () => {
+  // 전부 docker debian:stable-slim bash 5 로 실측 확인.
+  it('${#NAME} 이 산술 식 안에서 길이로 확장된다 (docker: NAME=world; echo $(( ${#NAME} + 1 )) → 6)', async () => {
+    // beforeEach 가 이미 NAME=world 를 세팅해 둔다.
+    expect(await expandWord(wordOf('$(( ${#NAME} + 1 ))'), ctx)).toEqual(['6'])
+  })
+
+  it('${x:-3} 기본값이 산술 식 안에서 값으로 확장된다 (docker: unset x; echo $(( ${x:-3} * 2 )) → 6)', async () => {
+    // ctx.env 에 x 가 없다(beforeEach 기본 fixture) — 미설정과 동치.
+    expect(await expandWord(wordOf('$(( ${x:-3} * 2 ))'), ctx)).toEqual(['6'])
+  })
+
+  it('$(...) 명령치환이 산술 식 안에서 값으로 확장된다 (docker: echo $(( $(echo 5) + 1 )) → 6)', async () => {
+    ctx.runSubshell = async (script) => ({ stdout: script === 'echo 5' ? '5\n' : '', stderr: '', exitCode: 0 })
+    expect(await expandWord(wordOf('$(( $(echo 5) + 1 ))'), ctx)).toEqual(['6'])
+  })
+
+  it('회귀: 산술 밖에서 만든 ${#NAME} 를 bare 변수로 재사용하는 기존 동작은 그대로다 (docker: n=${#NAME}; echo $((n+1)) → 6)', async () => {
+    ctx.env.n = String(ctx.env.NAME!.length) // = ${#NAME}, 산술 밖에서 미리 계산했다고 가정
+    expect(await expandWord(wordOf('$((n+1))'), ctx)).toEqual(['6'])
+  })
+
+  it('역방향 회귀: ${x:-$((1+2))} (산술이 파라미터 확장 기본값 안에 있음) 은 이미 동작하며 계속 동작한다 (docker → 3)', async () => {
+    expect(await expandWord(wordOf('${x:-$((1+2))}'), ctx)).toEqual(['3'])
+  })
+
+  it('대입 부작용은 확장 후 evalArith 가 처리한다 (docker: unset x y; echo $(( x = ${y:-0} + 1 )); echo $x → 1 / 1)', async () => {
+    expect(await expandWord(wordOf('$(( x = ${y:-0} + 1 ))'), ctx)).toEqual(['1'])
+    expect(ctx.env.x).toBe('1')
+  })
+
+  it('bare 변수와 $변수의 재귀평가 우선순위 차이가 유지된다 (docker: x="1+2"; echo $((x*3)) → 9, echo $(($x*3)) → 7)', async () => {
+    // bare x 는 evalArith 자체가 값을 통째로(괄호친 것처럼) 재귀평가하지만, $x 는 이 확장
+    // 단계에서 텍스트로 그 자리에 꽂히므로 바깥 식과 우선순위가 섞인다 — 실제 bash와 일치.
+    ctx.env.x = '1+2'
+    expect(await expandWord(wordOf('$((x*3))'), ctx)).toEqual(['9'])
+    expect(await expandWord(wordOf('$(($x*3))'), ctx)).toEqual(['7'])
+  })
+
+  it('깨진 ${ 는 evalArith 문법 오류로 surface 되고 크래시하지 않는다 (docker: echo $(( ${ )) → exit 1)', async () => {
+    await expect(expandWord(wordOf('$(( ${ ))'), ctx)).rejects.toThrow()
+  })
+})
+
 describe('expandWord — 글롭', () => {
   it('따옴표 없는 패턴을 확장한다', async () => {
     expect(await expandWord(wordOf('*.txt'), ctx)).toEqual(['a.txt', 'b.txt'])
