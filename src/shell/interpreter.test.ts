@@ -373,6 +373,21 @@ describe('파라미터 확장 — 길이/기본값/대체 (task 3, docker debian
     expect(r.stdout).toBe('def\ndef\n')
   })
 
+  it('따옴표 없는 ${UNSET:-a b} 의 다중 단어 arg 가 확장 뒤 인자별로 분할된다 (docker: echo ${UNSET:-a b} → "a b")', async () => {
+    const r = await sh.exec('echo ${UNSET:-a b}')
+    expect(r.stdout).toBe('a b\n') // echo 가 두 인자 a, b 를 공백으로 이어 출력
+  })
+
+  it('for 루프에서도 다중 단어 arg 가 값별로 쪼개진다 (docker: for w in ${UNSET:-a b} → w=a / w=b)', async () => {
+    const r = await sh.exec('for w in ${UNSET:-a b}; do echo $w; done')
+    expect(r.stdout).toBe('a\nb\n')
+  })
+
+  it('큰따옴표로 감싸면 다중 단어 arg 는 한 인자로 남는다 (회귀, docker: echo "${UNSET:-a b}" → "a b")', async () => {
+    const r = await sh.exec('echo "${UNSET:-a b}"')
+    expect(r.stdout).toBe('a b\n')
+  })
+
   it('${UNSET:?boom} 은 ExecResult(비-0 exit + stderr)로 surface 된다 — exec 은 절대 reject/hang 하지 않는다 (trap 12 와 같은 계약)', async () => {
     const r = await sh.exec('echo ${UNSET:?boom}')
     expect(r.exitCode).toBe(1)

@@ -98,6 +98,38 @@ describe('tokenize', () => {
     expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '$(echo $(echo hi))' }])
   })
 
+  describe('${ ... } 파라미터 확장 원자 캡처 (task 3)', () => {
+    it('${x:-a b} 안의 공백은 통째로 한 raw 조각으로 삼킨다 (분할은 확장 후에)', () => {
+      const ts = tokenize('echo ${UNSET:-a b}')
+      expect(words(ts)).toHaveLength(2)
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '${UNSET:-a b}' }])
+    })
+
+    it('중첩 ${...} 의 안쪽 } 에서 조기 종료하지 않는다 (중괄호 깊이 카운트)', () => {
+      const ts = tokenize('echo ${UNSET:-${NAME}}')
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '${UNSET:-${NAME}}' }])
+    })
+
+    it('arg 안 따옴표 속 } 는 짝으로 세지 않는다 (따옴표 인식)', () => {
+      const ts = tokenize('echo ${UNSET:-"a}b"}')
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '${UNSET:-"a}b"}' }])
+    })
+
+    it('${#NAME} 길이형도 한 조각', () => {
+      const ts = tokenize('echo ${#NAME}')
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '${#NAME}' }])
+    })
+
+    it('닫히지 않은 ${ 는 던진다', () => {
+      expect(() => tokenize('echo ${UNSET')).toThrow(/unexpected EOF/)
+    })
+
+    it('$ 뒤에 { 가 아닌 것은 원자 캡처 대상이 아니다 (일반 $VAR 회귀)', () => {
+      const ts = tokenize('echo $HOME')
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: '$HOME' }])
+    })
+  })
+
   it('닫히지 않은 따옴표는 던진다', () => {
     expect(() => tokenize(`echo 'abc`)).toThrow(/unexpected EOF/)
   })

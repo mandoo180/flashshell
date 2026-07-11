@@ -56,8 +56,17 @@ describe('expandWord — 변수', () => {
     expect(await expandWord(wordOf('a$'), ctx)).toEqual(['a$'])
     expect(await expandWord(wordOf('a$!b'), ctx)).toEqual(['a$!b'])
   })
-  it('닫히지 않은 ${ 는 크래시 없이 리터럴로 남는다', async () => {
-    expect(await expandWord(wordOf('${NAME'), ctx)).toEqual(['${NAME'])
+  it('닫히지 않은 따옴표 없는 ${ 는 렉서가 던진다 (task 3: ${...} 원자 캡처 후, $( 와 같은 계약)', () => {
+    // wordOf 자체가 tokenize 에서 던진다 — 렉서가 ${...} 를 통째로 캡처하면서 짝이 없는
+    // }를 발견하면 $( 와 똑같이 unexpected EOF 로 막는다(실제 bash: `echo ${NAME` → exit 2
+    // "unexpected EOF while looking for matching `}'"). 인터프리터는 이 throw 를 exit 2
+    // 문법 오류 ExecResult 로 바꾼다(run()의 parse catch).
+    expect(() => wordOf('${NAME')).toThrow(/unexpected EOF/)
+  })
+  it('닫힌 따옴표 안의 짝 없는 ${ 는 expandDollar 가 리터럴로 남긴다 (findBraceClose 폴백 — 여전히 도달 가능)', async () => {
+    // "${NAME" 는 dquote 조각이 닫혀 있어(따옴표 균형) 렉서를 통과한다 — dquote 텍스트
+    // `${NAME` 를 expandDollar 가 처리하다 findBraceClose 가 -1 을 돌려주는 폴백 경로.
+    expect(await expandWord(wordOf('"${NAME"'), ctx)).toEqual(['${NAME'])
   })
 })
 
@@ -305,6 +314,18 @@ describe('expandWord — 파라미터 확장: 기본값/대체 (task 3, docker d
   })
   it('중첩 ${...} 도 arg 재확장으로 풀린다: ${UNSET:-${NAME}}', async () => {
     expect(await expandWord(wordOf('${UNSET:-${NAME}}'), ctx)).toEqual(['world'])
+  })
+
+  it('따옴표 없는 arg 안의 공백은 확장 뒤 단어분할된다: ${UNSET:-a b} → [a, b]', async () => {
+    // 렉서가 ${...} 를 원자적으로 캡처해야(공백을 안 흘려야) 여기까지 온전히 도달한다.
+    // 확장 결과 "a b" 는 unprotected 라 splitFields 가 나눈다 — $(echo a b) 와 같은 흐름.
+    expect(await expandWord(wordOf('${UNSET:-a b}'), ctx)).toEqual(['a', 'b'])
+  })
+  it('큰따옴표 안이면 arg 공백은 분할되지 않는다: "${UNSET:-a b}" → [a b] (회귀)', async () => {
+    expect(await expandWord(wordOf('"${UNSET:-a b}"'), ctx)).toEqual(['a b'])
+  })
+  it('중첩 arg 에 공백이 섞여도 온전히 처리: ${UNSET:-${NAME} x} → [world, x]', async () => {
+    expect(await expandWord(wordOf('${UNSET:-${NAME} x}'), ctx)).toEqual(['world', 'x'])
   })
 
   it('회귀: 연산자 없는 ${NAME} 은 그대로 동작', async () => {

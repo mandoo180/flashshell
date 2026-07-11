@@ -1,4 +1,4 @@
-import { matchSubstitutionEnd, matchDoubleParenEnd } from './subst'
+import { matchSubstitutionEnd, matchBraceEnd, matchDoubleParenEnd } from './subst'
 
 export type WordPart =
   | { kind: 'literal'; text: string } // 작은따옴표 안 / 이스케이프됨 → 확장 없음
@@ -148,6 +148,20 @@ export function tokenize(input: string): Token[] {
     // (unterminated 면 matchSubstitutionEnd가 던진다).
     if (ch === '$' && input[i + 1] === '(') {
       const j = matchSubstitutionEnd(input, i) + 1
+      push('raw', input.slice(i, j))
+      i = j
+      continue
+    }
+
+    // ${ ... } 파라미터 확장도 $( ... ) 처럼 통째로 한 raw 조각으로 삼킨다. 이 분기가
+    // 없으면 `${x:-a b}` 의 공백이 렉싱 단계에서 단어를 flush 해버려(→ `${x:-a`, `b}`
+    // 두 토큰) expand.ts 의 findBraceClose/expandBraceParam 이 온전한 `${...}` 를 보지
+    // 못하고 garbled 된다(따옴표 없는 다중 단어 arg 버그). 여기서 중괄호 깊이를 세어
+    // 짝 맞는 `}` 까지 한 조각으로 넘기면, 확장 결과("a b")를 splitFields 가 그 뒤에
+    // 나눠 준다 — `$(echo a b)` 가 이미 그렇게 동작하는 것과 동일한 흐름이다. 짝 찾기는
+    // subst.ts 와 공유한다(중첩 ${..} 와 따옴표 속 } 를 정확히 건너뛰고, 안 닫히면 던진다).
+    if (ch === '$' && input[i + 1] === '{') {
+      const j = matchBraceEnd(input, i) + 1
       push('raw', input.slice(i, j))
       i = j
       continue

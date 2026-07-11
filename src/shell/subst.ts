@@ -45,6 +45,50 @@ export function matchSubstitutionEnd(source: string, dollarIndex: number): numbe
 }
 
 /**
+ * `${ ... }` 파라미터 확장의 짝이 맞는 `}` 의 인덱스를 돌려준다. `dollarIndex` 는 `$` 의
+ * 인덱스이고 `source[dollarIndex+1] === '{'` 인 상태로 호출한다(호출부 책임 — lexer 의 `$`
+ * 분기가 `{` 를 보고 이 함수를 부른다). matchSubstitutionEnd 와 완전히 같은 구조지만 괄호
+ * `()` 대신 중괄호 `{}` 깊이를 센다:
+ *  - 중첩 `${x:-${y}}` 의 안쪽 `}` 에서 조기 종료하지 않는다(depth 카운트).
+ *  - arg 안 따옴표 속 `}` (`${x:-"a}b"}`)도 짝으로 세지 않는다('…'/"…"/백슬래시 건너뜀).
+ * 짝을 못 찾으면(중괄호/따옴표 안 닫힘) 던진다 — `$( )` 와 같은 계약이라 닫히지 않은 `${`
+ * 는 렉서 단계에서 `unexpected EOF` 로 막힌다.
+ */
+export function matchBraceEnd(source: string, dollarIndex: number): number {
+  let depth = 0
+  let j = dollarIndex + 1 // source[j] === '{' 인 채로 시작한다.
+  while (j < source.length) {
+    const c = source[j]!
+    if (c === '\\') {
+      j += 2
+      continue
+    }
+    if (c === "'") {
+      const end = source.indexOf("'", j + 1)
+      if (end === -1) break // 안 닫힘 → 아래에서 던진다.
+      j = end + 1
+      continue
+    }
+    if (c === '"') {
+      let k = j + 1
+      while (k < source.length && source[k] !== '"') {
+        k += source[k] === '\\' ? 2 : 1
+      }
+      if (k >= source.length) break // 안 닫힘 → 아래에서 던진다.
+      j = k + 1
+      continue
+    }
+    if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) return j
+    }
+    j++
+  }
+  throw new Error('unexpected EOF while looking for matching `}`')
+}
+
+/**
  * 단어 시작에서 만난 bare `((` (산술 명령 `(( expr ))`)의 짝이 맞는 `))` 뒤 인덱스를 돌려준다.
  * `source[i] === '(' && source[i+1] === '('` 인 상태로 호출한다(호출부 책임 — `$((`은 lexer의
  * `$` 분기가 먼저 가로채므로 여기 도달하지 않는다).
