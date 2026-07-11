@@ -39,10 +39,12 @@ interface RunCtx {
   loopDepth: number
   /**
    * 정의된 셸 함수(이름 → body ListNode). bash 에서 함수는 대체로 전역이라(정의 시점 이후
-   * 어디서나 보임, 함수 안에서 정의해도 바깥으로 남음 — docker 확인) 이 맵은 childCtx 를
-   * 거쳐도 **같은 참조를 공유**한다. 단순화: bash 는 `$( )` 서브셸 안에서 정의된 함수를
-   * 바깥으로 흘리지 않지만(subshell-local), 우리는 맵을 공유해 그 비-누수를 재현하지
-   * 않는다 — 필수 케이스에 영향이 없고 훨씬 단순하다(설계 메모 참고).
+   * 어디서나 보임 — docker 확인) 이 맵은 childCtx 를 거쳐도 기본적으로 **같은 참조를
+   * 공유**한다. 단, 서브셸 경계는 격리된다: `( list )` 와 `$( )` 명령치환은 둘 다 bash 에서
+   * 서브셸이라 그 안에서 정의된 함수가 바깥으로 새면 안 되므로(subshell-local, docker 확인),
+   * childCtx 를 `copyFunctions` 로 떠 부모 함수는 상속하되 내부 정의는 복사본에만 남긴다.
+   * 남은 단순화: 파이프라인 각 단계(bash 에서도 서브셸)는 아직 맵을 공유해 그 단계 안의
+   * 함수 정의는 바깥으로 샌다 — 필수 케이스에 영향이 없다.
    */
   functions: Map<string, ListNode>
   /**
@@ -72,8 +74,8 @@ function spend(ctx: RunCtx): void {
  * push/splice 로 부모 배열을 직접 건드릴 여지가 생기므로, 여기서 항상 새 배열을 만든다.
  *
  * @param opts.isolateFunctions true 면 함수맵도 **새 Map**(빈 상태)으로 뜬다. 기본값
- *   false(공유)는 명령치환/파이프라인용 — bash 함수는 그 안에서 대체로 전역이라 공유가
- *   맞다(위 `functions` 필드 주석 참고). shebang 스크립트(`./script.sh`)는 진짜 새
+ *   false(공유)는 파이프라인 각 단계용 — 아직 맵을 공유한다(위 `functions` 필드 주석의
+ *   남은 단순화 참고). 명령치환 `$( )` 은 copyFunctions 로 격리한다. shebang 스크립트(`./script.sh`)는 진짜 새
  *   프로세스라 다르다 — docker 확인: 호출자에서 정의한 함수는 스크립트 안에서 안 보이고
  *   (`outer(){ echo x; }; ./f1.sh` 안에서 `outer` 호출 → command not found), 스크립트
  *   안에서 정의한 함수도 실행이 끝나면 호출자로 안 샌다(`inscript(){...}` 를 정의·호출만
