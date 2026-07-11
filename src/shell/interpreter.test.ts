@@ -1460,6 +1460,126 @@ describe('source / . (task 8, docker debian:stable-slim bash 5 로 확인됨)', 
   })
 })
 
+describe('함수/source 호출의 리다이렉션·프리픽스·파이프 stdin (M3 Part 2 task 4, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('함수 body 의 stdout 이 > 파일로 리다이렉트되고 터미널로는 새지 않는다', async () => {
+    // docker: f() { echo body; }; f > out.txt; cat out.txt → body (터미널 무출력)
+    const r = await sh.exec('f() { echo body; }; f > out.txt')
+    expect(r.stdout).toBe('')
+    expect(fs.readFile('/home/player/out.txt')).toBe('body\n')
+  })
+
+  it('함수 리다이렉션 >> 는 이어붙인다', async () => {
+    // docker: f() { echo body; }; f > ap.txt; f >> ap.txt; cat ap.txt → body\nbody
+    await sh.exec('f() { echo body; }; f > ap.txt')
+    await sh.exec('f() { echo body; }; f >> ap.txt')
+    expect(fs.readFile('/home/player/ap.txt')).toBe('body\nbody\n')
+  })
+
+  it('함수 body 의 stderr 는 2> 로 잡히고 stdout 은 통과한다', async () => {
+    // docker: f() { cat nope.txt; }; f 2> err.txt; echo code=$? → code=1, err.txt 에 에러
+    const r = await sh.exec('f() { cat nope.txt; }; f 2> err.txt')
+    expect(r.stderr).toBe('')
+    expect(r.exitCode).toBe(1)
+    expect(fs.readFile('/home/player/err.txt')).toContain('No such file or directory')
+  })
+
+  it('프리픽스 대입이 함수 안에서 보인다 (VAR=x f → 안에서 $VAR===x)', async () => {
+    // docker: f() { echo v=$VAR; }; VAR=hey f → v=hey
+    expect((await sh.exec('f() { echo v=$VAR; }; VAR=hey f')).stdout).toBe('v=hey\n')
+  })
+
+  it('프리픽스 대입은 함수 호출 뒤 남지 않는다 (원래 unset 이면 unset 으로 복원)', async () => {
+    // docker: f() { echo in=$VAR; }; VAR=hey f; echo after=[$VAR] → in=hey\nafter=[]
+    const r = await sh.exec('f() { echo in=$VAR; }; VAR=hey f; echo "after=[$VAR]"')
+    expect(r.stdout).toBe('in=hey\nafter=[]\n')
+  })
+
+  it('프리픽스 대입은 기존 값을 덮지 않고 호출 뒤 원래 값으로 복원한다', async () => {
+    // docker: VAR=orig; f() { echo in=$VAR; }; VAR=hey f; echo after=[$VAR] → in=hey\nafter=[orig]
+    const r = await sh.exec('VAR=orig; f() { echo in=$VAR; }; VAR=hey f; echo "after=[$VAR]"')
+    expect(r.stdout).toBe('in=hey\nafter=[orig]\n')
+  })
+
+  it('함수가 프리픽스 키를 재대입해도 호출 뒤에는 복원된다 (bash 프리픽스 시맨틱)', async () => {
+    // docker: f() { VAR=changed; echo in=$VAR; }; VAR=hey f; echo after=[$VAR] → in=changed\nafter=[]
+    const r = await sh.exec('f() { VAR=changed; echo "in=$VAR"; }; VAR=hey f; echo "after=[$VAR]"')
+    expect(r.stdout).toBe('in=changed\nafter=[]\n')
+  })
+
+  it('함수가 프리픽스 아닌 변수를 설정하면 호출 뒤에도 남는다 (env 공유 — 회귀 방지)', async () => {
+    // docker: f() { y=set; }; VAR=hey f; echo [$y][$VAR] → [set][]
+    const r = await sh.exec('f() { y=set; }; VAR=hey f; echo "[$y][$VAR]"')
+    expect(r.stdout).toBe('[set][]\n')
+  })
+
+  it('파이프 stdin 이 함수 body 로 들어간다 (echo piped | f, f() { cat; })', async () => {
+    // docker: f() { cat; }; echo piped | f → piped
+    expect((await sh.exec('f() { cat; }; echo piped | f')).stdout).toBe('piped\n')
+  })
+
+  it('파이프 stdin 이 함수 body 의 grep 로 들어간다', async () => {
+    // docker: f() { grep foo; }; printf 'foo\nbar\n' | f → foo
+    fs.writeFile('/home/player/two.txt', 'foo\nbar\n')
+    expect((await sh.exec('f() { grep foo; }; cat two.txt | f')).stdout).toBe('foo\n')
+  })
+
+  it('< 파일 리다이렉션이 함수 body 의 stdin 이 된다', async () => {
+    // docker: f() { cat; }; f < a.txt → alpha
+    expect((await sh.exec('f() { cat; }; f < a.txt')).stdout).toBe('alpha\n')
+  })
+
+  it('프리픽스 + 리다이렉션 조합: VAR=z f > out.txt → 파일에 z', async () => {
+    // docker: f() { echo "$VAR"; }; VAR=z f > out.txt; cat out.txt → z
+    await sh.exec('f() { echo "$VAR"; }; VAR=z f > out.txt')
+    expect(fs.readFile('/home/player/out.txt')).toBe('z\n')
+  })
+
+  it('파이프 stdin + 출력 리다이렉션 조합: cat two.txt | f > p.txt', async () => {
+    // docker: printf 'L1\nL2\n' | f > p.txt (f() { cat; }) → p.txt = L1\nL2
+    fs.writeFile('/home/player/two.txt', 'L1\nL2\n')
+    await sh.exec('f() { cat; }; cat two.txt | f > p.txt')
+    expect(fs.readFile('/home/player/p.txt')).toBe('L1\nL2\n')
+  })
+
+  it('리다이렉트된 함수의 exit code 는 body 의 exit code 를 그대로 낸다', async () => {
+    // docker: f() { echo z; return 4; }; f > c.txt; echo code=$? → code=4, c.txt=z
+    const r = await sh.exec('f() { echo z; return 4; }; f > c.txt; echo "code=$?"')
+    expect(r.stdout).toBe('code=4\n')
+    expect(fs.readFile('/home/player/c.txt')).toBe('z\n')
+  })
+
+  it('함수 리다이렉션 대상이 ambiguous 면 함수를 돌리지 않고 exit 1', async () => {
+    // docker: f() { echo body; }; f > *.txt (a.txt/b.txt 매치) → ambiguous redirect, f 미실행
+    const r = await sh.exec('f() { echo body; }; f > *.txt')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toMatch(/ambiguous redirect/)
+    // 함수가 돌지 않았으니 a.txt/b.txt 는 그대로다
+    expect(fs.readFile('/home/player/a.txt')).toBe('alpha\n')
+  })
+
+  it('회귀: cd 하는 함수는 셸의 cwd 를 바꾼다 (프리픽스/리다이렉션 경로가 cwd 를 되돌리지 않는다)', async () => {
+    // docker: cd /tmp; f() { cd /; }; f; pwd → /
+    fs.mkdir('/home/player/sub')
+    await sh.exec('f() { cd sub; }; f')
+    expect(sh.cwd).toBe('/home/player/sub')
+  })
+
+  it('source 도 > 리다이렉션을 받는다', async () => {
+    // docker: echo 'echo sourced' > s.sh; source s.sh > out.txt; cat out.txt → sourced
+    fs.writeFile('/home/player/s.sh', 'echo sourced\n')
+    const r = await sh.exec('source s.sh > out.txt')
+    expect(r.stdout).toBe('')
+    expect(fs.readFile('/home/player/out.txt')).toBe('sourced\n')
+  })
+
+  it('source 도 프리픽스 대입을 받고 호출 뒤 복원한다', async () => {
+    // docker: printf 'echo insrc=$VAR\n' > s2.sh; VAR=hi source s2.sh; echo after=[$VAR] → insrc=hi\nafter=[]
+    fs.writeFile('/home/player/s2.sh', 'echo insrc=$VAR\n')
+    const r = await sh.exec('VAR=hi source s2.sh; echo "after=[$VAR]"')
+    expect(r.stdout).toBe('insrc=hi\nafter=[]\n')
+  })
+})
+
 describe('shebang 스크립트 실행 ./script.sh (task 9, docker debian:stable-slim bash 5 로 확인됨)', () => {
   it('exec 비트가 있으면 실행되고 인자가 $1..로 전달된다', async () => {
     // docker: printf "#!/bin/bash\necho deploying $1\n" > deploy.sh; chmod +x deploy.sh;

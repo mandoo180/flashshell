@@ -243,15 +243,20 @@ function runFuncDef(node: FunctionDefNode, ctx: RunCtx): ExecResult {
  * 없다(docker 확인): 호출자의 for 안에서 부른 함수의 bare `break` 는 loopDepth===0 을 봐
  * 경고+no-op 하고, 함수 자신의 루프 안 `break`/`break N` 은 0 부터 세므로 그 루프에만
  * 갇힌다. finally 에서 원래 값으로 복원한다.
+ *
+ * @param stdin 파이프/`< file` 에서 온 입력을 body 의 **첫 파이프라인 첫 단계**로 흘려보낸다
+ *   (runList 의 initialStdin — runSubshellCommand 와 같은 최소 스레딩). `echo x | f`(f 가
+ *   `cat`/`grep` 으로 stdin 을 읽음)이 동작하려면 필요하다(M3 Part 2 task 4). 본문 두 번째
+ *   아이템부터의 stdin 스레딩은 Part 3 범위 밖이다(runList 주석 참고).
  */
-async function callFunction(body: ListNode, argv: string[], ctx: RunCtx): Promise<ExecResult> {
+async function callFunction(body: ListNode, argv: string[], ctx: RunCtx, stdin = ''): Promise<ExecResult> {
   const savedPositional = ctx.positional
   const savedLoop = ctx.loopDepth
   ctx.positional = argv.slice(1)
   ctx.loopDepth = 0
   ctx.funcDepth++
   try {
-    return await runList(body, ctx)
+    return await runList(body, ctx, stdin)
   } catch (e) {
     if (e instanceof ReturnSignal) {
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code }
@@ -297,10 +302,16 @@ async function callFunction(body: ListNode, argv: string[], ctx: RunCtx): Promis
  * "line N:" 은 우리 엔진이 스크립트 줄번호를 추적하지 않아 생략한다 — 리다이렉션 open
  * 실패(`bash: ${word}: ${errnoText(e)}`)와 같은 기존 컨벤션과 일치시킨다).
  *
- * source 는 함수 호출과 같은 지점(리다이렉션/명령앞 대입 해석 전)에서 가로챈다 — `source
- * f > log`, `VAR=x source f` 는 지원하지 않는다(Task 7 의 함수 호출과 같은 단순화, 드묾).
+ * source 는 함수 호출과 같은 지점에서 디스패치되지만, 그 지점이 이제 **리다이렉션·명령앞
+ * 대입·stdin 해석 뒤**로 옮겨졌다(M3 Part 2 task 4) — 그래서 `source f > log`(출력 리다이렉션),
+ * `VAR=x source f`(프리픽스 대입), `data | source f`(파이프 stdin)가 함수 호출과 똑같이 동작한다.
+ * 프리픽스 대입은 호출부(runSimpleCommand)가 공유 env 에 save/restore 로 적용하므로(source 는
+ * env 를 공유한다) 여기서는 신경 쓰지 않는다.
+ *
+ * @param stdin 파이프/`< file` 입력을 파일의 **첫 파이프라인 첫 단계**로 흘려보낸다
+ *   (callFunction 과 같은 최소 스레딩).
  */
-async function runSource(argv: string[], ctx: RunCtx): Promise<ExecResult> {
+async function runSource(argv: string[], ctx: RunCtx, stdin = ''): Promise<ExecResult> {
   const label = argv[0]! // 'source' 또는 '.'
   const file = argv[1]
   if (file === undefined) {
@@ -331,7 +342,7 @@ async function runSource(argv: string[], ctx: RunCtx): Promise<ExecResult> {
   if (args.length > 0) ctx.positional = args
   ctx.funcDepth++
   try {
-    return await runList(ast, ctx)
+    return await runList(ast, ctx, stdin)
   } catch (e) {
     if (e instanceof ReturnSignal) {
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code }
@@ -340,6 +351,35 @@ async function runSource(argv: string[], ctx: RunCtx): Promise<ExecResult> {
   } finally {
     ctx.positional = savedPositional
     ctx.funcDepth--
+  }
+}
+
+/**
+ * 함수/source 호출에 명령앞 프리픽스 대입(`VAR=x f`)을 적용한다. 함수와 source 는 외부 명령과
+ * 달리 셸의 env 를 **공유**하므로(외부 명령처럼 섀도우 env 를 주고 copy-back 하는 방식이 아니다),
+ * 프리픽스 키를 실제 ctx.state.env 에 잠깐 얹어 body 가 보게 하고, 호출이 끝나면 원래 상태(있었으면
+ * 원래 값, 없었으면 unset)로 되돌린다. bash 확인(docker debian:stable-slim): `VAR=hey f` 뒤에는
+ * VAR 가 항상 원래대로 복원된다 — 함수가 내부에서 `VAR=changed` 로 재대입해도 마찬가지다
+ * (프리픽스 시맨틱: 그 호출 한정 임시 환경). 프리픽스가 아닌 다른 변수를 함수가 설정하면
+ * 그건 공유 env 라 그대로 남는다(save/restore 대상이 아니므로). cwd 도 body 가 직접 ctx.state.cwd
+ * 를 바꾸면 그대로 남는다(env 만 건드리므로).
+ */
+async function withPrefixEnv(
+  ctx: RunCtx,
+  prefix: { name: string; value: string }[],
+  run: () => Promise<ExecResult>,
+): Promise<ExecResult> {
+  if (prefix.length === 0) return run()
+  const env = ctx.state.env
+  const saved = prefix.map(({ name }) => ({ name, had: name in env, value: env[name] }))
+  for (const { name, value } of prefix) env[name] = value
+  try {
+    return await run()
+  } finally {
+    for (const { name, had, value } of saved) {
+      if (had) env[name] = value!
+      else delete env[name]
+    }
   }
 }
 
@@ -439,29 +479,25 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
     return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
   }
 
-  // 2.5 함수 호출 분기. lookupCommand(빌트인/coreutil)보다 **먼저** 본다 — bash 는 함수가
-  //     동명의 빌트인/coreutil 을 가린다(docker 확인: `ls() { echo faked; }; ls` → faked).
-  //     함수는 현재 ctx 에서(env 공유) 돌리고 positional 만 인자로 바꾼다. 리다이렉션/명령앞
-  //     대입은 함수 호출에는 적용하지 않는다(드묾, 이 태스크 범위 밖 — 설계 메모 참고).
-  {
-    const fnBody = ctx.functions.get(argv[0]!)
-    if (fnBody) return callFunction(fnBody, argv, ctx)
-  }
+  // 2.5 함수/source 호출을 **감지**한다(lookupCommand 보다 먼저 — bash 는 함수가 동명의
+  //     빌트인/coreutil 을 가린다, docker: `ls() { echo faked; }; ls` → faked). 예전에는 이
+  //     지점에서 곧바로 return 했지만(리다이렉션·프리픽스·stdin 해석 전이라 3갭이 생겼다),
+  //     이제는 감지만 하고 실제 실행은 아래(리다이렉션·프리픽스·stdin 해석 뒤)로 미룬다
+  //     (M3 Part 2 task 4). 그래야 `f > out`(출력 리다이렉션), `VAR=x f`(프리픽스 대입),
+  //     `data | f`(파이프 stdin)가 외부 명령과 **같은** 경로를 타 정확히 동작한다. source 는
+  //     함수보다 뒤에 봐서, 동명(`source`/`.`)의 함수를 정의했다면 함수가 먼저 채간다.
+  const fnBody = ctx.functions.get(argv[0]!)
+  const isSource = !fnBody && (argv[0] === 'source' || argv[0] === '.')
 
-  // 2.6 source / . 특수 처리 — 함수 호출과 같은 지점(리다이렉션/명령앞 대입 해석 전)에서
-  //     가로챈다(같은 단순화: `source f > log`, `VAR=x source f` 미지원). 함수-호출 분기
-  //     보다 뒤에 두어, 사용자가 동명(`source`/`.`)의 함수를 정의했다면 그쪽이 먼저
-  //     채간다(bash 와 일치 — 함수가 빌트인을 가린다).
-  if (argv[0] === 'source' || argv[0] === '.') {
-    return runSource(argv, ctx)
-  }
-
-  // 3. 명령 앞의 대입은 이 명령의 환경에만 적용되고 사라진다. (2번과 같은 이유로 단어분리·
-  //    글롭 없는 expandForCase 를 쓴다 — `IFS=: cmd` 처럼 값에 IFS 문자가 있어도 안 잘린다.)
-  const commandEnv = { ...ctx.state.env }
+  // 3. 명령 앞의 대입값을 한 번만 확장해 둔다(2번과 같은 이유로 단어분리·글롭 없는
+  //    expandForCase — `IFS=: cmd` 처럼 값에 IFS 문자가 있어도 안 잘린다). 외부 명령은 이
+  //    값들로 섀도우 commandEnv 를 만들어 명령에만 보이게 하고(끝나면 버림), 함수/source 는
+  //    env 를 공유하므로 아래 withPrefixEnv 로 공유 env 에 잠깐 얹었다 되돌린다.
+  let prefixAssignments: { name: string; value: string }[]
   try {
+    prefixAssignments = []
     for (const assignment of node.assignments) {
-      commandEnv[assignment.name] = await expandForCase(assignment.value, expandCtx)
+      prefixAssignments.push({ name: assignment.name, value: await expandForCase(assignment.value, expandCtx) })
     }
   } catch (e) {
     if (e instanceof ExecutionLimitError) throw e
@@ -534,70 +570,88 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
     }
   }
 
-  // 7. 명령을 찾는다. name 에 '/'가 있으면(`./script.sh`, `path/to/x`) — bash 가 슬래시
-  //    있는 이름은 PATH 를 안 보고 그 경로를 직접 exec 하듯 — lookupCommand 가 실패했을 때
-  //    VFS 파일 실행(execScriptFile, Task 9)을 시도한다. 우리는 PATH 개념이 없어(빌트인/
-  //    coreutil 표만 있음) 슬래시 없는 이름(`script.sh`, `./` 없이)은 그런 표에 없으면
-  //    여전히 command not found 로 남는다 — bash 도 PATH 에 '.' 이 없으면 동일(확인됨).
-  const name = argv[0]!
-  const fn = lookupCommand(name) ?? (name.includes('/') ? (e: CommandEnv) => execScriptFile(ctx, e) : undefined)
-  if (!fn) {
-    const message = isKnownUnimplemented(name)
-      ? `flashshell: ${name}: 이 환경에는 없는 명령입니다\n`
-      : `bash: ${name}: command not found\n`
-    return { stdout: '', stderr: message, exitCode: 127 }
-  }
-
-  // 8. 실행한다. 빌트인은 state 를 직접 고친다.
-  const cmdEnv: CommandEnv = {
-    name,
-    args: argv.slice(1),
-    stdin: input,
-    stdinFromFile: inputFromFile,
-    fs: ctx.fs,
-    state: { ...ctx.state, env: commandEnv } as ShellState,
-    // find -exec / xargs 가 다른 명령줄을 실행할 때 쓴다. 같은 ctx(fs/state/budget 공유) 위에서
-    // 파싱·실행하되, 서브셸(runSubshell)과 달리 cwd/env 를 격리하지 않는다 — find -exec 는
-    // 부모 셸 상태에서 돈다. 각 호출도 runCommand→spend(ctx) 를 타므로 무한루프 방어에 포함된다.
-    runLine: async (line: string): Promise<ExecResult> => {
-      try { return await runList(parse(line), ctx) }
-      catch (e) {
-        if (e instanceof ExecutionLimitError) throw e
-        // break/continue/return 은 이 하위 실행 경계 밖으로 새지 않는다 (no-op 취급).
-        if (e instanceof ControlSignal) return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
-        return { stdout: '', stderr: `bash: ${e instanceof Error ? e.message : String(e)}\n`, exitCode: 2 }
-      }
-    },
-    loopDepth: ctx.loopDepth,
-    funcDepth: ctx.funcDepth,
-  }
+  // 7~8. 결과 ExecResult(result)를 만든다 — 세 경로(함수 / source / 외부 명령·스크립트)가
+  //    여기서 갈리지만, 모두 위에서 해석한 stdin(input)·프리픽스·리다이렉션(redirs)을 공유하고
+  //    아래 9번(출력 리다이렉션)으로 result 를 **똑같이** 흘려보낸다(경로별로 리다이렉션
+  //    블록을 복제하지 않는다). 함수/source 는 셸 env·cwd 를 공유하므로 섀도우 env 가 아니라
+  //    withPrefixEnv 로 프리픽스만 잠깐 얹었다 되돌리고, input 을 body 첫 단계로 흘려보낸다.
   let result: ExecResult
-  try {
-    result = await fn(cmdEnv)
-  } catch (e) {
-    if (e instanceof ExecutionLimitError) throw e
-    // break/continue/return 신호는 얌전한 ExecResult 로 바꾸지 않고 그대로 위로 던져서
-    // 가장 가까운 경계(runWhile/runFor/callFunction)가 잡게 한다 (ExecutionLimitError 와
-    // 같은 특별 취급).
-    if (e instanceof ControlSignal) throw e
-    return { stdout: '', stderr: `${name}: ${errnoText(e)}\n`, exitCode: 1 }
-  }
 
-  // 빌트인이 바꾼 cwd/oldPwd 를 진짜 상태로 되돌려 받는다.
-  ctx.state.cwd = cmdEnv.state.cwd
-  ctx.state.oldPwd = cmdEnv.state.oldPwd
-  // 명령 앞 대입으로 오염된 키는 셸 상태에 절대 손대지 않는다 — 복사도, 삭제도 하지
-  // 않는다. 그래야 그 키가 명령 도중 어떻게 되었든(그대로, 값이 바뀜, 심지어 unset
-  // 으로 지워짐) 명령이 끝나면 원래 있던 값(혹은 원래 없었음)으로 조용히 남는다.
-  // docker로 확인: FOO=x; FOO=y unset FOO; echo $FOO → x (프리픽스 대입은 명령의
-  // 섀도우 환경일 뿐이고, 명령이 끝나면 그 섀도우를 통째로 버린다).
-  const isTemporary = (key: string) => node.assignments.some((a) => a.name === key)
-  for (const [key, value] of Object.entries(cmdEnv.state.env)) {
-    if (!isTemporary(key)) ctx.state.env[key] = value
-  }
-  for (const key of Object.keys(ctx.state.env)) {
-    if (isTemporary(key)) continue
-    if (!(key in cmdEnv.state.env)) delete ctx.state.env[key]
+  if (fnBody) {
+    // 함수: env/cwd 공유. body 안의 대입/`cd` 는 그대로 남고(회귀 방지), 프리픽스 키만
+    // withPrefixEnv 가 호출 전후로 save/restore 한다(docker: `VAR=hey f` 뒤 VAR 는 복원).
+    result = await withPrefixEnv(ctx, prefixAssignments, () => callFunction(fnBody, argv, ctx, input))
+  } else if (isSource) {
+    // source: 함수와 같은 env-공유 프리픽스 처리. 출력/ stdin 리다이렉션은 아래 9번/ input 이 담당.
+    result = await withPrefixEnv(ctx, prefixAssignments, () => runSource(argv, ctx, input))
+  } else {
+    // 외부 명령/스크립트: 프리픽스는 섀도우 commandEnv 에만 얹고(끝나면 버림), trap-1 로
+    // 비프리픽스 키만 실제 셸 env 로 copy-back 한다.
+    const commandEnv = { ...ctx.state.env }
+    for (const { name, value } of prefixAssignments) commandEnv[name] = value
+
+    // 명령을 찾는다. name 에 '/'가 있으면(`./script.sh`, `path/to/x`) — bash 가 슬래시 있는
+    // 이름은 PATH 를 안 보고 그 경로를 직접 exec 하듯 — lookupCommand 실패 시 VFS 파일 실행
+    // (execScriptFile, Task 9)을 시도한다. 슬래시 없는 미등록 이름은 command not found.
+    const name = argv[0]!
+    const fn = lookupCommand(name) ?? (name.includes('/') ? (e: CommandEnv) => execScriptFile(ctx, e) : undefined)
+    if (!fn) {
+      const message = isKnownUnimplemented(name)
+        ? `flashshell: ${name}: 이 환경에는 없는 명령입니다\n`
+        : `bash: ${name}: command not found\n`
+      return { stdout: '', stderr: message, exitCode: 127 }
+    }
+
+    // 실행한다. 빌트인은 state 를 직접 고친다.
+    const cmdEnv: CommandEnv = {
+      name,
+      args: argv.slice(1),
+      stdin: input,
+      stdinFromFile: inputFromFile,
+      fs: ctx.fs,
+      state: { ...ctx.state, env: commandEnv } as ShellState,
+      // find -exec / xargs 가 다른 명령줄을 실행할 때 쓴다. 같은 ctx(fs/state/budget 공유) 위에서
+      // 파싱·실행하되, 서브셸(runSubshell)과 달리 cwd/env 를 격리하지 않는다 — find -exec 는
+      // 부모 셸 상태에서 돈다. 각 호출도 runCommand→spend(ctx) 를 타므로 무한루프 방어에 포함된다.
+      runLine: async (line: string): Promise<ExecResult> => {
+        try { return await runList(parse(line), ctx) }
+        catch (e) {
+          if (e instanceof ExecutionLimitError) throw e
+          // break/continue/return 은 이 하위 실행 경계 밖으로 새지 않는다 (no-op 취급).
+          if (e instanceof ControlSignal) return { stdout: e.stdout, stderr: e.stderr, exitCode: 0 }
+          return { stdout: '', stderr: `bash: ${e instanceof Error ? e.message : String(e)}\n`, exitCode: 2 }
+        }
+      },
+      loopDepth: ctx.loopDepth,
+      funcDepth: ctx.funcDepth,
+    }
+    try {
+      result = await fn(cmdEnv)
+    } catch (e) {
+      if (e instanceof ExecutionLimitError) throw e
+      // break/continue/return 신호는 얌전한 ExecResult 로 바꾸지 않고 그대로 위로 던져서
+      // 가장 가까운 경계(runWhile/runFor/callFunction)가 잡게 한다 (ExecutionLimitError 와
+      // 같은 특별 취급).
+      if (e instanceof ControlSignal) throw e
+      return { stdout: '', stderr: `${name}: ${errnoText(e)}\n`, exitCode: 1 }
+    }
+
+    // 빌트인이 바꾼 cwd/oldPwd 를 진짜 상태로 되돌려 받는다.
+    ctx.state.cwd = cmdEnv.state.cwd
+    ctx.state.oldPwd = cmdEnv.state.oldPwd
+    // 명령 앞 대입으로 오염된 키는 셸 상태에 절대 손대지 않는다 — 복사도, 삭제도 하지
+    // 않는다. 그래야 그 키가 명령 도중 어떻게 되었든(그대로, 값이 바뀜, 심지어 unset
+    // 으로 지워짐) 명령이 끝나면 원래 있던 값(혹은 원래 없었음)으로 조용히 남는다.
+    // docker로 확인: FOO=x; FOO=y unset FOO; echo $FOO → x (프리픽스 대입은 명령의
+    // 섀도우 환경일 뿐이고, 명령이 끝나면 그 섀도우를 통째로 버린다).
+    const isTemporary = (key: string) => node.assignments.some((a) => a.name === key)
+    for (const [key, value] of Object.entries(cmdEnv.state.env)) {
+      if (!isTemporary(key)) ctx.state.env[key] = value
+    }
+    for (const key of Object.keys(ctx.state.env)) {
+      if (isTemporary(key)) continue
+      if (!(key in cmdEnv.state.env)) delete ctx.state.env[key]
+    }
   }
 
   // 9. 출력 리다이렉션을 적용한다. 같은 fd 로 두 번 이상 리다이렉션됐다면 실제 내용은
