@@ -23,6 +23,7 @@ export function createShell(opts: CreateShellOptions = {}): Shell {
     env: { HOME: home, PWD: cwd, USER: 'player', SHELL: '/bin/bash', ...opts.env },
     lastExitCode: 0,
     home,
+    functions: new Map(),
   }
 
   return {

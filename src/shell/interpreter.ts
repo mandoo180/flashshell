@@ -798,7 +798,10 @@ export async function run(
 ): Promise<ExecResult> {
   const ctx: RunCtx = {
     fs, state, budget: { remaining: stepBudget }, positional,
-    loopDepth: 0, functions: new Map(), funcDepth: 0,
+    // state.functions 를 참조로 그대로 쓴다(새 Map 이 아님) — createShell 이 만든 state 는
+    // exec() 호출을 넘어 살아남으므로, 이렇게 하면 함수 정의가 다음 exec() 에서도 보인다
+    // (Task 11b: REPL 한 줄 = exec() 한 번인데, 실제 bash 는 함수가 셸 수명 동안 남는다).
+    loopDepth: 0, functions: state.functions, funcDepth: 0,
   }
   let ast: ListNode
   try {

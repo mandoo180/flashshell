@@ -1,14 +1,25 @@
 import type { VFS } from './vfs'
+import type { ListNode } from './parser'
 
 export interface ExecResult { stdout: string; stderr: string; exitCode: number }
 
-/** 셸의 변경 가능한 상태. 빌트인은 이것을 직접 고친다. */
+/**
+ * 셸의 변경 가능한 상태. 빌트인은 이것을 직접 고친다.
+ *
+ * `functions`: 정의된 셸 함수(이름 → body). bash 에서 함수는 프로세스(셸) 수명 동안
+ * 남는다 — REPL 에서 한 줄에 정의하고 다음 줄에서 호출해도 살아있다(docker 확인).
+ * 게임의 인터랙티브 REPL 은 Enter 한 번 = `Shell.exec()` 한 번이라, env/cwd 처럼
+ * ShellState(= createShell 클로저의 영구 state)에 둬야 exec 호출을 넘어 함수가
+ * 살아남는다. run() 은 매 호출마다 RunCtx 를 새로 만들지만, RunCtx.functions 는
+ * (isolateFunctions 가 아닌 한) 이 state.functions 와 같은 Map 참조를 공유한다.
+ */
 export interface ShellState {
   cwd: string
   oldPwd: string
   env: Record<string, string>
   lastExitCode: number
   readonly home: string
+  functions: Map<string, ListNode>
 }
 
 export interface CommandEnv {
