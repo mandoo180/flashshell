@@ -1208,14 +1208,102 @@ describe('함수 / 브레이스 그룹 / return (task 7, docker debian:stable-sl
 
 // 선행 subshell `( )` 는 Task 3(SubshellNode) 범위 — 여기서는 토큰화만 하고 파서 규칙이 없어
 // 얌전한 문법 오류로 끝난다(exec 는 절대 크래시하지 않는다). 기존에도 동작하지 않던 형태다.
-describe('선행 subshell ( ) 는 아직 미지원이지만 크래시하지 않는다 (task 2 범위, Task 3 예정)', () => {
-  it('( echo sub ) 는 얌전한 문법 오류(nonzero)로 끝나고 exec 를 리젝트하지 않는다', async () => {
+describe('( list ) 서브셸: 격리된 childCtx (task 3, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('기본: LIST 를 순서대로 실행하고 출력을 그대로 낸다', async () => {
+    // docker: ( echo a; echo b ) → a\nb
+    expect((await sh.exec('( echo a; echo b )')).stdout).toBe('a\nb\n')
+  })
+
+  it('cwd 는 격리된다 — 서브셸 안의 cd 는 밖으로 안 샌다', async () => {
+    // docker: cd /tmp; (cd /; echo $PWD); echo $PWD → 안 `/`, 밖 `/tmp`
     const sh2 = createShell({ fs, cwd: '/home/player', home: '/home/player' })
-    const r = await sh2.exec('( echo sub )')
+    const r = await sh2.exec('(cd /; echo $PWD); echo $PWD')
+    expect(r.stdout).toBe('/\n/home/player\n')
+  })
+
+  it('env 는 격리된다 — 서브셸 안의 대입은 밖으로 안 샌다', async () => {
+    // docker: (x=5); echo "[$x]" → []
+    const r = await sh.exec('(x=5); echo "[$x]"')
+    expect(r.stdout).toBe('[]\n')
+  })
+
+  it('fs 는 공유된다 — 서브셸 안의 파일시스템 변경은 부작용으로 남는다', async () => {
+    // docker: (mkdir sub); ls → sub 가 존재
+    const r = await sh.exec('(mkdir sub); ls')
+    expect(r.stdout).toContain('sub')
+    expect(fs.exists(fs.resolve('sub', '/home/player'))).toBe(true)
+  })
+
+  it('exit code 는 서브셸의 마지막 명령 것을 그대로 전파한다', async () => {
+    // docker: (false); echo $? → 1 / (true); echo $? → 0
+    expect((await sh.exec('(false); echo $?')).stdout).toBe('1\n')
+    expect((await sh.exec('(true); echo $?')).stdout).toBe('0\n')
+  })
+
+  it('exit code 전파 + 서브셸 출력이 함께 보존된다', async () => {
+    // docker: (echo a; false); echo $? → a\n1
+    const r = await sh.exec('(echo a; false); echo $?')
+    expect(r.stdout).toBe('a\n1\n')
+  })
+
+  it('함수 정의는 서브셸 안에서 부모 함수를 상속하되, 서브셸 안 정의는 밖으로 안 샌다', async () => {
+    // docker: f(){ echo hi; }; ( f; g(){ echo g; }; g ); g
+    //   → hi \n g \n bash: line 16: g: command not found (마지막 g 는 command not found)
+    const r = await sh.exec('f(){ echo hi; }; ( f; g(){ echo g; }; g ); g')
+    expect(r.stdout).toBe('hi\ng\n')
+    expect(r.exitCode).toBe(127)
+    expect(r.stderr).toContain('g: command not found')
+  })
+
+  it('중첩 서브셸: ( ( echo x ) ) 는 그대로 x 를 낸다', async () => {
+    // docker: ( ( echo x ) ) → x
+    expect((await sh.exec('( ( echo x ) )')).stdout).toBe('x\n')
+  })
+
+  it('중첩 서브셸 + 순차 명령: ( echo a; ( echo b ) ) → a\\nb', async () => {
+    // docker: ( echo a; ( echo b ) ) → a\nb
+    expect((await sh.exec('( echo a; ( echo b ) )')).stdout).toBe('a\nb\n')
+  })
+
+  it('예산은 공유된다 — 서브셸 안의 무한루프도 공유 예산에 걸려 종료한다(hang/crash 아님)', async () => {
+    // docker 로는 확인 불가(무한 루프라 절대 안 끝남) — 엔진의 무한루프 방어(step budget)가
+    // 서브셸 경계를 넘어 계속 같은 카운터를 깎는지가 이 테스트의 요점이다. childCtx 가
+    // budget 객체(참조)를 그대로 공유하므로(fs 와 같은 원리), 서브셸 안 while 의 매 반복
+    // spend(ctx) 가 부모/자식 구분 없이 같은 remaining 을 소진시킨다.
+    const tiny = createShell({ fs, cwd: '/home/player', home: '/home/player', stepBudget: 50 })
+    const r = await tiny.exec('( while true; do :; done )')
+    expect(r.exitCode).toBe(130)
+    expect(r.stderr).toContain('실행 한도 초과')
+  })
+
+  it('파이프: echo hi | (cat) — 서브셸이 파이프라인의 stdin 을 받는다', async () => {
+    // docker: echo hi | (cat) → hi
+    expect((await sh.exec('echo hi | (cat)')).stdout).toBe('hi\n')
+  })
+
+  it('파이프: 여러 줄 stdin 도 서브셸 첫 명령으로 그대로 전달된다', async () => {
+    // docker: printf 'a\nb\n' | (cat) → a\nb (printf 빌트인이 이 엔진엔 없어 echo -e 로
+    // 같은 다줄 stdin 을 재현한다 — echo -e 는 이미 구현돼 있다, builtins/echo.ts)
+    expect((await sh.exec('echo -e "a\\nb" | (cat)')).stdout).toBe('a\nb\n')
+  })
+
+  it('닫는 )가 없는 미완성 서브셸은 얌전한 문법 오류(nonzero)로 끝나고 exec 를 리젝트하지 않는다', async () => {
+    const sh2 = createShell({ fs, cwd: '/home/player', home: '/home/player' })
+    const r = await sh2.exec('( echo sub')
     expect(r.exitCode).not.toBe(0)
     expect(r.stderr).toMatch(/syntax error/)
   })
 
+  it('exit 빌트인이 없어 (exit 3) 은 command not found — 서브셸 자체의 결함이 아니다', async () => {
+    // 이 엔진엔 exit 빌트인이 없다(브리프 note). (exit 3) 은 "exit" 를 명령으로 찾다가
+    // 실패해 127 이 된다 — 서브셸의 exit-code 전파 자체는 위 false/true 테스트로 이미
+    // 검증했다(핵심 시맨틱), 이건 그 사실을 명시적으로 남겨두는 문서화용 테스트다.
+    const r = await sh.exec('(exit 3); echo $?')
+    expect(r.stdout).toBe('127\n')
+  })
+})
+
+describe('함수 재정의 / break·continue 함수 경계 / 무한재귀 방어 (task 2/7 정리, docker 로 확인됨)', () => {
   it('무한 재귀 함수는 스텝 예산을 소진해 exit 130 이지, JS 크래시가 아니다', async () => {
     const tiny = createShell({ fs, cwd: '/home/player', home: '/home/player', stepBudget: 5000 })
     const r = await tiny.exec('f() { f; }; f')

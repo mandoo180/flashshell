@@ -67,11 +67,29 @@ export interface FunctionDefNode {
 
 /**
  * `{ LIST; }` 브레이스 그룹. 서브셸이 아니라 **현재 ctx** 에서 LIST 를 실행한다(env/cwd
- * 변경이 그대로 남는다 — docker 확인: `{ x=7; }; echo $x` → 7). `( )` 서브셸 그룹은 3층
- * 이라 이 태스크 범위 밖이다.
+ * 변경이 그대로 남는다 — docker 확인: `{ x=7; }; echo $x` → 7). `( )` 서브셸(아래
+ * SubshellNode)은 파싱 구조는 같지만 실행 시 격리된 childCtx 를 쓴다는 점만 다르다.
  */
 export interface GroupNode {
   kind: 'group'
+  body: ListNode
+}
+
+/**
+ * `( LIST )` 서브셸. GroupNode 와 파싱 구조는 동일(내부에 LIST 하나)하지만, 실행 시
+ * **격리된 childCtx** 에서 LIST 를 돈다 — env/cwd 변경은 밖으로 안 새고(docker 확인:
+ * `cd /tmp; (cd /; echo $PWD); echo $PWD` → 안 `/`, 밖 `/tmp`), fs 와 budget 은 부모와
+ * 공유한다(파일시스템 변경은 실제 부작용이고, 스텝 예산은 무한루프 방어라 서브셸이라고
+ * 새로 채워지면 안 된다 — `( while true; do :; done )` 도 공유 예산에 걸려 종료해야 한다).
+ *
+ * 함수 정의도 격리 대상이다: 서브셸은 부모의 함수를 전부 **상속**해서 보되(공유 참조가
+ * 아니라 시작 시점의 스냅샷), 서브셸 안에서 정의한 함수는 밖으로 안 샌다 — docker 확인:
+ * `f(){ echo hi; }; ( f; g(){ echo g; }; g ); g` → hi, g, 그리고 마지막 `g` 는
+ * command not found(안 샘). interpreter 의 childCtx 에 `copyFunctions` 옵션을 추가해
+ * 처리한다(공유 참조도, isolateFunctions 의 새 빈 Map 도 아닌 **복사본**).
+ */
+export interface SubshellNode {
+  kind: 'subshell'
   body: ListNode
 }
 
@@ -90,7 +108,16 @@ export interface ArithCmdNode {
  * 파이프라인의 한 단계가 될 수 있는 명령. 단순 명령 + 복합 명령의 유니온이다.
  * `kind` 로 판별한다.
  */
-export type Command = CommandNode | IfNode | WhileNode | ForNode | CaseNode | FunctionDefNode | GroupNode | ArithCmdNode
+export type Command =
+  | CommandNode
+  | IfNode
+  | WhileNode
+  | ForNode
+  | CaseNode
+  | FunctionDefNode
+  | GroupNode
+  | ArithCmdNode
+  | SubshellNode
 
 export interface PipelineNode { kind: 'pipeline'; commands: Command[] }
 
@@ -260,9 +287,12 @@ class Parser {
     // 리스트/파이프라인 연결자로 시작하는 건 항상 문법 오류다 (`; ls`, `&& ls`, `| ls`).
     // 리다이렉션 연산자(`>`, `2>`, ...)로 시작하는 건 괜찮다 — bash 는 `> out` 처럼
     // 명령 없는 리다이렉션 단독도 유효한 단순 명령으로 받아들인다 (exit 0, 파일만 생성).
+    // `(` 로 시작하는 것도 괜찮다(task 3) — 서브셸(`( list )`)이 정당한 명령 위치의
+    // 시작이다(parseCommandOrCompound 가 라우팅한다). `)` 는 여전히 여기서 걸러진다 —
+    // 짝이 맞지 않는 `)` 로 리스트가 시작하는 건 어떤 문맥에서도 문법 오류다.
     // 그 구분을 parseCommand 에 맡기지 않고 여기서 하는 이유는, 안 그러면
     // parseCommand 가 "빈 명령" 에러를 내면서 사용자에게 엉뚱한 위치를 알려주기 때문이다.
-    if (first.type === 'OP' && !REDIR_OPS.includes(first.value)) syntaxError(first.value)
+    if (first.type === 'OP' && first.value !== '(' && !REDIR_OPS.includes(first.value)) syntaxError(first.value)
 
     items.push({ op: null, pipeline: this.parsePipeline() })
 
@@ -281,11 +311,13 @@ class Parser {
       items.push({ op, pipeline: this.parsePipeline() })
     }
 
-    if (!stops || stops.size === 0) {
+    if ((!stops || stops.size === 0) && stopOps.length === 0) {
       // top-level 리스트는 반드시 EOF 까지 소비해야 한다.
       if (this.peek().type !== 'EOF') syntaxError('unexpected token')
     } else if (!atStop()) {
-      // 하위 리스트는 반드시 자신의 종료 예약어에서 끝나야 한다 (fi/done 전에 EOF 면 미완성).
+      // 하위 리스트는 반드시 자신의 종료 예약어/종료 연산자에서 끝나야 한다 (fi/done/`)`
+      // 전에 EOF 면 미완성). stopOps 는 stopWords 없이 단독으로도 쓰인다 — 서브셸
+      // (`parseSubshell`)이 종료 예약어 없이 오직 `)` 하나로만 본문을 끊는 경우가 그렇다.
       syntaxError(this.peek().type === 'EOF' ? 'unexpected EOF' : 'unexpected token')
     }
     return { kind: 'list', items }
@@ -311,8 +343,15 @@ class Parser {
    * 겹치지 않는다 — `((`로 시작하는 예약어가 없다) 안전하고, 함수정의 판정(matchFuncDefName)
    * 보다 먼저 봐야 `((1))`처럼 함수이름 정규식에 안 걸리는 텍스트가 엉뚱하게 단순 명령으로
    * 새지 않는다.
+   *
+   * 명령 위치의 단일 `(` (task 3, 서브셸)도 arithExpr/keyword/funcdef 판정과 겹치지 않아
+   * 안전하게 가장 먼저 본다 — `(`는 OP 토큰이라 WORD 기반인 peekArithExpr/peekKeyword/
+   * matchFuncDefName(rawAt(0)) 어느 것도 이 토큰에 매치되지 않는다(전부 null 을 준다).
+   * `(( expr ))`는 렉서가 이미 한 WORD 로 통째로 삼키므로 여기 도달하지 않는다 — 도달하는
+   * `(`는 항상 진짜 단일 여는 괄호(서브셸 시작 또는 중첩 서브셸의 바깥 `(`)다.
    */
   private parseCommandOrCompound(): Command {
+    if (this.atOp('(')) return this.parseSubshell()
     const arithExpr = this.peekArithExpr()
     if (arithExpr !== null) {
       this.next()
@@ -406,6 +445,33 @@ class Parser {
 
   private parseGroup(): GroupNode {
     return { kind: 'group', body: this.parseBraceGroupList() }
+  }
+
+  /**
+   * `( LIST )` 서브셸(task 3). parseBraceGroupList(`{ }`)와 구조가 같다 — 여는 토큰을
+   * 소비하고, 선행 개행-유래 `;`를 skipSeparators() 로 걷어낸 뒤, 본문을 parseList 로
+   * 읽고, 닫는 토큰을 소비한다. `{ }`와 다른 점은 딱 하나: 종료를 종료 *예약어*(`}`)가
+   * 아니라 종료 *연산자*(`)`, task 2 에서 렉서가 이미 OP 토큰으로 만들어둔 메타문자)로
+   * 본다는 것 — 그래서 stopWords 없이 stopOps=[')'] 만 parseList 에 넘긴다(위 parseList
+   * 끝의 stopOps-단독 분기가 이 호출을 지원하도록 손봤다). 닫는 `)`가 없으면(EOF 까지
+   * 감) parseList 가 이미 "unexpected EOF" 문법 오류를 낸다 — 여기서 별도 처리가 필요
+   * 없다.
+   */
+  private parseSubshell(): SubshellNode {
+    this.next() // '(' 소비
+    this.skipSeparators()
+    const body = this.parseList(undefined, [')'])
+    this.expectOp(')')
+    return { kind: 'subshell', body }
+  }
+
+  /** 다음 토큰이 정확히 이 연산자이길 요구하고 소비한다. 아니면 문법 오류. */
+  private expectOp(op: Operator): void {
+    if (!this.atOp(op)) {
+      const t = this.peek()
+      syntaxError(t.type === 'EOF' ? op : t.type === 'OP' ? t.value : (this.peekKeyword() ?? 'unexpected token'))
+    }
+    this.next()
   }
 
   private parseIf(): IfNode {

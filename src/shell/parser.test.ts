@@ -617,3 +617,65 @@ describe('(( expr )) 산술 명령 (task 2)', () => {
     expect(() => parse('(( 1 + 2')).toThrow(/unexpected EOF/)
   })
 })
+
+describe('( LIST ) 서브셸 (task 3)', () => {
+  function firstCompound(input: string) {
+    return parse(input).items[0]!.pipeline.commands[0]!
+  }
+
+  it('( LIST ) 를 subshell 노드로 파싱한다', () => {
+    const c = firstCompound('( echo a; echo b )')
+    expect(c.kind).toBe('subshell')
+    if (c.kind !== 'subshell') throw new Error('not subshell')
+    expect(c.body.items).toHaveLength(2)
+    expect(c.body.items[0]!.pipeline.commands[0]!.kind).toBe('command')
+  })
+
+  it('단일 명령 서브셸', () => {
+    const c = firstCompound('( echo sub )')
+    expect(c.kind).toBe('subshell')
+    if (c.kind !== 'subshell') throw new Error('not subshell')
+    expect(c.body.items).toHaveLength(1)
+  })
+
+  it('중첩 서브셸: ( ( echo x ) ) 는 subshell 안에 subshell 이다', () => {
+    const c = firstCompound('( ( echo x ) )')
+    expect(c.kind).toBe('subshell')
+    if (c.kind !== 'subshell') throw new Error('not subshell')
+    expect(c.body.items).toHaveLength(1)
+    const inner = c.body.items[0]!.pipeline.commands[0]!
+    expect(inner.kind).toBe('subshell')
+  })
+
+  it('닫는 )가 없으면 문법 오류다', () => {
+    expect(() => parse('( echo a')).toThrow(/syntax error/)
+  })
+
+  it('빈 여는 (뒤 명령 없이 바로 문법 오류가 아니라 닫는 )가 있으면 빈 리스트를 허용한다', () => {
+    // 참고: 실제 bash 는 `( )`(빈 본문)을 문법 오류로 거부한다(compound_list 는 항상
+    // ≥1 항목 필요) — docker 확인. 우리 엔진은 기존 GroupNode(`{ }`)도 이미 같은 관용을
+    // 베풀고 있어(빈 리스트 허용, 문법 오류 아님), SubshellNode 도 그 기존 관용과 일관되게
+    // 맞춘다(신규 회귀 아님 — 이 태스크 이전부터 있던 설계 선택).
+    const c = firstCompound('( )')
+    expect(c.kind).toBe('subshell')
+    if (c.kind !== 'subshell') throw new Error('not subshell')
+    expect(c.body.items).toHaveLength(0)
+  })
+
+  it('subshell 도 파이프라인/리스트에 참여한다', () => {
+    const ast = parse('( echo a ) | cat')
+    expect(ast.items[0]!.pipeline.commands).toHaveLength(2)
+    expect(ast.items[0]!.pipeline.commands[0]!.kind).toBe('subshell')
+  })
+
+  it('subshell 뒤 && 로 다음 명령과 합성된다', () => {
+    const ast = parse('( true ) && echo yes')
+    expect(ast.items).toHaveLength(2)
+    expect(ast.items[0]!.pipeline.commands[0]!.kind).toBe('subshell')
+    expect(ast.items[1]!.op).toBe('&&')
+  })
+
+  it('멀티라인 서브셸(개행이 ; 로 접힘)', () => {
+    expect(parse('(\n  echo one\n  echo two\n)')).toEqual(parse('( echo one; echo two; )'))
+  })
+})

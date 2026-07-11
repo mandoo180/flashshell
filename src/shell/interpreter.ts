@@ -1,6 +1,6 @@
 import { VFS } from './vfs'
 import { ExecutionLimitError, ControlSignal, LoopSignal, BreakSignal, ReturnSignal, errnoText } from './errors'
-import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ArithCmdNode, type ListNode, type PipelineNode } from './parser'
+import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ArithCmdNode, type SubshellNode, type ListNode, type PipelineNode } from './parser'
 import { expandWord, expandToSingle, expandForCase, expandArithExpr, type ExpandCtx } from './expand'
 import { matchSegment } from './glob'
 import { lookupCommand, isKnownUnimplemented } from './registry'
@@ -79,8 +79,17 @@ function spend(ctx: RunCtx): void {
  *   안에서 정의한 함수도 실행이 끝나면 호출자로 안 샌다(`inscript(){...}` 를 정의·호출만
  *   하는 스크립트를 돌린 뒤 밖에서 `inscript` 호출 → command not found). 그래서
  *   execScriptFile 만 `isolateFunctions: true` 를 넘긴다.
+ * @param opts.copyFunctions true 면 함수맵을 부모 맵의 **복사본**(`new Map(ctx.functions)`)
+ *   으로 뜬다 — isolateFunctions(새 빈 Map, 양방향 격리)와도 기본값(같은 참조 공유, 양방향
+ *   투과)과도 다른 세 번째 모드다. `( list )` 서브셸(task 3)이 필요로 하는 정확히 그
+ *   반쪽짜리 격리: 시작 시점에 부모의 함수를 전부 상속해서 보되(스냅샷), 복사본이라
+ *   서브셸 안에서의 등록/재정의(`ctx.functions.set`)는 이 복사본에만 반영되고 부모의
+ *   원본 Map 은 안 건드린다 — docker 확인(SubshellNode 주석 참고): `f(){ echo hi; };
+ *   ( f; g(){ echo g; }; g ); g` → hi, g, 마지막 `g` 는 command not found(안 샘).
+ *   isolateFunctions 와 동시에 true 면 isolateFunctions 가 우선한다(새 빈 Map) — 실제로
+ *   두 옵션을 함께 넘기는 호출부는 없다.
  */
-function childCtx(ctx: RunCtx, opts: { isolateFunctions?: boolean } = {}): RunCtx {
+function childCtx(ctx: RunCtx, opts: { isolateFunctions?: boolean; copyFunctions?: boolean } = {}): RunCtx {
   return {
     fs: ctx.fs,
     state: { ...ctx.state, env: { ...ctx.state.env } },
@@ -91,8 +100,9 @@ function childCtx(ctx: RunCtx, opts: { isolateFunctions?: boolean } = {}): RunCt
     // 루프 깊이를 0으로 리셋한다. 그러면 그 break 는 "루프 밖"으로 취급돼 경고 후 무시된다.
     loopDepth: 0,
     // 함수 맵은 기본적으로 같은 참조를 공유한다(bash 함수는 대체로 전역, 위 주석 참고).
-    // isolateFunctions 가 true 면(shebang 스크립트) 새 빈 Map 을 떠 양방향 격리한다.
-    functions: opts.isolateFunctions ? new Map() : ctx.functions,
+    // isolateFunctions 가 true 면(shebang 스크립트) 새 빈 Map 을 떠 양방향 격리하고,
+    // copyFunctions 가 true 면(서브셸) 복사본을 떠 상속은 하되 정의는 안 새게 한다.
+    functions: opts.isolateFunctions ? new Map() : opts.copyFunctions ? new Map(ctx.functions) : ctx.functions,
     // 함수 깊이도 0으로 리셋한다 — `$( )` 안의 return 은 치환 셸만 벗어나고 바깥 함수는
     // 안 벗어난다(bash 동작). 그래서 서브셸 안 return 은 "함수 밖"으로 취급돼 no-op 된다.
     funcDepth: 0,
@@ -146,6 +156,8 @@ async function runCommand(node: Command, ctx: RunCtx, stdin: string): Promise<Ex
     case 'group': return runList(node.body, ctx)
     // `(( expr ))` 산술 명령(task 2).
     case 'arith': return runArith(node, ctx)
+    // `( list )` 서브셸(task 3): 격리된 childCtx 에서 LIST 를 실행한다.
+    case 'subshell': return runSubshellCommand(node, ctx, stdin)
   }
 }
 
@@ -178,6 +190,32 @@ async function runArith(node: ArithCmdNode, ctx: RunCtx): Promise<ExecResult> {
     if (e instanceof ExecutionLimitError) throw e
     return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
   }
+}
+
+/**
+ * `( LIST )` 서브셸 명령(task 3). runSubshell(위 expandCtxFor, `$()` 명령치환용)과 같은
+ * 격리 원리(childCtx: fs/budget 공유, env/cwd/loopDepth/funcDepth 격리)를 그대로 쓰되,
+ * 결과를 캡처해 문자열로 바꾸지 않고 ExecResult 그대로 반환한다 — 서브셸은 표현식이
+ * 아니라 문(statement)이라 그 stdout 이 파이프라인/터미널로 직접 흘러간다.
+ *
+ * `copyFunctions: true` 를 childCtx 에 넘겨 함수맵을 **복사본**으로 뜬다 — 서브셸은 부모의
+ * 함수를 전부 상속해서 보되(시작 시점 스냅샷), 서브셸 안에서 정의/재정의한 함수는 이
+ * 복사본에만 등록돼 부모로 안 샌다(SubshellNode/childCtx 주석 참고, docker 확인).
+ *
+ * stdin: 파이프라인에서 이 서브셸로 들어온 입력을 body 의 **첫 리스트 아이템·첫 파이프라인
+ * 첫 단계**로 그대로 흘려보낸다(runList/runPipeline 의 새 initialStdin 파라미터) —
+ * `echo hi | (cat)` 이 동작하려면 필요하다. if/while/for 전반의 stdin 스레딩(중간 아이템,
+ * 조건절 등)은 이 태스크 범위 밖이다(Task 4 예정) — 여기서는 서브셸 본문의 첫 단계만
+ * 최소로 잇는다.
+ *
+ * spend(ctx) 를 이 함수 자체에서 호출하지 않는다 — GroupNode('group' case)와 같은 원리로
+ * 구조적 위임일 뿐이라, 실제 예산 소모는 body 안의 개별 단순 명령/산술 명령/루프 반복이
+ * 각자 담당한다(그 스텝들이 이미 shared budget 을 깎으므로 `( while true; do :; done )`
+ * 도 별도 처리 없이 공유 예산에 걸려 종료한다).
+ */
+async function runSubshellCommand(node: SubshellNode, ctx: RunCtx, stdin: string): Promise<ExecResult> {
+  const child = childCtx(ctx, { copyFunctions: true })
+  return runList(node.body, child, stdin)
 }
 
 /** `NAME() { ... }` — 정의를 functions 맵에 등록한다. 이미 있으면 덮어쓴다. exit 0. */
@@ -774,14 +812,19 @@ async function runCase(node: CaseNode, ctx: RunCtx): Promise<ExecResult> {
   return { stdout: '', stderr: '', exitCode: 0 }
 }
 
-async function runPipeline(node: PipelineNode, ctx: RunCtx): Promise<ExecResult> {
+/**
+ * @param initialStdin 이 파이프라인의 **첫 단계**로 흘려보낼 입력(기본값 `''`). 기존
+ * 호출부(if/while/for 의 cond/body 등)는 인자를 안 줘서 그대로 `''`(현재 동작 불변) —
+ * runSubshellCommand 만 서브셸이 받은 stdin 을 넘긴다(task 3, `echo hi | (cat)`).
+ */
+async function runPipeline(node: PipelineNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
   // 실제 bash는 파이프라인의 모든 단계(마지막 단계 포함)를 서브셸에서 돌린다 — docker로
   // 확인: `cd /tmp; echo hi | cd /; pwd` → /tmp (안 바뀜), `X=orig; echo hi | X=1; echo
   // $X` → orig (안 바뀜). 그래서 단계가 2개 이상이면 각 단계를 독립된 자식 컨텍스트에서
   // 돌려 cwd/env 변경이 바깥으로 새지 않게 한다. 단일 명령(파이프 없음)은 클론하지 않고
   // 진짜 ctx 를 그대로 써서 `cd`/대입이 정상적으로 다음 명령에 이어지게 한다.
   const isolated = node.commands.length > 1
-  let stdin = ''
+  let stdin = initialStdin
   let stderr = ''
   let last: ExecResult = { stdout: '', stderr: '', exitCode: 0 }
 
@@ -796,18 +839,29 @@ async function runPipeline(node: PipelineNode, ctx: RunCtx): Promise<ExecResult>
   return { stdout: last.stdout, stderr, exitCode: last.exitCode }
 }
 
-async function runList(node: ListNode, ctx: RunCtx): Promise<ExecResult> {
+/**
+ * @param initialStdin 이 리스트의 **첫 아이템의 첫 파이프라인**에만 흘려보낼 입력(기본값
+ * `''`). 기존 호출부는 인자를 안 줘서 그대로 `''`(현재 동작 불변) — runSubshellCommand
+ * 만 서브셸이 받은 stdin 을 넘긴다. 두 번째 아이템부터는(`;`/`&&`/`||` 뒤) 흘려보내지
+ * 않는다 — bash 는 서브셸 안 파이프라인마다 독립적으로 자기 stdin 을 결정하지만(대개
+ * 터미널/상속), "받은 stdin 을 본문의 첫 단계로 잇는다"는 이 태스크의 최소 범위를
+ * 넘어서는 건 Task 4(if/while/for 전반의 stdin 스레딩)로 미룬다.
+ */
+async function runList(node: ListNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
   let stdout = ''
   let stderr = ''
   let exitCode = 0
+  let isFirstItem = true
 
   for (const item of node.items) {
     if (item.op === '&&' && exitCode !== 0) continue
     if (item.op === '||' && exitCode === 0) continue
 
+    const stdinForThisItem = isFirstItem ? initialStdin : ''
+    isFirstItem = false
     let result: ExecResult
     try {
-      result = await runPipeline(item.pipeline, ctx)
+      result = await runPipeline(item.pipeline, ctx, stdinForThisItem)
     } catch (e) {
       // break/continue/return 신호가 이 리스트를 뚫고 올라간다. 지금까지 이 리스트가 낸
       // 출력을 신호에 실어 경계(runWhile/runFor/callFunction)가 회수하게 한다 — 안 그러면
