@@ -357,6 +357,36 @@ describe('확장 통합', () => {
   })
 })
 
+describe('파라미터 확장 — 길이/기본값/대체 (task 3, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('${#NAME} 길이', async () => {
+    const r = await sh.exec('NAME=world; echo ${#NAME}')
+    expect(r.stdout).toBe('5\n')
+  })
+
+  it('${VAR:-fb} 계열이 명령 실행 경로에서도 동작한다', async () => {
+    const r = await sh.exec('echo ${UNSET:-fb} ${NAME:-fb}')
+    expect(r.stdout).toBe('fb fb\n') // 둘 다 이 셸에 미설정
+  })
+
+  it('${UNSET:=def} 대입 부작용이 셸 상태(env)에 남는다', async () => {
+    const r = await sh.exec('echo ${UNSET:=def}; echo $UNSET')
+    expect(r.stdout).toBe('def\ndef\n')
+  })
+
+  it('${UNSET:?boom} 은 ExecResult(비-0 exit + stderr)로 surface 된다 — exec 은 절대 reject/hang 하지 않는다 (trap 12 와 같은 계약)', async () => {
+    const r = await sh.exec('echo ${UNSET:?boom}')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toContain('UNSET: boom')
+    expect(r.stdout).toBe('')
+  })
+
+  it('오류가 난 명령 뒤로도 스크립트는 계속된다 (Task 1의 ArithError 와 같은 문서화된 단순화 — 진짜 bash 는 non-interactive 스크립트 전체를 fatal 로 끝낸다)', async () => {
+    const r = await sh.exec('echo ${UNSET:?boom}; echo after')
+    expect(r.stdout).toBe('after\n')
+    expect(r.stderr).toContain('UNSET: boom')
+  })
+})
+
 describe('무한루프 방어', () => {
   it('스텝 예산을 넘기면 중단하고 안내 메시지를 준다', async () => {
     const tiny = createShell({ fs, cwd: '/home/player', home: '/home/player', stepBudget: 3 })

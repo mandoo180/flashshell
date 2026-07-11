@@ -244,6 +244,96 @@ describe('expandWord — 위치 매개변수 (task 3)', () => {
   })
 })
 
+describe('expandWord — 파라미터 확장: 길이 (task 3)', () => {
+  // docker: NAME=world; echo ${#NAME} => 5
+  it('${#NAME} 은 값의 길이', async () => {
+    expect(await expandWord(wordOf('${#NAME}'), ctx)).toEqual(['5'])
+  })
+  it('${#EMPTY} 는 0', async () => {
+    expect(await expandWord(wordOf('${#EMPTY}'), ctx)).toEqual(['0'])
+  })
+  it('${#UNSET} 은 0 (미설정 변수)', async () => {
+    expect(await expandWord(wordOf('${#UNSET}'), ctx)).toEqual(['0'])
+  })
+  it('${#} 와 ${#@} / ${#*} 는 위치 인자 개수 ($# 과 동일)', async () => {
+    ctx.positional = ['a', 'b', 'c']
+    expect(await expandWord(wordOf('${#}'), ctx)).toEqual(['3'])
+    expect(await expandWord(wordOf('${#@}'), ctx)).toEqual(['3'])
+    expect(await expandWord(wordOf('${#*}'), ctx)).toEqual(['3'])
+  })
+})
+
+describe('expandWord — 파라미터 확장: 기본값/대체 (task 3, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  // docker: NAME=world; EMPTY=; echo "${#NAME} ${UNSET:-fb} ${EMPTY:-fb} ${EMPTY-fb}" => 5 fb fb (빈줄)
+  it('${UNSET:-fb} 는 미설정이면 fb', async () => {
+    expect(await expandWord(wordOf('${UNSET:-fb}'), ctx)).toEqual(['fb'])
+  })
+  it('${NAME:-fb} 는 설정돼 있으면 원래 값', async () => {
+    expect(await expandWord(wordOf('${NAME:-fb}'), ctx)).toEqual(['world'])
+  })
+  it('${EMPTY:-fb} 는 `:-` 라 빈 값도 미설정 취급 → fb', async () => {
+    expect(await expandWord(wordOf('${EMPTY:-fb}'), ctx)).toEqual(['fb'])
+  })
+  it('${EMPTY-fb} 는 `-` 뿐이라 빈 값은 미설정이 아님 → 빈 문자열(단어 사라짐 없음, 값 자체가 "")', async () => {
+    expect(await expandWord(wordOf('"${EMPTY-fb}"'), ctx)).toEqual([''])
+  })
+  it('${UNSET-fb} 는 미설정이므로 fb', async () => {
+    expect(await expandWord(wordOf('${UNSET-fb}'), ctx)).toEqual(['fb'])
+  })
+
+  it('${UNSET:=def} 는 def 로 치환되고 ctx.env 에도 대입된다', async () => {
+    expect(await expandWord(wordOf('${UNSET:=def}'), ctx)).toEqual(['def'])
+    expect(ctx.env.UNSET).toBe('def')
+  })
+  it('${NAME:=def} 는 이미 설정돼 있으므로 대입하지 않는다', async () => {
+    expect(await expandWord(wordOf('${NAME:=def}'), ctx)).toEqual(['world'])
+    expect(ctx.env.NAME).toBe('world')
+  })
+
+  it('${NAME:+alt} 는 설정+비어있지 않으므로 alt', async () => {
+    expect(await expandWord(wordOf('${NAME:+alt}'), ctx)).toEqual(['alt'])
+  })
+  it('${UNSET:+alt} 는 미설정이므로 빈 문자열(단어 사라짐)', async () => {
+    expect(await expandWord(wordOf('${UNSET:+alt}'), ctx)).toEqual([])
+  })
+  it('${EMPTY:+alt} 는 `:+` 라 빈 값도 대상 → 빈 문자열(단어 사라짐)', async () => {
+    expect(await expandWord(wordOf('${EMPTY:+alt}'), ctx)).toEqual([])
+  })
+
+  it('arg 는 재확장 대상이다: ${UNSET:-$NAME} → world', async () => {
+    expect(await expandWord(wordOf('${UNSET:-$NAME}'), ctx)).toEqual(['world'])
+  })
+  it('중첩 ${...} 도 arg 재확장으로 풀린다: ${UNSET:-${NAME}}', async () => {
+    expect(await expandWord(wordOf('${UNSET:-${NAME}}'), ctx)).toEqual(['world'])
+  })
+
+  it('회귀: 연산자 없는 ${NAME} 은 그대로 동작', async () => {
+    expect(await expandWord(wordOf('${NAME}'), ctx)).toEqual(['world'])
+  })
+  it('회귀: 위치 매개변수 ${1} 은 그대로 동작', async () => {
+    ctx.positional = ['x']
+    expect(await expandWord(wordOf('${1}'), ctx)).toEqual(['x'])
+  })
+})
+
+describe('expandWord — 파라미터 확장: ${name:?word} 오류 경로 (task 3)', () => {
+  // docker: unset U; echo ${U:?boom} => stderr "bash: line 1: U: boom", 스크립트 전체가
+  // fatal 로 죽는다(non-interactive bash 실제 동작) — 이 서브셋은 그렇게까지는 안 가고
+  // (Task 1의 ArithError 와 같은 패턴) 이 명령 하나만 실패로 처리한다(문서화된 단순화).
+  it('${UNSET:?boom} 은 expandWord 를 던진다(reject) — interpreter 가 ExecResult 로 바꾼다', async () => {
+    await expect(expandWord(wordOf('${UNSET:?boom}'), ctx)).rejects.toThrow(/UNSET: boom/)
+  })
+  it('메시지 없으면 기본 메시지(콜론 있음: parameter null or not set)', async () => {
+    await expect(expandWord(wordOf('${UNSET:?}'), ctx)).rejects.toThrow(/parameter null or not set/)
+  })
+  it('콜론 없는 ${UNSET?} 도 기본 메시지는 다르다(parameter not set, null 없음)', async () => {
+    await expect(expandWord(wordOf('${UNSET?}'), ctx)).rejects.toThrow(/UNSET: parameter not set/)
+  })
+  it('설정돼 있으면 에러 없이 값을 낸다', async () => {
+    expect(await expandWord(wordOf('${NAME:?boom}'), ctx)).toEqual(['world'])
+  })
+})
+
 describe('expandForCase (task 6) — case 문의 WORD/PATTERN 전용 확장', () => {
   // expandWord 와 달리 단어분리(IFS)도 파일시스템 글롭(expandGlob)도 하지 않는다 —
   // 문자열 하나만 낸다(case 패턴은 matchSegment 로 별도 매칭한다).
