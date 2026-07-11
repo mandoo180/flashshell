@@ -85,8 +85,8 @@ describe('NEXT 이후 포커스 (M1 최종 리뷰 Important 결함)', () => {
   })
 })
 
-describe('빈 레벨은 진행도로 열리지 않는다', () => {
-  it('레벨 1·2·3·4를 8개씩 풀면 레벨 4는 열리고, 아직 비어있는 레벨 5는 COMING SOON으로 막혀 있다', async () => {
+describe('레벨은 진행도로 순차 해제된다', () => {
+  it('레벨 1~4를 8개씩 풀면 레벨 5도 열려 플레이할 수 있다 (더 이상 COMING SOON 레벨이 없다)', async () => {
     // store.ts는 모듈이 처음 평가될 때 `progress: loadProgress()`를 딱 한 번
     // 호출해 이 파일 상단의 `useGame`/`App` 바인딩에 굳혀 넣는다. beforeEach에서
     // localStorage만 채워서는 이미 평가가 끝난 그 스토어 인스턴스에 반영되지
@@ -95,12 +95,17 @@ describe('빈 레벨은 진행도로 열리지 않는다', () => {
     // App을 동적 import()한다 — 그 안에서 다시 import되는 store.ts가 새로
     // 평가되면서 방금 채운 값을 loadProgress()로 읽어 초기 상태에 반영한다.
     //
-    // 레벨 4(시스템)가 Task 11에서 10문제로 채워지면서 더 이상 빈 레벨이
-    // 아니게 됐다(레벨 3은 Task 10에서 이미 채워졌다). 이 테스트가 원래
-    // 지키던 "total === 0 가드"는 여전히 유효한 레벨 5(아직 미구현)로 옮겨
-    // 계속 검증한다 — 레벨 4를 8개 풀어 unlock 규칙상으로는 레벨 5가 열려야
-    // 하는 상태를 만들어, total === 0 가드가 없으면 문제 없는 레벨에 들어가
-    // 크래시할 수 있음을 확인한다.
+    // 이 테스트는 원래 "아직 안 채워진 레벨은 unlock 규칙상 열려야 해도
+    // total === 0 가드가 막아 COMING SOON으로 남는다"를 검증했다(part1
+    // Task 10이 레벨 3을 채우며 타겟을 레벨 4로, part1 Task 11이 레벨 4를
+    // 채우며 타겟을 레벨 5로 옮겨왔다). part2 Task 10에서 레벨 5(스크립팅)가
+    // 10문제로 채워지면서 LEVELS 배열의 모든 레벨(1~5)이 total > 0이 되어,
+    // 옮겨갈 "아직 빈 레벨"이 더는 없다(레벨 6은 없다). 그래서 같은 시나리오를
+    // 반대쪽에서 검증하도록 뒤집는다: 레벨 1~4를 8개씩 풀어 unlock 규칙상
+    // 레벨 5가 열려야 하는 상태를 만들고, total === 0 가드의 else 분기(total>0
+    // 이면 COMING SOON이 아니라 실제 진행도를 보여준다)가 레벨 5에서도 올바르게
+    // 동작해 정상적으로 열리는지 — 즉 이제 게임 전체에 COMING SOON이 하나도
+    // 남지 않았는지 — 확인한다.
     const seeded: Progress = {
       solved: [
         'l1-01', 'l1-02', 'l1-03', 'l1-04', 'l1-05', 'l1-06', 'l1-07', 'l1-08',
@@ -129,9 +134,11 @@ describe('빈 레벨은 진행도로 열리지 않는다', () => {
     expect(level3).toBeEnabled()
     expect(level4).toBeEnabled()
 
-    // 레벨 5는 unlock 규칙상으로는 열리지만(레벨 4를 8개 풀었으므로),
-    // total === 0 가드가 없으면 플레이어가 문제 없는 레벨에 들어가 크래시한다.
-    expect(level5).toBeDisabled()
-    expect(within(level5).getByText('COMING SOON')).toBeInTheDocument()
+    // 레벨 5는 이제 문제 10개로 채워졌다(total > 0) — unlock 규칙(레벨 4를
+    // 8개 풀었음)까지 만족하므로 실제로 열려야 하고, COMING SOON은 어디에도
+    // 남아 있으면 안 된다.
+    expect(level5).toBeEnabled()
+    expect(within(level5).queryByText('COMING SOON')).not.toBeInTheDocument()
+    expect(within(level5).getByText('0/10')).toBeInTheDocument()
   })
 })
