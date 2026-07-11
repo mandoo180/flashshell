@@ -176,15 +176,21 @@ function splitForReadArray(text: string, protectedIdx: boolean[], ifs: string[])
 }
 
 /**
- * `-r`/`-a NAME` 을 지원한다(`-r`, `-a` 임의 순서로 한 토큰에 뭉칠 수 있음 — `-ra`/`-ar`
- * 둘 다 docker 로 확인). `--` 이후는 전부 변수 이름. 그 외 플래그는 error 로 얌전히 거부.
+ * `-r`/`-a NAME` 을 지원한다. `--` 이후는 전부 변수 이름. 그 외 플래그는 error 로 얌전히
+ * 거부.
  *
- * `-a` 는 항상 **다음 argv 토큰 전체**를 배열 이름으로 그대로 가져간다(같은 토큰 안에서
- * `-a` 뒤에 남은 문자를 이름으로 붙여쓰지 않는다) — docker 확인: `read -ar arr`(a 다음
- * r)도 `read -ra arr`(r 다음 a)와 똑같이 -r+-a 플래그가 둘 다 켜지고 "arr"이 배열
- * 이름이다(만약 -a 가 같은 토큰의 남은 글자를 이름으로 먹었다면 "r"이 이름이 되고 -r 은
- * 안 켜졌을 텐데, 실측 결과는 백슬래시 리터럴이 보존돼 -r 이 켜졌음을 보여준다). 다음
- * 토큰이 없으면(`read -a` 단독) exit 2 "option requires an argument"(docker 확인).
+ * `-a` 는 getopt 스타일 "부착 인자"를 받는다 — docker 로 `read -ar arr`/`read -aXYZ extra`/
+ * `read -ra arr` 세 가지를 다 실측(task-2-report.md "Fix: -a attached-argument parsing"
+ * 참고):
+ *  - 같은 토큰 안에서 `a` 뒤에 문자가 **남아 있으면**(`-ar`, `-aXYZ`) 그 나머지 전체가
+ *    배열 이름이고, 그 문자들은 플래그로 재해석되지 않는다 — `read -ar arr` 은 "r"이
+ *    배열 이름이 되어 배열 **r**이 만들어지고(raw 는 안 켜짐 — 그 r 은 -r 플래그가 아니라
+ *    이름의 일부였으니까), 두 번째 인자 "arr" 은 그대로 남아 있다가(스칼라 이름 취급)
+ *    -a 가 이겨서 무시된다 → arr 은 unset. `read -aXYZ extra` 도 마찬가지로 배열 이름은
+ *    "XYZ", "extra" 는 unset.
+ *  - `a` 가 토큰의 **마지막 글자**면(`-ra`, `-a` 단독) 이름은 다음 argv 토큰에서 온다 —
+ *    `read -ra arr` 은 r 다음 a 라 raw 켜짐 + 이름은 다음 토큰 "arr". 다음 토큰이
+ *    없으면(`read -a` 단독) exit 2 "option requires an argument"(docker 확인).
  */
 function parseArgs(
   args: string[],
@@ -202,6 +208,13 @@ function parseArgs(
       const ch = arg[j]!
       if (ch === 'r') { raw = true; continue }
       if (ch === 'a') {
+        const suffix = arg.slice(j + 1)
+        if (suffix.length > 0) {
+          // 같은 토큰에 남은 문자는 배열 이름 전체다(getopt 부착 인자) — 더 이상 이
+          // 토큰을 플래그로 스캔하지 않는다(`-ar`의 "r"이 -r 로 재해석되지 않음).
+          arrayName = suffix
+          break
+        }
         i++
         if (i >= args.length) return { missingArg: '-a' }
         arrayName = args[i] // i 는 바깥 for 의 갱신식이 다시 +1 하므로, 다음 바깥 순회는 그 다음 토큰부터.

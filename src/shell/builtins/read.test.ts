@@ -293,14 +293,21 @@ describe('-a (인덱스 배열)', () => {
     await runRead(['-a', 'arr'], 'a:\n')
     expect(state.arrays.get('arr')).toEqual(['a'])
   })
-  it('-ra (r 다음 a): 백슬래시 리터럴 보존 + 2원소 (docker: [a\\tb] / 2)', async () => {
+  it('-ar (getopt 부착 인자): a 뒤에 남은 "r"이 배열 이름 — arr 은 unset, raw 는 안 켜짐 (docker: declare -a r=([0]="atb" [1]="c"); declare: arr: not found)', async () => {
+    const out = await runRead(['-ar', 'arr'], 'a\\tb c\n')
+    expect(state.arrays.get('r')).toEqual(['atb', 'c'])
+    expect(state.arrays.has('arr')).toBe(false)
+    expect(out.exitCode).toBe(0)
+  })
+  it('-ra (a 가 토큰의 마지막 글자): 이름은 다음 토큰에서, raw 켜짐 (docker: declare -a arr=([0]="a\\tb" [1]="c"))', async () => {
     const out = await runRead(['-ra', 'arr'], 'a\\tb c\n')
     expect(state.arrays.get('arr')).toEqual(['a\\tb', 'c'])
     expect(out.exitCode).toBe(0)
   })
-  it('-ar (a 다음 r, 순서 반대): 같은 결과 (docker: [a\\tb] / 2)', async () => {
-    await runRead(['-ar', 'arr'], 'a\\tb c\n')
-    expect(state.arrays.get('arr')).toEqual(['a\\tb', 'c'])
+  it('-aXYZ extra: a 뒤에 남은 "XYZ"가 배열 이름 — extra 는 unset (docker: declare -a XYZ=([0]="a" [1]="b" [2]="c"); declare: extra: not found)', async () => {
+    await runRead(['-aXYZ', 'extra'], 'a b c\n')
+    expect(state.arrays.get('XYZ')).toEqual(['a', 'b', 'c'])
+    expect(state.arrays.has('extra')).toBe(false)
   })
   it('-r -a (분리된 두 플래그): 같은 결과 (docker: [a\\tb] / 2)', async () => {
     await runRead(['-r', '-a', 'arr'], 'a\\tb c\n')
