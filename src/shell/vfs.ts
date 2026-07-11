@@ -160,8 +160,12 @@ export class VFS {
   writeFile(abs: string, content: string, mode = 0o644): void {
     // 마지막 구성요소가 심볼릭 링크면 그 목적지에 쓴다 (링크 자체를 대체하지 않는다).
     const target = this.resolveWriteTarget(abs)
-    const parent = this.parentDir(target)
     const name = this.basename(target)
+    // target이 루트('/')면 split이 빈 배열을 줘 name==='' 다 — 이대로 두면 parentDir(target)이
+    // 루트 자신을 돌려주고 parent.children.set('', node)로 유령 노드가 생긴다(B5 버그).
+    // 실제 bash도 `echo x > /`는 EISDIR로 거부한다 — 여기서도 동일하게 막는다.
+    if (name === '') throw new VfsError('EISDIR', abs)
+    const parent = this.parentDir(target)
     const existing = parent.children.get(name)
     if (existing?.kind === 'dir') throw new VfsError('EISDIR', abs)
     if (existing?.kind === 'file') {

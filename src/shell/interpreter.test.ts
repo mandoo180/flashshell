@@ -2444,3 +2444,85 @@ describe('중첩 read 루프 — 자체 리다이렉션 없는 안쪽 루프는 
     expect(r.stdout).toBe('n=1\nn=2\n')
   })
 })
+
+describe('B3: 루프 안 return 은 이전 반복 stdout 을 보존한다 (M3 Part 4 task 3, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('for 루프: return 이전 두 번의 echo 출력을 모두 낸다 (2 만 남던 버그)', async () => {
+    // docker: f(){ for i in 1 2 3; do echo $i; [ $i = 2 ] && return; done; }; f → 1\n2
+    const r = await sh.exec('f(){ for i in 1 2 3; do echo $i; [ $i = 2 ] && return; done; }; f')
+    expect(r.stdout).toBe('1\n2\n')
+  })
+
+  it('while 루프: return 이전 출력을 보존한다', async () => {
+    // docker: f(){ while true; do echo a; return; done; }; f → a
+    const r = await sh.exec('f(){ while true; do echo a; return; done; }; f')
+    expect(r.stdout).toBe('a\n')
+  })
+
+  it('for 루프: return 코드도 함께 보존된다 (exit code 는 신호 소비, stdout 은 누적)', async () => {
+    // docker: f(){ for i in 1 2 3; do echo $i; [ $i = 2 ] && return 5; done; }; f; echo rc=$?
+    //   → 1\n2\nrc=5
+    const r = await sh.exec('f(){ for i in 1 2 3; do echo $i; [ $i = 2 ] && return 5; done; }; f; echo "rc=$?"')
+    expect(r.stdout).toBe('1\n2\nrc=5\n')
+  })
+
+  it('회귀: 루프 없는 top-level return 은 그대로 동작한다', async () => {
+    // docker: f(){ echo x; return 2; echo y; }; f; echo rc=$? → x\nrc=2
+    const r = await sh.exec('f(){ echo x; return 2; echo y; }; f; echo "rc=$?"')
+    expect(r.stdout).toBe('x\nrc=2\n')
+  })
+
+  it('회귀: break 는 여전히 부분 출력만 싣는다 (이전 반복과 합쳐 중복 없이)', async () => {
+    // docker: f(){ for i in 1 2 3; do echo $i; [ $i = 2 ] && break; done; echo after; }; f
+    //   → 1\n2\nafter
+    const r = await sh.exec('f(){ for i in 1 2 3; do echo $i; [ $i = 2 ] && break; done; echo after; }; f')
+    expect(r.stdout).toBe('1\n2\nafter\n')
+  })
+
+  it('회귀: continue 는 다음 반복으로 넘어가며 출력이 이중으로 안 쌓인다', async () => {
+    // docker: f(){ for i in 1 2 3; do echo $i; [ $i = 2 ] && continue; echo skip$i; done; }; f
+    //   → 1\nskip1\n2\n3\nskip3
+    const r = await sh.exec(
+      'f(){ for i in 1 2 3; do echo $i; [ $i = 2 ] && continue; echo skip$i; done; }; f',
+    )
+    expect(r.stdout).toBe('1\nskip1\n2\n3\nskip3\n')
+  })
+})
+
+describe('B5: 디렉터리로 쓰기 리다이렉션은 EISDIR (M3 Part 4 task 3, docker debian:stable-slim bash 5 로 확인됨)', () => {
+  it('echo x > / 는 exit 1, "Is a directory", 루트를 오염시키지 않는다', async () => {
+    // docker: echo x > /; echo rc=$? → stderr "bash: line N: /: Is a directory", rc=1,
+    //   ls / 앞뒤 동일(유령 노드 없음)
+    const before = fs.readdir('/')
+    const r = await sh.exec('echo x > /')
+    expect(r.exitCode).toBe(1)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('bash: /: Is a directory\n')
+    expect(fs.readdir('/')).toEqual(before)
+  })
+
+  it('mkdir d; echo x > d 는 exit 1 (일반 디렉터리 타겟도 EISDIR, 회귀)', async () => {
+    // docker: mkdir d; echo x > d → exit 1 "bash: line N: d: Is a directory"
+    await sh.exec('mkdir d')
+    const r = await sh.exec('echo x > d')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toBe('bash: d: Is a directory\n')
+  })
+
+  it('echo x >> / 도 exit 1 (append 경로 회귀)', async () => {
+    const before = fs.readdir('/')
+    const r = await sh.exec('echo x >> /')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderr).toBe('bash: /: Is a directory\n')
+    expect(fs.readdir('/')).toEqual(before)
+  })
+
+  it('회귀: echo x > f; cat f 는 정상 동작한다 (일반 파일 쓰기)', async () => {
+    const r = await sh.exec('echo x > f; cat f')
+    expect(r.stdout).toBe('x\n')
+  })
+
+  it('회귀: >> 로 파일에 이어쓰기는 정상 동작한다', async () => {
+    const r = await sh.exec('echo x > f; echo y >> f; cat f')
+    expect(r.stdout).toBe('x\ny\n')
+  })
+})

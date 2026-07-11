@@ -98,6 +98,18 @@ describe('VFS 파일 조작', () => {
     try { fs.readFile('/a') } catch (e) { expect((e as VfsError).code).toBe('EISDIR') }
   })
 
+  it('루트(/)에 writeFile 하면 EISDIR — 유령("") 자식 노드를 만들지 않는다 (B5)', () => {
+    const before = fs.readdir('/')
+    expect(() => fs.writeFile('/', 'x')).toThrow(VfsError)
+    try { fs.writeFile('/', 'x') } catch (e) { expect((e as VfsError).code).toBe('EISDIR') }
+    expect(fs.readdir('/')).toEqual(before)
+  })
+
+  it('일반 디렉터리를 writeFile 하면 EISDIR (회귀 — 이미 정상 동작)', () => {
+    fs.mkdir('/a')
+    try { fs.writeFile('/a', 'x') } catch (e) { expect((e as VfsError).code).toBe('EISDIR') }
+  })
+
   it('readdir은 정렬된 이름을 준다', () => {
     fs.mkdir('/a'); fs.writeFile('/a/c', ''); fs.writeFile('/a/b', ''); fs.mkdir('/a/A')
     expect(fs.readdir('/a')).toEqual(['A', 'b', 'c'])

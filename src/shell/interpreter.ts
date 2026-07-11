@@ -977,7 +977,17 @@ async function runWhile(node: WhileNode, ctx: RunCtx, initialStdin = '', hasOwnS
         stderr += b.stderr
         exitCode = b.exitCode
       } catch (e) {
-        if (!(e instanceof LoopSignal)) throw e
+        if (!(e instanceof LoopSignal)) {
+          // return(ReturnSignal) 등 루프 신호가 아닌 ControlSignal — runList 와 같은 패턴으로
+          // 이 루프가 지금까지 누적한 출력(이전 반복 + 이번 반복의 부분 출력)을 신호에 실어
+          // 올려보낸다. 안 그러면 신호 자체의 stdout 만 남아 이전 반복 출력이 유실된다(B3:
+          // `for i in 1 2 3; do echo $i; [ $i = 2 ] && return; done` 이 `2`만 남던 버그).
+          if (e instanceof ControlSignal) {
+            e.stdout = stdout + e.stdout
+            e.stderr = stderr + e.stderr
+          }
+          throw e
+        }
         // 신호가 실어온 부분 출력(break 직전의 echo 등)을 회수한다.
         stdout += e.stdout
         stderr += e.stderr
@@ -1058,7 +1068,15 @@ async function runFor(node: ForNode, ctx: RunCtx, initialStdin = '', hasOwnStdin
         stderr += b.stderr
         exitCode = b.exitCode
       } catch (e) {
-        if (!(e instanceof LoopSignal)) throw e
+        if (!(e instanceof LoopSignal)) {
+          // return(ReturnSignal) 등 루프 신호가 아닌 ControlSignal — runWhile 과 동일 규칙
+          // (해당 함수 doc 주석 참고, B3).
+          if (e instanceof ControlSignal) {
+            e.stdout = stdout + e.stdout
+            e.stderr = stderr + e.stderr
+          }
+          throw e
+        }
         // 신호가 실어온 부분 출력(break/continue 직전의 echo 등)을 회수한다.
         stdout += e.stdout
         stderr += e.stderr
