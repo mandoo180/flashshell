@@ -10,8 +10,13 @@ export interface Redir { fd: 0 | 1 | 2; op: '>' | '>>' | '<'; target: Word }
  *  - index 있음 → 원소 대입. index 는 대괄호 안쪽(확장 전 Word) — interpreter 가 evalArith
  *    로 첨자를 평가한다. value 는 스칼라와 동일(분할/글롭 없는 expandForCase 로 편다).
  *  - 둘 다 없음 → 기존 스칼라 대입.
+ *
+ * append(M3 Part 4 task 1): `NAME+=…`/`NAME[i]+=…`/`NAME+=(…)` 이면 true. 세 갈래 각각에
+ * 대해 interpreter 가 "덮어쓰기" 대신 "기존 값에 이어붙이기"를 한다(스칼라 문자열 연결,
+ * 배열 끝에 push, 원소 문자열 연결). 일반 `=` 대입은 이 필드가 아예 없다(undefined) —
+ * index?/elements? 와 같은 "해당 없으면 생략" 규약이라 기존 `toEqual` 스냅샷이 안 깨진다.
  */
-export interface Assignment { name: string; value: Word; index?: Word; elements?: Word[] }
+export interface Assignment { name: string; value: Word; index?: Word; elements?: Word[]; append?: boolean }
 
 export interface CommandNode {
   kind: 'command'
@@ -145,8 +150,10 @@ export interface ListNode {
 const REDIR_OPS: Operator[] = ['>', '>>', '<', '2>', '2>>']
 // NAME= 접두사는 첫 조각(word[0])이 raw 일 때만 인식한다. 값 뒤쪽은 어떤 조각이든 허용한다.
 // 선택적 `[subscript]` 그룹(m[2])으로 원소 대입 `NAME[i]=value` 도 받는다(M3 Part 3 task 2).
-// 그룹 인덱스: m[1]=NAME, m[2]=`[...]`(있으면), m[3]=값.
-const ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_]*)(\[[^\]]*\])?=(.*)$/s
+// 선택적 `+` 그룹(m[3], M3 Part 4 task 1)이 있으면 append 대입(`NAME+=`/`NAME[i]+=`)이다 —
+// 단일 리터럴 옵션이라 구조적(ReDoS 없음)이고 값 안의 `+=`(x=a+=b)는 이미 첫 `=` 에서
+// 쪼개지므로 안 건드린다. 그룹 인덱스: m[1]=NAME, m[2]=`[...]`(있으면), m[3]=`+`(있으면), m[4]=값.
+const ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_]*)(\[[^\]]*\])?(\+)?=(.*)$/s
 
 function syntaxError(near: string): never {
   throw new Error(`syntax error near \`${near}'`)
@@ -209,7 +216,8 @@ function tryAssignment(word: Word): Assignment | null {
   if (!m) return null
   const name = m[1]!
   const subscript = m[2] // '[...]' 또는 undefined
-  const restOfFirst = m[3]!
+  const append = m[3] === '+' // '+' 있으면 append 대입(M3 Part 4)
+  const restOfFirst = m[4]!
 
   // 스칼라/원소 대입의 값 Word: 첫 조각의 나머지(raw) + 뒤 조각들(따옴표 구조 보존).
   const scalarValue = (): Word => {
@@ -219,11 +227,14 @@ function tryAssignment(word: Word): Assignment | null {
     return value
   }
 
+  // append 는 true 일 때만 필드를 얹는다(일반 `=` 는 생략 — index?/elements? 와 같은 규약).
+  const appendFlag = append ? { append: true } : {}
+
   // NAME[subscript]=value — 원소 대입. index 는 대괄호 안쪽을 확장 전 Word(raw 하나)로
   // 보존한다(interpreter 가 evalArith 로 첨자를 평가 — `$i`/`1+1` 모두). value 는 스칼라와
   // 동일한 구조다.
   if (subscript !== undefined) {
-    return { name, value: scalarValue(), index: [{ kind: 'raw', text: subscript.slice(1, -1) }] }
+    return { name, value: scalarValue(), index: [{ kind: 'raw', text: subscript.slice(1, -1) }], ...appendFlag }
   }
 
   // NAME=( ... ) — 배열 리터럴. 렉서가 인접 배열을 raw 조각 하나로 통째 삼켰으므로
@@ -239,11 +250,11 @@ function tryAssignment(word: Word): Assignment | null {
       for (const t of tokenize(restOfFirst.slice(1, -1))) {
         if (t.type === 'WORD') elements.push(t.word)
       }
-      return { name, value: [], elements }
+      return { name, value: [], elements, ...appendFlag }
     }
   }
 
-  return { name, value: scalarValue() }
+  return { name, value: scalarValue(), ...appendFlag }
 }
 
 class Parser {

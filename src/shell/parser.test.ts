@@ -745,6 +745,57 @@ describe('배열 대입 파싱 (M3 Part 3 task 2)', () => {
   })
 })
 
+describe('+= append 대입 파싱 (M3 Part 4 task 1)', () => {
+  function firstAssign(input: string) {
+    const c = parse(input).items[0]!.pipeline.commands[0]!
+    if (c.kind !== 'command') throw new Error(`expected simple command, got ${c.kind}`)
+    return c.assignments[0]!
+  }
+
+  it('스칼라 s+=there → append=true, value=there, index/elements 없음', () => {
+    const a = firstAssign('s+=there')
+    expect(a.name).toBe('s')
+    expect(a.append).toBe(true)
+    expect(a.value).toEqual(raw('there'))
+    expect(a.index).toBeUndefined()
+    expect(a.elements).toBeUndefined()
+  })
+
+  it('배열 리터럴 arr+=(c d) → append=true, elements=[c,d]', () => {
+    const a = firstAssign('arr+=(c d)')
+    expect(a.append).toBe(true)
+    expect(a.elements).toEqual([raw('c'), raw('d')])
+    expect(a.index).toBeUndefined()
+  })
+
+  it('원소 arr[1]+=X → append=true, index=Word(1), value=Word(X)', () => {
+    const a = firstAssign('arr[1]+=X')
+    expect(a.name).toBe('arr')
+    expect(a.append).toBe(true)
+    expect(a.index).toEqual(raw('1'))
+    expect(a.value).toEqual(raw('X'))
+    expect(a.elements).toBeUndefined()
+  })
+
+  it('회귀: 일반 = 대입은 append 플래그가 없다(undefined) — 스칼라/배열/원소 모두', () => {
+    expect(firstAssign('x=5').append).toBeUndefined()
+    expect(firstAssign('arr=(a b)').append).toBeUndefined()
+    expect(firstAssign('arr[0]=z').append).toBeUndefined()
+  })
+
+  it('값 안의 += 는 안 쪼갠다: x=a+=b → append 아님, value=a+=b(첫 = 에서만 쪼갬)', () => {
+    const a = firstAssign('x=a+=b')
+    expect(a.append).toBeUndefined()
+    expect(a.value).toEqual(raw('a+=b'))
+  })
+
+  it('x+=a=b → append=true, value=a=b(NAME+ 뒤 첫 = 에서 쪼갬)', () => {
+    const a = firstAssign('x+=a=b')
+    expect(a.append).toBe(true)
+    expect(a.value).toEqual(raw('a=b'))
+  })
+})
+
 describe('복합 명령 리다이렉션 파싱 (M3 Part 3 task 5)', () => {
   function firstCompound(input: string) {
     return parse(input).items[0]!.pipeline.commands[0]!

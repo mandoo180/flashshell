@@ -485,4 +485,14 @@ describe('배열 리터럴 인접 캡처 (M3 Part 3 task 2)', () => {
     // 배열로 삼킨다. 퍼즐에 없는 obscure edge — "더 관대한" 방향이라 무해하다.
     expect(shapeT(tokenize('echo arr=(x)'))).toEqual(['WORD(echo)', 'WORD(arr=(x))'])
   })
+
+  // M3 Part 4 task 1: `NAME+=(...)` append LHS 도 인접 배열로 캡처한다.
+  it('arr+=(c d) 도 인접 배열로 캡처된다 (+= append LHS)', () => {
+    expect(shapeT(tokenize('arr+=(c d)'))).toEqual(['WORD(arr+=(c d))'])
+    expect(words(tokenize('arr+=(c d)'))[0]!.word).toEqual([{ kind: 'raw', text: 'arr+=(c d)' }])
+  })
+
+  it('첨자 LHS arr[0]+=(x y) 도 인접 배열로 캡처된다', () => {
+    expect(shapeT(tokenize('arr[0]+=(x y)'))).toEqual(['WORD(arr[0]+=(x y))'])
+  })
 })

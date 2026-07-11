@@ -648,6 +648,27 @@ async function applyAssignment(a: Assignment, ctx: RunCtx, expandCtx: ExpandCtx)
   if (a.elements !== undefined) {
     const flat: string[] = []
     for (const el of a.elements) flat.push(...(await expandWord(el, expandCtx)))
+    // append(`arr+=(c d)`): 기존 배열의 끝(최대인덱스+1 = JS length)부터 push 한다(bash 동작,
+    // docker: `arr=(a b); arr+=(c d)` → a b c d). 베이스가 없으면 새 배열, 동명 스칼라가
+    // 있으면 인덱스 0 으로 승격해 그 뒤에 붙인다(docker: `x=5; x+=(a b)` → 5 a b). sparse hole 은
+    // slice() 가 보존하고 push 가 length 위치에 써 최대인덱스+1 규약을 그대로 만족한다
+    // (docker: `arr=(a); arr[5]=z; arr+=(w)` → w 는 인덱스 6).
+    if (a.append) {
+      let base: string[]
+      const existing = ctx.state.arrays.get(a.name)
+      if (existing) {
+        base = existing.slice() // 통째 교체 불변식: 공유 배열을 in-place 로 안 건드린다
+      } else {
+        base = []
+        if (Object.prototype.hasOwnProperty.call(ctx.state.env, a.name)) {
+          base[0] = ctx.state.env[a.name]! // 스칼라 승격
+          delete ctx.state.env[a.name]
+        }
+      }
+      base.push(...flat)
+      ctx.state.arrays.set(a.name, base)
+      return
+    }
     ctx.state.arrays.set(a.name, flat)
     delete ctx.state.env[a.name]
     return
@@ -675,20 +696,28 @@ async function applyAssignment(a: Assignment, ctx: RunCtx, expandCtx: ExpandCtx)
     let idx = idxRaw
     if (idx < 0) idx += arr.length
     if (idx < 0) throw new Error(`${a.name}: bad array subscript`)
-    arr[idx] = value
+    // append(`arr[i]+=v`): 기존 원소(없으면 빈 문자열, sparse hole 도 빈 베이스)에 이어붙인다
+    // (docker: `arr=(a b c); arr[1]+=X` → a bX c; `arr=(a b); arr[5]+=z` → 인덱스 5 = z).
+    arr[idx] = a.append ? (arr[idx] ?? '') + value : value
     ctx.state.arrays.set(a.name, arr)
     return
   }
 
   if (ctx.state.arrays.has(a.name)) {
-    // 스칼라 대입인데 동명 배열이 이미 있으면 인덱스 0 에 넣는다(bash 동작).
+    // 스칼라 대입인데 동명 배열이 이미 있으면 인덱스 0 에 넣는다(bash 동작). append 면
+    // 인덱스 0 에 이어붙인다(docker: `arr=(a b); arr+=c` → ac b — bash 는 `arr+=scalar` 를
+    // `arr[0]+=scalar` 로 본다).
     const arr = ctx.state.arrays.get(a.name)!.slice()
-    arr[0] = await expandForCase(a.value, expandCtx)
+    const value = await expandForCase(a.value, expandCtx)
+    arr[0] = a.append ? (arr[0] ?? '') + value : value
     ctx.state.arrays.set(a.name, arr)
     return
   }
 
-  ctx.state.env[a.name] = await expandForCase(a.value, expandCtx)
+  // 스칼라: append 면 기존 값(미설정이면 빈 문자열)에 문자열 연결(산술 아님 — docker:
+  // `x=5; x+=3` → 53). 일반 대입은 그대로 덮어쓴다.
+  const value = await expandForCase(a.value, expandCtx)
+  ctx.state.env[a.name] = a.append ? (ctx.state.env[a.name] ?? '') + value : value
 }
 
 async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promise<ExecResult> {
@@ -738,7 +767,13 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
   try {
     prefixAssignments = []
     for (const assignment of node.assignments) {
-      prefixAssignments.push({ name: assignment.name, value: await expandForCase(assignment.value, expandCtx) })
+      // 프리픽스 `s+=APP cmd`(M3 Part 4): 베이스는 **OUTER** 셸 env 값이다(docker:
+      // `s=orig; s+=APP f` → 함수는 origAPP 를 보고, 호출 후 s 는 orig 로 복원). 프리픽스는
+      // 스칼라만 다룬다(배열 리터럴/원소 프리픽스는 이 서브셋 범위 밖 — 기존과 동일하게
+      // expandForCase 로만 편다). withPrefixEnv/commandEnv 는 이 값을 얹었다 되돌린다.
+      const expanded = await expandForCase(assignment.value, expandCtx)
+      const value = assignment.append ? (ctx.state.env[assignment.name] ?? '') + expanded : expanded
+      prefixAssignments.push({ name: assignment.name, value })
     }
   } catch (e) {
     if (e instanceof ExecutionLimitError) throw e

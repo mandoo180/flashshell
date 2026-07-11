@@ -19,9 +19,11 @@ export type Token = { type: 'WORD'; word: Word } | { type: 'OP'; value: Operator
 // 도달하지 못한다. 그래서 `(`/`)` 는 `((` 캡처 *뒤* 전용 분기에서 따로 토큰화한다.
 const OPERATORS: Operator[] = ['2>>', '2>', '>>', '&&', '||', ';;', ';', '|', '>', '<']
 
-// 진행 중인 word 가 배열 리터럴 대입의 LHS(`NAME=` 또는 `NAME[subscript]=`)인지 —
-// 여는 `(` 를 인접 배열로 삼킬지 판정한다(M3 Part 3 task 2). 반드시 `=` 로 끝나야 한다.
-const ARRAY_ASSIGN_LHS_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?=$/
+// 진행 중인 word 가 배열 리터럴 대입의 LHS(`NAME=`/`NAME[subscript]=`, 그리고 M3 Part 4
+// 의 append 형 `NAME+=`/`NAME[subscript]+=`)인지 — 여는 `(` 를 인접 배열로 삼킬지
+// 판정한다(M3 Part 3 task 2). 반드시 `=`(선택적 선행 `+`) 로 끝나야 한다. `\+?` 는 단일
+// 리터럴 옵션이라 구조적(ReDoS 없음)이다.
+const ARRAY_ASSIGN_LHS_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=$/
 
 export function tokenize(input: string): Token[] {
   const tokens: Token[] = []

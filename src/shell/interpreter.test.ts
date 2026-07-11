@@ -1960,6 +1960,137 @@ describe('배열 대입 실행 (M3 Part 3 task 2) — state.arrays 에 저장', 
   })
 })
 
+describe('+= append 대입 실행 (M3 Part 4 task 1, docker debian:stable-slim bash 5 대조)', () => {
+  function freshState(): ShellState {
+    return {
+      cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' },
+      lastExitCode: 0, home: '/home/player', functions: new Map(), arrays: new Map(),
+    }
+  }
+
+  // --- rule 1: 스칼라 문자열 연결 (산술 아님) ---
+  it('스칼라 연결 s=hi; s+=there → hithere', async () => {
+    const state = freshState()
+    const r = await run('s=hi; s+=there; echo "$s"', fs, state, 100_000)
+    expect(r.stdout).toBe('hithere\n')
+    expect(state.env.s).toBe('hithere')
+  })
+
+  it('스칼라 += 는 산술이 아니라 문자열 연결: x=5; x+=3 → 53', async () => {
+    const state = freshState()
+    await run('x=5; x+=3', fs, state, 100_000)
+    expect(state.env.x).toBe('53')
+  })
+
+  it('미설정 변수 += 는 빈 베이스: unset u; u+=x → x', async () => {
+    const state = freshState()
+    const r = await run('u+=x; echo "[$u]"', fs, state, 100_000)
+    expect(r.stdout).toBe('[x]\n')
+    expect(state.env.u).toBe('x')
+  })
+
+  // --- rule 2: 배열 끝에 append ---
+  it('배열 끝에 append: arr=(a b); arr+=(c d) → a b c d', async () => {
+    const state = freshState()
+    const r = await run('arr=(a b); arr+=(c d); echo "${arr[@]}"', fs, state, 100_000)
+    expect(r.stdout).toBe('a b c d\n')
+    expect(state.arrays.get('arr')).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('append 원소도 분할/글롭된다: x="1 2"; arr=(a); arr+=($x b) → count 4', async () => {
+    const state = freshState()
+    const r = await run('x="1 2"; arr=(a); arr+=($x b); echo "${#arr[@]}|${arr[@]}"', fs, state, 100_000)
+    expect(r.stdout).toBe('4|a 1 2 b\n')
+    expect(state.arrays.get('arr')).toEqual(['a', '1', '2', 'b'])
+  })
+
+  it('미설정 배열에 += : arr+=(x y) → 새 배열 생성', async () => {
+    const state = freshState()
+    await run('newarr+=(x y)', fs, state, 100_000)
+    expect(state.arrays.get('newarr')).toEqual(['x', 'y'])
+  })
+
+  it('sparse 배열 append 는 최대인덱스+1 부터: arr=(a); arr[5]=z; arr+=(w) → w 는 인덱스 6', async () => {
+    // bash: append 는 length(=최대인덱스+1) 위치에 붙는다.
+    const state = freshState()
+    await run('arr=(a); arr[5]=z; arr+=(w)', fs, state, 100_000)
+    const arr = state.arrays.get('arr')!
+    expect(arr[0]).toBe('a')
+    expect(arr[5]).toBe('z')
+    expect(arr[6]).toBe('w')
+    expect(3 in arr).toBe(false) // 기존 hole 은 유지
+  })
+
+  // --- rule 3: 원소 문자열 연결 ---
+  it('원소 연결 arr=(a b c); arr[1]+=X → a bX c', async () => {
+    const state = freshState()
+    const r = await run('arr=(a b c); arr[1]+=X; echo "${arr[@]}"', fs, state, 100_000)
+    expect(r.stdout).toBe('a bX c\n')
+    expect(state.arrays.get('arr')).toEqual(['a', 'bX', 'c'])
+  })
+
+  it('원소 += 값은 분할/글롭 안 함: v="p q"; arr=(a b c); arr[1]+=$v → b + "p q"', async () => {
+    const state = freshState()
+    state.env.v = 'p q'
+    await run('arr=(a b c); arr[1]+=$v', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a', 'bp q', 'c'])
+  })
+
+  it('sparse 원소 += (미존재 인덱스): arr=(a b); arr[5]+=z → 인덱스 5 = z (빈 베이스)', async () => {
+    const state = freshState()
+    await run('arr=(a b); arr[5]+=z', fs, state, 100_000)
+    const arr = state.arrays.get('arr')!
+    expect(arr[5]).toBe('z')
+    expect(3 in arr).toBe(false)
+    expect(arr.length).toBe(6)
+  })
+
+  // --- rule 4: 프리픽스 += 는 OUTER 값을 베이스로, persist 하지 않는다 ---
+  it('프리픽스 += 는 persist 하지 않는다: s=orig; s+=APP true → s 는 orig 유지', async () => {
+    const state = freshState()
+    const r = await run('s=orig; s+=APP true; echo "[$s]"', fs, state, 100_000)
+    expect(r.stdout).toBe('[orig]\n')
+    expect(state.env.s).toBe('orig')
+  })
+
+  it('프리픽스 += 베이스는 OUTER 값 — 명령 실행 중엔 origAPP 로 보인다(함수 env 공유)', async () => {
+    // docker: s=orig; f(){ echo "[$s]"; }; s+=APP f → in=[origAPP], after=[orig]
+    const state = freshState()
+    const r = await run('s=orig; f(){ echo "in=[$s]"; }; s+=APP f; echo "after=[$s]"', fs, state, 100_000)
+    expect(r.stdout).toBe('in=[origAPP]\nafter=[orig]\n')
+    expect(state.env.s).toBe('orig')
+  })
+
+  // --- rule 5: cross-type edge (docker 확인) ---
+  it('cross-type 스칼라 += 배열: x=5; x+=(a b) → 5 a b (스칼라를 인덱스0 승격 후 append)', async () => {
+    const state = freshState()
+    const r = await run('x=5; x+=(a b); echo "${x[@]}"', fs, state, 100_000)
+    expect(r.stdout).toBe('5 a b\n')
+    expect(state.arrays.get('x')).toEqual(['5', 'a', 'b'])
+    expect('x' in state.env).toBe(false)
+  })
+
+  it('cross-type 배열 += 스칼라: arr=(a b); arr+=c → ac b (인덱스0에 연결)', async () => {
+    const state = freshState()
+    const r = await run('arr=(a b); arr+=c; echo "${arr[@]}"', fs, state, 100_000)
+    expect(r.stdout).toBe('ac b\n')
+    expect(state.arrays.get('arr')).toEqual(['ac', 'b'])
+  })
+
+  // --- malformed: 크래시 없이 얌전한 nonzero ---
+  it('malformed +=x 는 크래시 없이 nonzero (command not found)', async () => {
+    const state = freshState()
+    const r = await run('+=x', fs, state, 100_000)
+    expect(r.exitCode).not.toBe(0)
+  })
+
+  it('malformed arr[+=x 는 크래시 없이 nonzero', async () => {
+    const state = freshState()
+    const r = await run('arr[+=x', fs, state, 100_000)
+    expect(r.exitCode).not.toBe(0)
+  })
+})
+
 describe('배열 읽기 end-to-end (M3 Part 3 task 3) — 대입→확장→echo (docker bash 5.2 대조)', () => {
   function freshState(): ShellState {
     return {
