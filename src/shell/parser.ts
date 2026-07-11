@@ -1,7 +1,14 @@
-import { tokenize, type Operator, type Token, type Word } from './lexer'
+import { tokenize, type Operator, type Token, type Word, type HereDocBody } from './lexer'
 import { matchArrayLiteralEnd } from './subst'
 
-export interface Redir { fd: 0 | 1 | 2; op: '>' | '>>' | '<'; target: Word }
+/**
+ * 리다이렉션. 파일 계열(`>`/`>>`/`<`)은 확장할 target Word 를, here-doc(`<<`, M3 Part 4 task 5)
+ * 은 lexer pre-pass 가 잘라낸 본문(heredoc)을 싣는다 — 판별 유니온이라 interpreter 가
+ * `op==='<<'` 를 먼저 걸러내면 나머지는 파일 변형으로 좁혀진다(기존 target 접근이 그대로 안전).
+ */
+export type Redir =
+  | { fd: 0 | 1 | 2; op: '>' | '>>' | '<'; target: Word }
+  | { fd: 0; op: '<<'; heredoc: HereDocBody }
 /**
  * `NAME=value` 스칼라 대입, `NAME=(a b c)` 배열 리터럴(elements), `NAME[i]=value` 원소
  * 대입(index) 중 하나(M3 Part 3 task 2). 셋은 상호 배타적이다:
@@ -147,7 +154,7 @@ export interface ListNode {
   items: { op: ';' | '&&' | '||' | null; pipeline: PipelineNode }[]
 }
 
-const REDIR_OPS: Operator[] = ['>', '>>', '<', '2>', '2>>']
+const REDIR_OPS: Operator[] = ['>', '>>', '<', '<<', '2>', '2>>']
 // NAME= 접두사는 첫 조각(word[0])이 raw 일 때만 인식한다. 값 뒤쪽은 어떤 조각이든 허용한다.
 // 선택적 `[subscript]` 그룹(m[2])으로 원소 대입 `NAME[i]=value` 도 받는다(M3 Part 3 task 2).
 // 선택적 `+` 그룹(m[3], M3 Part 4 task 1)이 있으면 append 대입(`NAME+=`/`NAME[i]+=`)이다 —
@@ -685,7 +692,13 @@ class Parser {
    * 리다이렉션 파싱 규칙이 한 곳에만 있게 한다.
    */
   private parseOneRedir(): Redir {
-    const t = this.next() as { type: 'OP'; value: Operator }
+    const t = this.next() as { type: 'OP'; value: Operator; heredoc?: HereDocBody }
+    // here-doc: 대상 WORD 를 소비하지 않는다 — 본문은 lexer pre-pass 가 이미 잘라내 연산자
+    // 토큰(heredoc)에 실어뒀다. heredoc 이 없으면(정렬 어긋남 등 방어) graceful 문법 오류.
+    if (t.value === '<<') {
+      if (!t.heredoc) syntaxError('<<')
+      return { fd: 0, op: '<<', heredoc: t.heredoc }
+    }
     const target = this.peek()
     if (target.type !== 'WORD') syntaxError(t.value)
     this.next()

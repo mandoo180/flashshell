@@ -191,9 +191,33 @@ async function resolveRedirs(
   const redirs: ResolvedRedir[] = []
   let input = stdin
   let inputFromFile = false
-  let stdinRedir: ResolvedRedir | null = null // 마지막 < 리다이렉션. 내용은 루프 종료 후 읽는다.
+  let stdinRedir: ResolvedRedir | null = null // 마지막 < 파일 리다이렉션. 내용은 루프 종료 후 읽는다.
+  let heredocContent: string | null = null // 마지막 stdin 소스가 here-doc 이면 그 (확장된) 본문.
 
   for (const redir of redirsIn) {
+    // here-doc(`<<`): 본문을 stdin 으로 삼는다(파일 열기 없음). 비따옴표 delim 이면 본문을
+    // 큰따옴표 문맥으로 확장한다($var/${..}/$(..) — 단어분할·글롭 없음, expandForCase 재사용).
+    // 따옴표 delim(expand=false)이면 리터럴 그대로. 여러 stdin 소스면 마지막 것이 이긴다 —
+    // heredocContent/stdinRedir 를 서로 무효화해 루프 종료 후 나중 값만 남게 한다(docker:
+    // `cat <<A <<B` → B 의 본문). 확장 오류(예: `${x:?}`·명령치환 실패)는 얌전한 ExecResult.
+    if (redir.op === '<<') {
+      let content: string
+      if (redir.heredoc.expand) {
+        try {
+          content = await expandForCase([{ kind: 'dquote', text: redir.heredoc.body }], expandCtx)
+        } catch (e) {
+          if (e instanceof ExecutionLimitError) throw e
+          return { ok: false, result: { stdout: '', stderr: `bash: ${e instanceof Error ? e.message : String(e)}\n`, exitCode: 1 } }
+        }
+      } else {
+        content = redir.heredoc.body
+      }
+      heredocContent = content
+      stdinRedir = null
+      inputFromFile = true
+      continue
+    }
+
     let word: string
     try {
       word = await expandToSingle(redir.target, expandCtx)
@@ -222,11 +246,15 @@ async function resolveRedirs(
     }
 
     redirs.push(resolved)
-    if (redir.op === '<') { inputFromFile = true; stdinRedir = resolved }
+    // 파일 stdin 리다이렉션은 앞선 here-doc 를 무효화한다(마지막 stdin 소스가 이긴다).
+    if (redir.op === '<') { inputFromFile = true; stdinRedir = resolved; heredocContent = null }
   }
 
-  // 모든 리다이렉션의 open() 부작용이 끝난 뒤에야 실제 stdin 내용을 읽는다.
-  if (stdinRedir) {
+  // stdin 내용 확정: 마지막 소스가 here-doc 이면 그 본문, `<` 파일이면 open() 부작용이 모두
+  // 끝난 뒤 읽는다. 둘 다 없으면 넘겨받은 stdin(파이프 입력) 그대로.
+  if (heredocContent !== null) {
+    input = heredocContent
+  } else if (stdinRedir) {
     try {
       input = ctx.fs.readFile(stdinRedir.path)
     } catch (e) {

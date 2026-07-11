@@ -2577,3 +2577,139 @@ describe('B5: 디렉터리로 쓰기 리다이렉션은 EISDIR (M3 Part 4 task 3
     expect(r.stdout).toBe('x\ny\n')
   })
 })
+
+// here-document (M3 Part 4 task 5). 멀티라인이라 REPL/골든 한 줄 하네스로는 도달 불가 —
+// sh.exec 에 멀티라인 문자열을 직접 넘겨 검증한다(parse 가 개행을 자르지 않는다). 모든
+// 기대값은 debian:stable-slim bash 5 실측(docker)이다.
+describe('here-document <<EOF', () => {
+  it('기본: 본문이 stdin (각 줄 + 개행)', async () => {
+    expect((await sh.exec('cat <<EOF\nhello\nworld\nEOF')).stdout).toBe('hello\nworld\n')
+  })
+
+  it('확장(비따옴표 delim): $var 확장', async () => {
+    const r = await sh.exec('x=hi; cat <<EOF\nval=$x\nEOF')
+    expect(r.stdout).toBe('val=hi\n')
+  })
+
+  it('확장(비따옴표 delim): $(...) 명령치환', async () => {
+    expect((await sh.exec('cat <<EOF\n$(echo z)\nEOF')).stdout).toBe('z\n')
+  })
+
+  it("no-expand: <<'EOF' 는 본문을 확장하지 않는다(리터럴)", async () => {
+    const r = await sh.exec("x=hi; cat <<'EOF'\nval=$x\nEOF")
+    expect(r.stdout).toBe('val=$x\n')
+  })
+
+  it('no-expand: <<"EOF" 도 확장 안 함', async () => {
+    const r = await sh.exec('x=hi; cat <<"EOF"\nval=$x\nEOF')
+    expect(r.stdout).toBe('val=$x\n')
+  })
+
+  it('no-expand: <<\\EOF 도 확장 안 함', async () => {
+    const r = await sh.exec('x=hi; cat <<\\EOF\nval=$x\nEOF')
+    expect(r.stdout).toBe('val=$x\n')
+  })
+
+  it('<<-: 본문 줄과 닫는 delim 의 선행 TAB 을 벗긴다', async () => {
+    const r = await sh.exec('cat <<-EOF\n\tindented\n\t\ttwo\n\tEOF')
+    expect(r.stdout).toBe('indented\ntwo\n')
+  })
+
+  it('<<-: SPACE 는 벗기지 않는다(TAB 만)', async () => {
+    const r = await sh.exec('cat <<-EOF\n   spaced\nEOF')
+    expect(r.stdout).toBe('   spaced\n')
+  })
+
+  it('<<-: 닫는 delim 이 TAB 없이 와도 닫힌다', async () => {
+    const r = await sh.exec('cat <<-EOF\n\tbody\nEOF')
+    expect(r.stdout).toBe('body\n')
+  })
+
+  it('<<-\'EOF\': tab-strip 과 no-expand 동시', async () => {
+    const r = await sh.exec("cat <<-'END'\n\tlit=$x\n\tEND")
+    expect(r.stdout).toBe('lit=$x\n')
+  })
+
+  it('명령과 조합: grep 이 본문을 stdin 으로 받는다', async () => {
+    expect((await sh.exec('grep h <<EOF\nhi\nbye\nEOF')).stdout).toBe('hi\n')
+  })
+
+  it('파이프: cat <<EOF | wc -l 는 줄 수', async () => {
+    expect((await sh.exec('cat <<EOF | wc -l\na\nb\nEOF')).stdout).toBe('2\n')
+  })
+
+  it('빈 본문: cat <<EOF\\nEOF 는 빈 출력', async () => {
+    expect((await sh.exec('cat <<EOF\nEOF')).stdout).toBe('')
+  })
+
+  it('출력 리다이렉션과 조합', async () => {
+    const r = await sh.exec('cat <<EOF > out.txt\ndata\nEOF\ncat out.txt')
+    expect(r.stdout).toBe('data\n')
+  })
+
+  it('here-doc 뒤에 다음 명령이 이어진다', async () => {
+    expect((await sh.exec('cat <<EOF\none\nEOF\necho two')).stdout).toBe('one\ntwo\n')
+  })
+
+  it('한 줄에 here-doc 둘: 마지막 것이 stdin 을 이긴다', async () => {
+    expect((await sh.exec('cat <<A <<B\naaa\nA\nbbb\nB')).stdout).toBe('bbb\n')
+  })
+
+  it('delim 이 부분 문자열로만 나오면 닫히지 않는다', async () => {
+    const r = await sh.exec('cat <<EOF\nEOFX\nxEOF\nEOF')
+    expect(r.stdout).toBe('EOFX\nxEOF\n')
+  })
+
+  it('빈 줄이 본문에 보존된다', async () => {
+    expect((await sh.exec('cat <<EOF\n\nmiddle\n\nEOF')).stdout).toBe('\nmiddle\n\n')
+  })
+
+  it('unterminated(닫는 delim 없음): 크래시 없이 부분 본문 전달(bash 실측)', async () => {
+    const r = await sh.exec('cat <<EOF\nhi')
+    expect(r.stdout).toBe('hi\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('source 파일 내용의 here-doc 도 동작한다', async () => {
+    fs.writeFile('/home/player/s.sh', 'cat <<EOF\nfromfile\nEOF\n')
+    expect((await sh.exec('source s.sh')).stdout).toBe('fromfile\n')
+  })
+
+  it('회귀: << 는 따옴표 안에서 here-doc 가 아니다', async () => {
+    expect((await sh.exec("echo 'x << y'")).stdout).toBe('x << y\n')
+    expect((await sh.exec('echo "a << b"')).stdout).toBe('a << b\n')
+  })
+
+  it('회귀: 산술 확장 $(( a << b )) 는 왼쪽 시프트', async () => {
+    expect((await sh.exec('echo $(( 1 << 3 ))')).stdout).toBe('8\n')
+  })
+
+  it('회귀: 산술 명령 (( x << n )) 는 왼쪽 시프트', async () => {
+    expect((await sh.exec('x=1; (( x = x << 4 )); echo $x')).stdout).toBe('16\n')
+  })
+
+  it('회귀: 단일 < 리다이렉션은 그대로 동작', async () => {
+    expect((await sh.exec('echo hi > f; cat < f')).stdout).toBe('hi\n')
+  })
+
+  it('회귀: 주석 속 << 는 here-doc 가 아니고 뒷줄도 삼키지 않는다', async () => {
+    const r = await sh.exec('echo hi # <<EOF\nbody\nEOF')
+    expect(r.stdout).toBe('hi\n')
+    expect(r.exitCode).toBe(127) // body / EOF 가 각각 command not found
+  })
+
+  it('$(...) 안의 here-doc 는 명령치환 재파싱에서 처리된다', async () => {
+    const r = await sh.exec('echo "start $(cat <<EOF\ninner\nEOF\n) end"')
+    expect(r.stdout).toBe('start inner end\n')
+  })
+
+  it('복합 명령(while read)에 here-doc 를 먹인다', async () => {
+    const r = await sh.exec('while read line; do echo "got: $line"; done <<EOF\napple\nbanana\nEOF')
+    expect(r.stdout).toBe('got: apple\ngot: banana\n')
+  })
+
+  it('복합 명령 + <<- tab-strip', async () => {
+    const r = await sh.exec('while read x; do echo "[$x]"; done <<-EOF\n\tone\n\ttwo\n\tEOF')
+    expect(r.stdout).toBe('[one]\n[two]\n')
+  })
+})
