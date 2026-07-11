@@ -132,6 +132,47 @@ describe('커스텀 IFS', () => {
   })
 })
 
+describe('혼합 IFS (공백류+비공백류) — POSIX 단일 구분자 병합', () => {
+  // docker: printf "a  ::b\n" > f; IFS=" :" read a b < f → a=[a] b=[:b]
+  it('ws런+비공백 하나가 구분자 하나로 합쳐진다 (docker: a=[a] b=[:b], NOT b=[::b])', async () => {
+    state.env.IFS = ' :'
+    await runRead(['a', 'b'], 'a  ::b\n')
+    expect(state.env.a).toBe('a')
+    expect(state.env.b).toBe(':b')
+  })
+  // docker: printf "a  ::b c\n" > f; IFS=" :" read a b c < f → a=[a] b=[] c=[b c]
+  it('연속 비공백 구분자 사이엔 빈 필드가 생긴다 (docker: a=[a] b=[] c=[b c], NOT c=[:b c])', async () => {
+    state.env.IFS = ' :'
+    await runRead(['a', 'b', 'c'], 'a  ::b c\n')
+    expect(state.env.a).toBe('a')
+    expect(state.env.b).toBe('')
+    expect(state.env.c).toBe('b c')
+  })
+  // docker: printf "  x : y \n" > f; IFS=" :" read a b < f → a=[x] b=[y]
+  it('선행/중간/후행 ws-run + 비공백 하나가 각각 한 구분자로 병합된다 (docker: a=[x] b=[y])', async () => {
+    state.env.IFS = ' :'
+    await runRead(['a', 'b'], '  x : y \n')
+    expect(state.env.a).toBe('x')
+    expect(state.env.b).toBe('y')
+  })
+  // docker: printf "  x : y \n" > f; IFS=" :" read a b c < f → a=[x] b=[y] c=[]
+  it('마지막 변수는 후행 ws만 벗기고 남는 게 없으면 빈 문자열 (docker: a=[x] b=[y] c=[])', async () => {
+    state.env.IFS = ' :'
+    await runRead(['a', 'b', 'c'], '  x : y \n')
+    expect(state.env.a).toBe('x')
+    expect(state.env.b).toBe('y')
+    expect(state.env.c).toBe('')
+  })
+  // docker: printf "a, b, c\n" > f; IFS=", " read a b c < f → a=[a] b=[b] c=[c] (회귀 확인)
+  it('CSV 관용구( IFS=", " )는 계속 정상 동작한다 — 회귀 확인 (docker: a=[a] b=[b] c=[c])', async () => {
+    state.env.IFS = ', '
+    await runRead(['a', 'b', 'c'], 'a, b, c\n')
+    expect(state.env.a).toBe('a')
+    expect(state.env.b).toBe('b')
+    expect(state.env.c).toBe('c')
+  })
+})
+
 describe('EOF', () => {
   it('빈 stdin 이면 exit 1', async () => {
     const out = await runRead(['v'], '')

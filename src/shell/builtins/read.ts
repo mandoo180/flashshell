@@ -13,12 +13,14 @@ import type { CommandFn, CommandOutput } from '../types'
  *  - 변수 이름이 0개면 전체 논리 줄이 **가공 없이**(트림도 분할도 안 함) `$REPLY`에
  *    들어간다(bash 매뉴얼 "assigned ... otherwise unmodified" — 앞뒤 공백 있는 줄도
  *    REPLY는 트림 안 됨; 명시적 `read REPLY`는 1개 변수 규칙대로 트림됨).
- *  - 변수 이름이 1개 이상이면 IFS로 단어분할한다: 마지막 변수 앞까지는 각 변수가
- *    "선행 IFS-공백 스킵 → 다음 구분자까지" 한 단어씩 먹고, 구분자가 IFS-공백이면
- *    뒤따르는 연속 IFS-공백도 함께 삼킨다(런 전체가 구분자 하나), IFS-비공백이면 그
- *    한 글자만 삼킨다(연속 비공백은 그 사이에 빈 필드를 만든다). 마지막 변수는 남은
- *    전체를 갖되 선행 IFS-공백만 스킵하고 후행 IFS-**공백**만 벗긴다(비공백 구분자는
- *    후행이라도 안 벗겨짐 — `IFS=: read a b`, 입력 ":x:y:" → a='' b='x:y:').
+ *  - 변수 이름이 1개 이상이면 IFS로 단어분할한다(POSIX 규칙, expand.ts의 scanSegment와
+ *    동일): 마지막 변수 앞까지는 각 변수가 "선행 IFS-공백 스킵 → 다음 구분자까지" 한
+ *    단어씩 먹고, 그 뒤의 구분자 하나는 "IFS-공백 실행 → 선택적 비공백 하나 → 뒤따르는
+ *    IFS-공백 실행"을 통째로 삼킨다(혼합 IFS에서 `a  ::b`, `IFS=' :'` → 필드 "a" 다음
+ *    구분자는 "  :" 전체 하나, 남은 ":b"가 다음 필드로 — docker 확인). 인접한 두
+ *    비공백 구분자는 그 사이에 빈 필드를 만든다. 마지막 변수는 남은 전체를 갖되 선행
+ *    IFS-공백만 스킵하고 후행 IFS-**공백**만 벗긴다(비공백 구분자는 후행이라도 안
+ *    벗겨짐 — `IFS=: read a b`, 입력 ":x:y:" → a='' b='x:y:').
  *  - 단어 수보다 변수가 많으면 남는 변수는 빈 문자열.
  *  - 개행을 못 만나고 EOF면(빈 stdin 포함, 또는 마지막 줄에 개행이 없어도) exit 1 —
  *    단 그때까지 읽은 내용은 그래도 대입된다(부분 대입 후 실패).
@@ -94,6 +96,7 @@ function splitForRead(text: string, protectedIdx: boolean[], ifs: string[], nVar
   const n = text.length
   const isDelim = (p: number): boolean => !protectedIdx[p] && ifsSet.has(text[p]!)
   const isWsDelim = (p: number): boolean => isDelim(p) && isIfsWhitespace(text[p]!)
+  const isNonWsDelim = (p: number): boolean => isDelim(p) && !isIfsWhitespace(text[p]!)
 
   let pos = 0
   const skipLeadingWs = (): void => { while (pos < n && isWsDelim(pos)) pos++ }
@@ -106,8 +109,13 @@ function splitForRead(text: string, protectedIdx: boolean[], ifs: string[], nVar
     while (pos < n && !isDelim(pos)) pos++
     results.push(text.slice(start, pos))
     if (pos < n) {
-      if (isWsDelim(pos)) { pos++; while (pos < n && isWsDelim(pos)) pos++ }
-      else pos++
+      // 논리적 분리자 하나 소비(expand.ts scanSegment 와 동일 규칙): IFS-공백 실행 →
+      // 선택적 비공백 하나 → 뒤따르는 IFS-공백 실행, 이 전체가 구분자 하나다.
+      while (pos < n && isWsDelim(pos)) pos++
+      if (pos < n && isNonWsDelim(pos)) {
+        pos++
+        while (pos < n && isWsDelim(pos)) pos++
+      }
     }
   }
 
