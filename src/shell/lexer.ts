@@ -7,13 +7,16 @@ export type WordPart =
 
 export type Word = WordPart[]
 
-export type Operator = '|' | '||' | '&&' | ';' | ';;' | '>' | '>>' | '<' | '2>' | '2>>'
+export type Operator = '|' | '||' | '&&' | ';' | ';;' | '>' | '>>' | '<' | '2>' | '2>>' | '(' | ')'
 
 export type Token = { type: 'WORD'; word: Word } | { type: 'OP'; value: Operator } | { type: 'EOF' }
 
 // 긴 것부터. 앞선 것이 먼저 매칭된다. ';;' 는 ';' 보다 먼저 와야 한다 — 안 그러면
 // `;;` 의 첫 글자에서 이미 ';' 로 매칭되어 버려(둘 다 ';'로 시작) 두 번째 ';' 가
 // 별개의 ';' 토큰으로 새어나간다 (task 6: case 문의 `;;` 분기 종료자).
+// `(`/`)` 는 여기 없다 — 이 목록은 아래 while 루프 앞부분(따옴표·치환 캡처 이전)에서
+// startsWith 로 스캔되는데, 그 자리에서 `(` 를 먹으면 word-start `((` 산술 캡처가 절대
+// 도달하지 못한다. 그래서 `(`/`)` 는 `((` 캡처 *뒤* 전용 분기에서 따로 토큰화한다.
 const OPERATORS: Operator[] = ['2>>', '2>', '>>', '&&', '||', ';;', ';', '|', '>', '<']
 
 export function tokenize(input: string): Token[] {
@@ -177,6 +180,25 @@ export function tokenize(input: string): Token[] {
       const j = matchDoubleParenEnd(input, i)
       push('raw', input.slice(i, j))
       i = j
+      continue
+    }
+
+    // ( 와 ) 는 메타문자다 — bash 는 이 둘을 언제나 토큰 경계로 본다(글자에 붙어 있어도).
+    // `(echo)`→`(` `echo` `)`, `f()`→`f` `(` `)`, `f(){`→`f` `(` `)` `{`.
+    // (docker 확인: `echo a(b` → syntax error near `(`, 즉 ( 가 단어를 끊는다.) 그래서
+    // 진행 중이던 단어를 먼저 flush 하고 단일 OP 토큰으로 낸다. 이 분기를 위 `((` 산술
+    // 캡처보다 *뒤에* 두는 게 핵심이다 — word-start `((`(예: `(( x > 3 ))`)는 산술 명령
+    // 이라 통째로 삼켜야 하고, 여기 도달했다는 건 (a) 두 번째 `(`거나 (b) 단어 중간의 `(`
+    // 거나 (c) `( (`처럼 공백으로 갈라진 단일 `(`(중첩 subshell — Task 3)라는 뜻이다.
+    // ( 와 ) 만 메타문자다. `{`/`}`는 메타문자가 아니라 예약어라(글자에 붙으면 안 끊는다:
+    // `echo a{b`→리터럴 `a{b`) 렉서가 손대지 않고, 기존 RESERVED_WORDS/keywordOf 경로가
+    // 단독 단어일 때만 그룹 구분자로 인정한다. `[`/`]`도 메타문자가 아니다(글롭/`[` 빌트인).
+    // NOTE(Task 3): 명령 위치의 선행 `(`(subshell)는 아직 파서 규칙이 없어 얌전한 문법
+    // 오류로 끝난다 — Task 3 에서 SubshellNode 를 추가한다.
+    if (ch === '(' || ch === ')') {
+      flush()
+      tokens.push({ type: 'OP', value: ch })
+      i++
       continue
     }
 

@@ -170,34 +170,6 @@ function tryAssignment(word: Word): Assignment | null {
   return { name, value }
 }
 
-/**
- * case 패턴의 선택적 여는 `(` 를 뗀다 — `(h*)` 처럼 렉서가 `(` 를 별도 토큰으로 안
- * 내고(`(`/`)` 는 OPERATORS 에 없다 — 그냥 raw 글자로 흡수된다) 첫 raw 조각 맨 앞에
- * 붙는다. 떼고 나서 그 조각이 비면 통째로 지운다(순수 `(` 하나뿐이던 토큰이었단 뜻 —
- * 이땐 호출부가 다음 토큰을 진짜 첫 패턴으로 다시 읽는다). raw 가 아닌 조각으로
- * 시작하면(따옴표) 손대지 않는다 — 여는 `(` 는 항상 따옴표 밖에 있다.
- */
-function stripLeadingParen(word: Word): Word {
-  const first = word[0]
-  if (!first || first.kind !== 'raw' || !first.text.startsWith('(')) return word
-  const text = first.text.slice(1)
-  return text.length > 0 ? [{ kind: 'raw' as const, text }, ...word.slice(1)] : word.slice(1)
-}
-
-/**
- * case 패턴의 닫는 `)` 를 뗀다. `)` 도 `(` 와 마찬가지로 별도 토큰이 아니라 마지막
- * raw 조각 끝에 붙는다(예: `h*)`, `dog)`). 마지막 조각이 raw 이고 `)` 로 끝나면
- * 떼어내고 hasParen=true. 그 외(따옴표로 끝나거나 `)` 가 없음)엔 손대지 않고
- * hasParen=false — 호출부가 다음 토큰에서 alternation(`|`) 이나 단독 `)` 를 더 찾는다.
- */
-function splitTrailingParen(word: Word): { core: Word; hasParen: boolean } {
-  const last = word[word.length - 1]
-  if (!last || last.kind !== 'raw' || !last.text.endsWith(')')) return { core: word, hasParen: false }
-  const text = last.text.slice(0, -1)
-  const core = text.length > 0 ? [...word.slice(0, -1), { kind: 'raw' as const, text }] : word.slice(0, -1)
-  return { core, hasParen: true }
-}
-
 class Parser {
   private pos = 0
   constructor(private tokens: Token[]) {}
@@ -367,32 +339,20 @@ class Parser {
 
   /**
    * 현재 위치가 `NAME ()` (함수 정의 헤더)로 시작하는지 토큰을 소비하지 않고 앞을 훑어
-   * 판정한다. `(`/`)` 는 렉서 연산자가 아니라(OPERATORS 에 없음) 인접 raw 텍스트에
-   * 흡수되므로(task 6 의 case 패턴과 같은 문제), 공백 유무에 따라 갈라지는 여러 토큰
-   * 형태를 모두 받는다 — docker 로 전부 유효함을 확인했다:
-   *   `f()`     → 한 토큰 raw "f()"            (consume 1)
-   *   `f ()`    → raw "f", raw "()"            (consume 2)
-   *   `f( )`    → raw "f(", raw ")"            (consume 2)
-   *   `f ( )`   → raw "f", raw "(", raw ")"    (consume 3)
+   * 판정한다. task 2 에서 `(`/`)` 를 메타문자로 토큰화한 뒤로는 공백 유무와 무관하게
+   * 언제나 같은 세 토큰 열이다 — `f()`·`f ()`·`f( )`·`f ( )` 전부:
+   *   WORD(NAME)  OP( `(` )  OP( `)` )                     (consume 3)
+   * (예전 M2 의 4형식 문자열 수술은 `(`/`)` 가 raw 로 흡수돼 스페이싱마다 토큰이 갈라졌기
+   * 때문이었다 — 이제 렉서가 항상 별도 토큰으로 끊으므로 한 형태로 수렴한다.)
    * 매치되면 {name, consume(토큰 수)} 를, 아니면 null 을 준다(→ 일반 단순 명령).
    */
   private matchFuncDefName(): { name: string; consume: number } | null {
-    const w0 = this.rawAt(0)
-    if (w0 === null) return null
-
-    // `NAME()` — 한 토큰 안에 `()` 까지 붙어 있음.
-    let m = /^([A-Za-z_][A-Za-z0-9_]*)\(\)$/.exec(w0)
-    if (m) return { name: m[1]!, consume: 1 }
-
-    // `NAME(` — 여는 괄호까지 붙고, 닫는 `)` 는 다음 토큰.
-    m = /^([A-Za-z_][A-Za-z0-9_]*)\($/.exec(w0)
-    if (m) return this.rawAt(1) === ')' ? { name: m[1]!, consume: 2 } : null
-
-    // 순수 `NAME` — `()` / `(` `)` 가 뒤따르는지 본다.
-    if (!FUNC_NAME_RE.test(w0)) return null
-    const w1 = this.rawAt(1)
-    if (w1 === '()') return { name: w0, consume: 2 }
-    if (w1 === '(') return this.rawAt(2) === ')' ? { name: w0, consume: 3 } : null
+    const name = this.rawAt(0)
+    if (name === null || !FUNC_NAME_RE.test(name)) return null
+    const t1 = this.tokens[this.pos + 1]
+    const t2 = this.tokens[this.pos + 2]
+    const isParen = (t: Token | undefined, v: '(' | ')'): boolean => t !== undefined && t.type === 'OP' && t.value === v
+    if (isParen(t1, '(') && isParen(t2, ')')) return { name, consume: 3 }
     return null
   }
 
@@ -552,36 +512,25 @@ class Parser {
   }
 
   /**
-   * 한 branch 의 `[(] PATTERN [| PATTERN]* )` 를 읽는다. `(`/`)` 는 렉서 연산자가
-   * 아니라(OPERATORS 에 없음) 인접한 WORD 의 raw 조각에 그냥 흡수돼 있으므로
-   * (`h*)` 는 통째로 raw 텍스트 "h*)"), 토큰 자체가 아니라 그 raw 텍스트를
-   * stripLeadingParen/splitTrailingParen 으로 까서 판정한다. `|` 는 (case 밖에서
-   * 파이프 연산자와 같은 렉서 토큰이지만) 이 자리에선 패턴 구분자로 읽는다 — 문법
-   * 위치로 구분되는 건 bash 도 동일하다.
+   * 한 branch 의 `[(] PATTERN [| PATTERN]* )` 를 읽는다. task 2 에서 `(`/`)` 를 메타문자로
+   * 토큰화한 뒤로는 문자열 수술 없이 토큰을 직접 소비한다: 선택적 여는 OP `(` 하나를 먼저
+   * 걷어내고, 각 PATTERN(WORD)을 읽되 OP `|` 면 다음 패턴으로 이어가고 OP `)` 면 종료한다.
+   * `|` 는 (case 밖에서 파이프 연산자와 같은 렉서 토큰이지만) 이 자리에선 패턴 구분자로
+   * 읽는다 — 문법 위치로 구분되는 건 bash 도 동일하다. 글롭 브래킷 `[a-z])` 은 `[`/`]`가
+   * 메타문자가 아니라 WORD `[a-z]` + OP `)` 로 자연히 갈라진다(docker 확인).
    */
   private parseCasePatterns(): Word[] {
     const patterns: Word[] = []
-    let first = true
+    // 선택적 여는 `(` (예: `(a)`, `(a|b)`) — bash 에서 생략 가능하고 무시된다.
+    if (this.atOp('(')) this.next()
 
     for (;;) {
       const t = this.next()
-      if (t.type !== 'WORD') syntaxError(t.type === 'OP' ? t.value : ')')
-      let word = t.word
-      if (first) {
-        word = stripLeadingParen(word)
-        first = false
-        // 토큰이 순수 '(' 하나뿐이었다(예: '(' 가 공백으로 떨어진 별도 토큰) — 다음
-        // 토큰이 진짜 첫 패턴이다.
-        if (word.length === 0) continue
-      }
-
-      const { core, hasParen } = splitTrailingParen(word)
-      if (core.length > 0) patterns.push(core)
-      if (hasParen) break
+      if (t.type !== 'WORD') syntaxError(t.type === 'OP' ? t.value : 'esac')
+      patterns.push(t.word)
 
       if (this.atOp('|')) { this.next(); continue }
-      const nt = this.peek()
-      if (nt.type === 'WORD' && bareWord(nt.word) === ')') { this.next(); break }
+      if (this.atOp(')')) { this.next(); break }
       syntaxError(')')
     }
 

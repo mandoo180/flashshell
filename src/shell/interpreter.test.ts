@@ -1186,6 +1186,36 @@ describe('함수 / 브레이스 그룹 / return (task 7, docker debian:stable-sl
     expect(r.stderr).toMatch(/syntax error/)
   })
 
+  it('컴팩트 f(){ echo hi; }; f (공백 없이) 도 정의·호출된다 (task 2 토큰화)', async () => {
+    // docker: f(){ echo hi; }; f → hi
+    expect((await sh.exec('f(){ echo hi; }; f')).stdout).toBe('hi\n')
+  })
+
+  it('컴팩트 f(){ 는 위치인자도 정상 전달한다', async () => {
+    // docker: greet(){ echo hi $1; }; greet bob → hi bob
+    expect((await sh.exec('greet(){ echo hi $1; }; greet bob')).stdout).toBe('hi bob\n')
+  })
+
+  it('{echo hi; } (여는 { 뒤 공백 없음) 는 그룹이 아니라 명령이라 command not found', async () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c '{echo hi; }'
+    //   => syntax error near unexpected token `}' (bash 는 `{echo` 를 명령으로 본다)
+    // 우리는 `{echo` 를 명령 이름으로 실행 → command not found (JS 크래시가 아니라 얌전한 실패).
+    const r = await sh.exec('{echo hi; }')
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stdout).toBe('')
+  })
+})
+
+// 선행 subshell `( )` 는 Task 3(SubshellNode) 범위 — 여기서는 토큰화만 하고 파서 규칙이 없어
+// 얌전한 문법 오류로 끝난다(exec 는 절대 크래시하지 않는다). 기존에도 동작하지 않던 형태다.
+describe('선행 subshell ( ) 는 아직 미지원이지만 크래시하지 않는다 (task 2 범위, Task 3 예정)', () => {
+  it('( echo sub ) 는 얌전한 문법 오류(nonzero)로 끝나고 exec 를 리젝트하지 않는다', async () => {
+    const sh2 = createShell({ fs, cwd: '/home/player', home: '/home/player' })
+    const r = await sh2.exec('( echo sub )')
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr).toMatch(/syntax error/)
+  })
+
   it('무한 재귀 함수는 스텝 예산을 소진해 exit 130 이지, JS 크래시가 아니다', async () => {
     const tiny = createShell({ fs, cwd: '/home/player', home: '/home/player', stepBudget: 5000 })
     const r = await tiny.exec('f() { f; }; f')

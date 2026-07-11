@@ -174,12 +174,77 @@ describe('tokenize', () => {
       expect(() => tokenize('(( 1 + 2')).toThrow(/unexpected EOF/)
     })
 
-    it('단어 중간의 (( 는 (단어 시작이 아니므로) 그냥 raw 글자로 흡수된다', () => {
-      // 예: a((b -- 첫 글자 a 로 이미 단어가 시작된 뒤라 word.length !== 0.
+    it('단어 중간의 (( 는 (단어 시작이 아니므로) 산술이 아니라 메타문자 ( 로 단어를 끊는다', () => {
+      // 예: a((b -- 첫 글자 a 로 이미 단어가 시작된 뒤라 word.length !== 0 → 산술 캡처 안 함.
+      // ( 는 메타문자라 단어를 끊는다. 실제 bash 확인:
+      //   docker run --rm debian:stable-slim bash -c 'a((b))' => syntax error near unexpected token `('
+      // (즉 bash 도 ( 를 메타문자로 보고 단어를 끊는다 — 산술로 통째 삼키지 않는다.)
       const ts = tokenize('a((b))')
+      expect(ops(ts)).toEqual(['(', '(', ')', ')'])
+      expect(words(ts).map((t) => t.word)).toEqual([[{ kind: 'raw', text: 'a' }], [{ kind: 'raw', text: 'b' }]])
+    })
+  })
+
+  describe('( ) 메타문자 토큰화 (task 2 part 2)', () => {
+    it('단일 ( 와 ) 는 별도 OP 토큰이다 (공백으로 갈라진 subshell 형태)', () => {
+      // 실제 bash 확인: docker run --rm debian:stable-slim bash -c '( echo sub )' => sub
+      const ts = tokenize('( echo )')
+      expect(ops(ts)).toEqual(['(', ')'])
+      expect(words(ts).map((t) => t.word)).toEqual([[{ kind: 'raw', text: 'echo' }]])
+    })
+
+    it('( 는 글자에 붙어 있어도 단어를 끊는다 (메타문자)', () => {
+      // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo a(b' => syntax error near `('
+      const ts = tokenize('echo a(b')
+      expect(ops(ts)).toEqual(['('])
+      expect(words(ts).map((t) => t.word)).toEqual([
+        [{ kind: 'raw', text: 'echo' }],
+        [{ kind: 'raw', text: 'a' }],
+        [{ kind: 'raw', text: 'b' }],
+      ])
+    })
+
+    it('f() 는 f ( ) 세 토큰이다 (공백 유무 무관)', () => {
+      for (const src of ['f()', 'f ()', 'f( )', 'f ( )']) {
+        const ts = tokenize(src)
+        expect(ops(ts)).toEqual(['(', ')'])
+        expect(words(ts).map((t) => t.word)).toEqual([[{ kind: 'raw', text: 'f' }]])
+      }
+    })
+
+    it('컴팩트 f(){ 는 f ( ) { 로 쪼개지고 { 는 별도 WORD 로 남는다', () => {
+      const ts = tokenize('f(){ echo hi; }')
+      const shape = ts
+        .filter((t) => t.type !== 'EOF')
+        .map((t) => (t.type === 'OP' ? `OP(${t.value})` : `WORD(${(t as { word: { text: string }[] }).word.map((p) => p.text).join('')})`))
+      expect(shape).toEqual(['WORD(f)', 'OP(()', 'OP())', 'WORD({)', 'WORD(echo)', 'WORD(hi)', 'OP(;)', 'WORD(})'])
+    })
+
+    it('word-start (( 는 여전히 산술로 통째 캡처(단일 ( 토큰으로 쪼개지 않는다)', () => {
+      const ts = tokenize('(( 1+2 ))')
       expect(ops(ts)).toEqual([])
       expect(words(ts)).toHaveLength(1)
-      expect(words(ts)[0]!.word).toEqual([{ kind: 'raw', text: 'a((b))' }])
+      expect(words(ts)[0]!.word).toEqual([{ kind: 'raw', text: '(( 1+2 ))' }])
+    })
+
+    it('공백으로 갈라진 ( ( 는 두 개의 ( 토큰이다 (중첩 subshell, 산술 아님)', () => {
+      // word-start `((` 만 산술. 공백이 끼면 각각 단일 ( 토큰(중첩 subshell — Task 3).
+      const ts = tokenize('( (echo) )')
+      expect(ops(ts)).toEqual(['(', '(', ')', ')'])
+      expect(words(ts).map((t) => t.word)).toEqual([[{ kind: 'raw', text: 'echo' }]])
+    })
+
+    it('따옴표 안의 ( ) 는 토큰이 아니라 리터럴이다', () => {
+      const ts = tokenize(`echo '(a)'`)
+      expect(ops(ts)).toEqual([])
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'literal', text: '(a)' }])
+    })
+
+    it('{ 와 } 는 (메타문자가 아니라 예약어라) 글자에 붙으면 끊지 않는다', () => {
+      // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'echo a{b' => a{b (안 끊음)
+      const ts = tokenize('echo a{b')
+      expect(ops(ts)).toEqual([])
+      expect(words(ts)[1]!.word).toEqual([{ kind: 'raw', text: 'a{b' }])
     })
   })
 

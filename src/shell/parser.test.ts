@@ -426,10 +426,10 @@ describe('parse', () => {
   })
 
   // --- case (task 6): case WORD in [(] PATTERN [| PATTERN]* ) LIST ;; ]* esac.
-  // `(`/`)` 는 렉서 연산자가 아니라(OPERATORS 에 없음) 인접 WORD 의 raw 조각에 그냥
-  // 흡수돼 있다(`h*)` 는 통째로 raw "h*)") — parseCasePatterns 가 그 raw 텍스트를
-  // stripLeadingParen/splitTrailingParen 으로 깐다. `|` 는 파이프와 같은 렉서 토큰이지만
-  // 이 자리에선 패턴 구분자로 읽는다.
+  // task 2(Part 2)에서 `(`/`)` 를 메타문자로 토큰화한 뒤로 parseCasePatterns 는 문자열
+  // 수술 없이 토큰을 직접 소비한다: 선택적 여는 OP `(`, 각 PATTERN(WORD), OP `|`(구분자)/
+  // OP `)`(종료). `h*)` 는 WORD `h*` + OP `)` 로 갈라진다. `|` 는 파이프와 같은 렉서
+  // 토큰이지만 이 자리에선 패턴 구분자로 읽는다.
   describe('case 파싱 (task 6)', () => {
     it('단일 branch 를 CaseNode 로 파싱한다: word/patterns/body', () => {
       const cmd = parse('case hi in h*) echo H;; esac').items[0]!.pipeline.commands[0]!
@@ -527,6 +527,12 @@ describe('함수 정의 / 브레이스 그룹 (task 7)', () => {
     expect(parse('f () { echo hi; }')).toEqual(canonical)
     expect(parse('f( ) { echo hi; }')).toEqual(canonical)
     expect(parse('f ( ) { echo hi; }')).toEqual(canonical)
+  })
+
+  it('컴팩트 f(){ echo hi; } (공백 없이) 도 같은 funcdef AST 다 (task 2 토큰화)', () => {
+    // 실제 bash 확인: docker run --rm debian:stable-slim bash -c 'f(){ echo hi; }; f' => hi
+    const canonical = parse('f() { echo hi; }')
+    expect(parse('f(){ echo hi; }')).toEqual(canonical)
   })
 
   it('function 예약어 형태(괄호 유무 둘 다)를 파싱한다', () => {
