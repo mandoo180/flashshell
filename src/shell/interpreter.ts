@@ -5,7 +5,7 @@ import { expandWord, expandToSingle, expandForCase, expandArithExpr, type Expand
 import { matchSegment } from './glob'
 import { lookupCommand, isKnownUnimplemented } from './registry'
 import { evalArith } from './arith'
-import type { CommandEnv, ExecResult, ShellState } from './types'
+import type { CommandEnv, ExecResult, ShellState, StdinCursor } from './types'
 import type { Word } from './lexer'
 
 /**
@@ -54,6 +54,15 @@ interface RunCtx {
    * bash 는 `$( )` 안의 return 을 "치환 셸을 벗어날 뿐, 바깥 함수는 안 벗어남" 으로 본다.
    */
   funcDepth: number
+  /**
+   * `while read`/`for` 루프가 본문/조건의 `read` 에 흘려주는 가변 stdin 커서(task 6).
+   * runWhile/runFor 가 자기 stdin(`< file` 또는 파이프)으로 만들어 이 필드에 얹고(반복
+   * 동안), runSimpleCommand 가 cmdEnv.stdinCursor 로 넘겨 `read` 가 한 줄씩 소비한다.
+   * childCtx 는 이 필드를 **복사하지 않는다**(아래 childCtx 객체 리터럴에 없음) — 서브셸/
+   * 명령치환/파이프 단계는 자기 stdin 을 쓰지 루프 커서를 이어받으면 안 되기 때문이다
+   * (`… | while read` 의 파이프 단계, `$(read)` 명령치환 등이 루프 줄을 훔치지 않게).
+   */
+  stdinCursor?: StdinCursor
 }
 
 function spend(ctx: RunCtx): void {
@@ -776,6 +785,11 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
       args: argv.slice(1),
       stdin: input,
       stdinFromFile: inputFromFile,
+      // while/for 루프의 줄별 커서(task 6). 단, 이 명령에 **자체 `< file` 리다이렉션이
+      // 있으면**(inputFromFile) 커서를 넘기지 않는다 — 그 명령은 자기 파일을 stdin 으로
+      // 써야 하므로 루프 커서가 가로채면 안 된다(docker 확인: `for i in a b; do read x <
+      // other; done` 은 매 반복 other 의 첫 줄을 다시 읽는다, 루프 커서를 안 먹는다).
+      stdinCursor: inputFromFile ? undefined : ctx.stdinCursor,
       fs: ctx.fs,
       state: { ...ctx.state, env: commandEnv } as ShellState,
       // find -exec / xargs 가 다른 명령줄을 실행할 때 쓴다. 같은 ctx(fs/state/budget 공유) 위에서
@@ -870,16 +884,24 @@ async function runIf(node: IfNode, ctx: RunCtx, initialStdin = ''): Promise<Exec
  * 반전) 참인 동안 본문을 실행한다. 본문에서 올라온 break/continue 신호를 여기서 잡는다.
  * 반복 0회면 exit 0, 그 외엔 마지막으로 정상 완료된 본문의 exitCode (bash 확인).
  *
- * @param initialStdin `while..done < file`(task 5)에서 온 입력을 **첫 반복의 조건절**로만
- *   흘려보낸다(기본값 `''`). while 의 stdin 소비자는 대개 조건의 `read`(`while read x`)라
- *   조건에 넘긴다 — 첫 반복에서 read 가 첫 줄을 먹고, 둘째 반복부터는 `''`(EOF)라 루프가
- *   끝난다(첫 줄만 처리). 줄별 커서로 매 반복 한 줄씩 먹는 온전한 동작은 Task 6 범위다.
+ * @param initialStdin `while..done < file`(task 5) 또는 `… | while`(파이프)에서 온 입력.
+ *   task 6: 이 입력 전체로 **가변 커서**(`ctx.stdinCursor`)를 열어 반복 동안 얹는다 —
+ *   본문/조건의 `read`(`while read x`)가 매 반복 이 커서에서 한 줄씩 소비하고(runSimpleCommand
+ *   → cmdEnv.stdinCursor), 소진되면 read 가 exit 1 을 내 조건이 거짓이 돼 루프가 끝난다.
+ *   추가로 이 입력을 **첫 반복의 조건절**에도 그대로 흘려보낸다(condStdin) — read 는 커서를
+ *   우선하므로 무해하고, 조건이 read 가 아닌 stdin 소비 명령(예: `cat`)일 때 첫 반복이
+ *   입력을 보게 하는 Task 5 동작을 그대로 유지한다(회귀 방지). 반복 후 커서는 복원한다.
  */
 async function runWhile(node: WhileNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
   let stdout = ''
   let stderr = ''
   let exitCode = 0
-  let condStdin = initialStdin // 첫 반복에만 흘려보내고, 이후엔 '' 로 리셋한다(Task 6 커서 전 최소 동작).
+  let condStdin = initialStdin // 첫 반복에만 흘려보낸다(비-read 조건의 Task 5 동작 유지). read 는 커서를 우선.
+
+  // task 6: 루프 stdin 을 가변 커서로 연다. 본문/조건의 read 가 이 커서에서 한 줄씩 먹는다.
+  // 중첩 루프가 같은 ctx 를 공유하므로 이전 커서를 저장했다 finally 에서 복원한다.
+  const savedCursor = ctx.stdinCursor
+  ctx.stdinCursor = { rest: initialStdin }
 
   ctx.loopDepth++
   try {
@@ -916,6 +938,7 @@ async function runWhile(node: WhileNode, ctx: RunCtx, initialStdin = ''): Promis
     }
   } finally {
     ctx.loopDepth--
+    ctx.stdinCursor = savedCursor // task 6: 커서 복원(중첩/바깥 루프가 이어받지 않게)
   }
 
   return { stdout, stderr, exitCode }
@@ -934,14 +957,18 @@ async function runWhile(node: WhileNode, ctx: RunCtx, initialStdin = ''): Promis
  * (bash 확인: `for x in a b; do :; done; echo $x` → b) — 여기서 값을 되돌리지 않으므로
  * 자연히 그렇게 된다.
  *
- * @param initialStdin `for..done < file`(task 5)에서 온 입력을 **첫 반복의 본문**으로만
- *   흘려보낸다(기본값 `''`, while 과 같은 최소 스레딩 — Task 6 커서 전까지 첫 반복 한정).
+ * @param initialStdin `for..done < file`(task 5) 또는 파이프에서 온 입력. task 6: 이 입력
+ *   전체로 **가변 커서**(`ctx.stdinCursor`)를 열어 반복 동안 얹는다 — 본문의 `read` 가 매
+ *   반복 한 줄씩 소비한다(단, 본문 명령에 자체 `< file` 이 있으면 그 파일을 쓴다: 커서는
+ *   inputFromFile 일 때 주입 안 됨 — 브리프 case 7). 추가로 이 입력을 **첫 반복 본문**에도
+ *   흘려보낸다(bodyStdin) — read 는 커서를 우선하므로 무해하고, 본문 첫 단계의 비-read
+ *   stdin 소비(예: `cat`)에 대한 Task 5 동작을 그대로 유지한다. 반복 후 커서는 복원한다.
  */
 async function runFor(node: ForNode, ctx: RunCtx, initialStdin = ''): Promise<ExecResult> {
   let stdout = ''
   let stderr = ''
   let exitCode = 0
-  let bodyStdin = initialStdin // 첫 반복 본문에만 흘려보내고 이후엔 '' (Task 6 커서 전 최소 동작).
+  let bodyStdin = initialStdin // 첫 반복 본문에만 흘려보낸다(비-read 첫 단계의 Task 5 동작 유지). read 는 커서를 우선.
 
   const expandCtx = expandCtxFor(ctx)
   let values: string[]
@@ -952,6 +979,10 @@ async function runFor(node: ForNode, ctx: RunCtx, initialStdin = ''): Promise<Ex
     if (e instanceof ExecutionLimitError) throw e
     return { stdout: '', stderr: `bash: ${errnoText(e)}\n`, exitCode: 1 }
   }
+
+  // task 6: 루프 stdin 을 가변 커서로 연다(runWhile 과 동일 — 본문 read 가 한 줄씩 먹는다).
+  const savedCursor = ctx.stdinCursor
+  ctx.stdinCursor = { rest: initialStdin }
 
   ctx.loopDepth++
   try {
@@ -983,6 +1014,7 @@ async function runFor(node: ForNode, ctx: RunCtx, initialStdin = ''): Promise<Ex
     }
   } finally {
     ctx.loopDepth--
+    ctx.stdinCursor = savedCursor // task 6: 커서 복원(runWhile 과 동일)
   }
 
   return { stdout, stderr, exitCode }

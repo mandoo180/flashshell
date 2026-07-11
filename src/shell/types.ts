@@ -39,6 +39,14 @@ export interface CommandEnv {
    * GNU wc 는 이 둘을 구분해 출력 폭을 다르게 쓴다. 파이프는 크기를 미리 알 수 없다.
    */
   stdinFromFile: boolean
+  /**
+   * `while read`/`for` 루프가 주입하는 가변 stdin 커서(task 6). 있으면 `read` 는 `e.stdin`
+   * 대신 여기서 논리 줄 하나를 소비하고 `rest` 를 갱신한다 — 그래서 반복마다 다음 줄을
+   * 읽는다. 인터프리터(runSimpleCommand)가 주입하되, 명령에 **자체 `< file` 리다이렉션이
+   * 있으면 주입하지 않는다**(그 명령은 자기 파일을 stdin 으로 써야 하므로 — 커서가
+   * 가로채면 안 된다). 루프 밖의 단독 `read` 에는 애초에 커서가 없다.
+   */
+  stdinCursor?: StdinCursor
   fs: VFS
   state: ShellState
   /**
@@ -62,6 +70,17 @@ export interface CommandEnv {
    */
   funcDepth?: number
 }
+
+/**
+ * `while read`/`for ... read` 루프가 본문에 흘려주는 **가변 stdin 커서**(M3 Part 3 task 6).
+ * 루프가 자기 stdin(`< file` 리다이렉션 또는 파이프 입력) 전체를 `rest` 에 담아 만들고,
+ * 본문/조건의 `read` 가 논리 줄 하나를 소비할 때마다 소비한 만큼 `rest` 를 앞에서 잘라
+ * 갱신한다 — 그래서 매 반복이 **다음** 줄을 읽고, 소진되면 `read` 가 exit 1 을 내 `while
+ * read` 조건이 거짓이 돼 루프가 끝난다. `e.stdin`(명령마다 불변 복사)과 달리 반복 간에
+ * 상태가 이어지는 유일한 통로다. 커서가 없으면(`e.stdinCursor` 미주입) `read` 는 예전대로
+ * `e.stdin` 한 번만 읽는다(단독 `read v < file`, 파이프 `echo x | read v`).
+ */
+export interface StdinCursor { rest: string }
 
 export type CommandOutput = ExecResult
 export type CommandFn = (e: CommandEnv) => CommandOutput | Promise<CommandOutput>

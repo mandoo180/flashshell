@@ -2107,13 +2107,12 @@ describe('복합 명령 리다이렉션 실행 (M3 Part 3 task 5, docker debian:
     expect(r.stdout).toBe('hello\n')
   })
 
-  it('Task 6 경계: while read x; do echo $x; done < file — 파싱/실행이 크래시하지 않는다 (첫 줄만, 커서는 task 6)', async () => {
-    // 이 태스크는 파싱 + 최소 실행만 보장한다. 줄별 커서(매 반복 한 줄)는 task 6 이라
-    // 지금은 첫 줄만 처리된다 — 크래시/무한루프 없이 얌전히 끝나기만 하면 된다.
+  it('Task 6: while read x; do echo $x; done < file — 매 반복 한 줄씩 (커서)', async () => {
+    // docker: printf 'l1\nl2\nl3\n' > f; while read x; do echo $x; done < f → l1/l2/l3
     fs.writeFile('/home/player/lines.txt', 'l1\nl2\nl3\n')
     const r = await sh.exec('while read x; do echo $x; done < lines.txt')
     expect(r.exitCode).toBe(0)
-    expect(r.stdout).toBe('l1\n') // 첫 줄만 (task 6 커서 전 최소 동작)
+    expect(r.stdout).toBe('l1\nl2\nl3\n')
   })
 
   it('회귀: redir 없는 복합 명령은 그대로 터미널로 출력한다', async () => {
@@ -2138,5 +2137,141 @@ describe('복합 명령 리다이렉션 실행 (M3 Part 3 task 5, docker debian:
   it('회귀: 단순 명령 리다이렉션은 그대로 동작한다 (echo hi > out)', async () => {
     await sh.exec('echo hi > simple.txt')
     expect(fs.readFile('/home/player/simple.txt')).toBe('hi\n')
+  })
+})
+
+describe('while/for read — 줄별 stdin 커서 (M3 Part 3 task 6, docker debian:stable-slim bash 5.2 로 확인됨)', () => {
+  it('case1: while read x; done < f — 개행 종료 세 줄 모두 처리', async () => {
+    // docker: printf 'a\nb\nc\n' > f; while read x; do echo "got:$x"; done < f → got:a/got:b/got:c
+    fs.writeFile('/home/player/f', 'a\nb\nc\n')
+    const r = await sh.exec('while read x; do echo "got:$x"; done < f')
+    expect(r.stdout).toBe('got:a\ngot:b\ngot:c\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('case2: while read a b — 다중 변수, 마지막이 나머지', async () => {
+    // docker: printf 'x y z\n' > f2; while read a b; do echo "$a|$b"; done < f2 → x|y z
+    fs.writeFile('/home/player/f2', 'x y z\n')
+    const r = await sh.exec('while read a b; do echo "$a|$b"; done < f2')
+    expect(r.stdout).toBe('x|y z\n')
+  })
+
+  it('case3: cat f | while read n — 파이프 stdin 을 매 반복 한 줄씩 (printf 미구현이라 cat 로 동등 재현)', async () => {
+    // docker: printf '1\n2\n' | while read n; do echo "n=$n"; done → n=1/n=2
+    // 우리 엔진엔 printf 가 없어 같은 두 줄을 담은 파일을 cat 으로 파이프에 흘린다.
+    fs.writeFile('/home/player/nums', '1\n2\n')
+    const r = await sh.exec('cat nums | while read n; do echo "n=$n"; done')
+    expect(r.stdout).toBe('n=1\nn=2\n')
+  })
+
+  it('case3b: 파이프 while 은 서브셸 — 변수는 밖으로 안 샌다(출력만 일치)', async () => {
+    // docker: n=orig; printf '1\n2\n' | while read n; do :; done; echo "after=$n" → after=orig
+    fs.writeFile('/home/player/nums', '1\n2\n')
+    const r = await sh.exec('n=orig; cat nums | while read n; do :; done; echo "after=$n"')
+    expect(r.stdout).toBe('after=orig\n')
+  })
+
+  it('case4: 빈 파일 → 루프 0회', async () => {
+    // docker: printf '' > e; while read x; do echo no; done < e → (없음), exit 0
+    fs.writeFile('/home/player/e', '')
+    const r = await sh.exec('while read x; do echo no; done < e')
+    expect(r.stdout).toBe('')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('case5: 마지막 줄에 개행 없음 → 그 줄은 read 하지만 exit 1 이라 본문 미실행(EOF 규칙)', async () => {
+    // docker: printf 'a\nb\nc' > f3; while read x; do echo "got:$x"; done < f3 → got:a/got:b (got:c 없음)
+    fs.writeFile('/home/player/f3', 'a\nb\nc')
+    const r = await sh.exec('while read x; do echo "got:$x"; done < f3')
+    expect(r.stdout).toBe('got:a\ngot:b\n')
+  })
+
+  it('case5b: 단독 read 의 부분 마지막 줄 — 대입은 하되 exit 1 (Task 4 정합)', async () => {
+    // docker: printf 'a' > f4; read x < f4; echo "[$x] $?" → [a] 1
+    fs.writeFile('/home/player/f4', 'a')
+    const r = await sh.exec('read x < f4; echo "[$x] $?"')
+    expect(r.stdout).toBe('[a] 1\n')
+  })
+
+  it('case6: read 가 앞뒤 IFS 공백을 매 줄 트림한다', async () => {
+    // docker: printf '  hello world  \n\tindented\n' > f6; while read line; do echo "[$line]"; done < f6
+    //         → [hello world] / [indented]
+    fs.writeFile('/home/player/f6', '  hello world  \n\tindented\n')
+    const r = await sh.exec('while read line; do echo "[$line]"; done < f6')
+    expect(r.stdout).toBe('[hello world]\n[indented]\n')
+  })
+
+  it('case7: for 본문의 inner read < otherfile 은 커서가 아니라 그 파일을 매 반복 다시 읽는다', async () => {
+    // docker: printf 'FIRST\nSECOND\n' > other; for i in a b; do read x < other; echo $x; done
+    //         → FIRST/FIRST (커서가 가로채지 않음 — inner 명시 리다이렉션이 우선)
+    fs.writeFile('/home/player/other', 'FIRST\nSECOND\n')
+    const r = await sh.exec('for i in a b; do read x < other; echo $x; done')
+    expect(r.stdout).toBe('FIRST\nFIRST\n')
+  })
+
+  it('case7b: for..done < f 인데 inner read < g — 루프 커서 대신 g 를 씀(커서 하이재킹 방지)', async () => {
+    // for 루프가 f 커서를 열어도, 본문의 read x < g 는 g 를 읽는다(inputFromFile override).
+    fs.writeFile('/home/player/floop', 'L1\nL2\nL3\n')
+    fs.writeFile('/home/player/g', 'GG\n')
+    const r = await sh.exec('for i in a b; do read x < g; echo $x; done < floop')
+    expect(r.stdout).toBe('GG\nGG\n')
+  })
+
+  it('case8: 큰 입력도 매 반복 spend — 넉넉한 예산이면 전부 처리', async () => {
+    fs.writeFile('/home/player/big', Array.from({ length: 200 }, (_, i) => String(i + 1)).join('\n') + '\n')
+    const r = await sh.exec('c=0; while read n; do c=$((c+1)); done < big; echo "processed=$c"')
+    expect(r.stdout).toBe('processed=200\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('case8b: 큰 입력 + 작은 예산 → 반복마다 예산 소모하다 runaway 가드에 걸린다(무한/우회 아님)', async () => {
+    fs.writeFile('/home/player/big2', Array.from({ length: 500 }, (_, i) => String(i + 1)).join('\n') + '\n')
+    const tiny = createShell({ fs, cwd: '/home/player', home: '/home/player', stepBudget: 20 })
+    const r = await tiny.exec('while read n; do echo $n; done < big2')
+    expect(r.exitCode).toBe(130) // ExecutionLimitError → per-반복 spend 가 예산을 깎아 가드에 걸림
+  })
+
+  it('REPLY: 이름 없는 while read 도 커서를 전진시킨다', async () => {
+    // docker: printf 'p\nq\n' > fr; while read; do echo "R=$REPLY"; done < fr → R=p/R=q
+    fs.writeFile('/home/player/fr', 'p\nq\n')
+    const r = await sh.exec('while read; do echo "R=$REPLY"; done < fr')
+    expect(r.stdout).toBe('R=p\nR=q\n')
+  })
+
+  it('줄이어짐: read 가 \\+개행을 이어붙이고 커서는 소비한 물리 줄만큼 전진', async () => {
+    // docker: printf 'a\\\nb\nc\n' > fj; while read x; do echo "got:[$x]"; done < fj → got:[ab]/got:[c]
+    fs.writeFile('/home/player/fj', 'a\\\nb\nc\n')
+    const r = await sh.exec('while read x; do echo "got:[$x]"; done < fj')
+    expect(r.stdout).toBe('got:[ab]\ngot:[c]\n')
+  })
+
+  it('중첩 while read: 안쪽이 자기 파일 커서를 열고, 끝나면 바깥 커서가 복원된다', async () => {
+    // docker: printf '1\n2\n' > outer; printf 'A\nB\n' > inner;
+    //   while read x; do while read y; do echo "$x-$y"; done < inner; done < outer
+    //   → 1-A/1-B/2-A/2-B
+    fs.writeFile('/home/player/outer', '1\n2\n')
+    fs.writeFile('/home/player/inner', 'A\nB\n')
+    const r = await sh.exec('while read x; do while read y; do echo "$x-$y"; done < inner; done < outer')
+    expect(r.stdout).toBe('1-A\n1-B\n2-A\n2-B\n')
+  })
+
+  it('for 본문 read 가 루프 커서를 한 줄씩 소비한다 (< file → for)', async () => {
+    // 값 목록보다 줄이 많아도, for 반복 수(값 개수)만큼만 read 가 돈다.
+    // docker: printf 'r1\nr2\nr3\n' > ff; for i in a b; do read v; echo "$i=$v"; done < ff → a=r1/b=r2
+    fs.writeFile('/home/player/ff', 'r1\nr2\nr3\n')
+    const r = await sh.exec('for i in a b; do read v; echo "$i=$v"; done < ff')
+    expect(r.stdout).toBe('a=r1\nb=r2\n')
+  })
+
+  it('회귀: stdin 없는 while/for(비-read 본문)는 커서 도입 후에도 그대로', async () => {
+    const r1 = await sh.exec('i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done')
+    expect(r1.stdout).toBe('0\n1\n2\n')
+    const r2 = await sh.exec('for x in a b c; do echo $x; done')
+    expect(r2.stdout).toBe('a\nb\nc\n')
+  })
+
+  it('회귀: 파이프 read 격리 — echo x | read v 는 밖에 v 를 안 남긴다(커서 무관)', async () => {
+    const r = await sh.exec('echo hi | read v; echo "[$v]"')
+    expect(r.stdout).toBe('[]\n')
   })
 })

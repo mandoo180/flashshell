@@ -1,8 +1,10 @@
 import type { CommandFn, CommandOutput } from '../types'
 
 /**
- * `read` 빌트인(단일 라인, M3 Part 3 task 4). `while read`용 mutable stdin 커서는
- * task 6 — 여기서는 `e.stdin` 위에서 한 번만 읽는다(파이프/리다이렉션에서 온 그대로).
+ * `read` 빌트인(단일 라인, M3 Part 3 task 4 + task 6 커서). 기본은 `e.stdin` 위에서 한 번만
+ * 읽지만(파이프/리다이렉션에서 온 그대로), `while read`/`for` 루프가 `e.stdinCursor`(가변
+ * 커서)를 주입하면 거기서 논리 줄 하나를 소비하고 커서를 갱신한다 — 그래서 반복마다 다음
+ * 줄을 읽고, 소진되면 exit 1 로 루프가 끝난다(task 6, StdinCursor 주석 참고).
  *
  * 전부 docker debian:stable-slim bash 5.2.37 실측(task-4-report.md 참고):
  *  - 논리 줄 하나를 읽어 변수(들)에 대입한다. 논리 줄은 물리 줄과 다를 수 있다 — `-r`
@@ -60,11 +62,14 @@ function ifsChars(env: Record<string, string>): string[] {
   return out
 }
 
-interface LogicalLine { text: string; protectedIdx: boolean[]; hitNewline: boolean }
+interface LogicalLine { text: string; protectedIdx: boolean[]; hitNewline: boolean; consumed: number }
 
 /**
  * stdin에서 논리 줄 하나를 읽는다(백슬래시 처리 포함). `protectedIdx[i]`는 `text[i]`가
- * 백슬래시로 이스케이프됐는지(그래서 IFS 분할 대상에서 빠지는지)를 나타낸다.
+ * 백슬래시로 이스케이프됐는지(그래서 IFS 분할 대상에서 빠지는지)를 나타낸다. `consumed`는
+ * 이 논리 줄이 소비한 stdin 앞부분의 **문자 수**다(개행·줄이어짐 `\`+개행 포함) — `while
+ * read` 커서(task 6)가 `stdin.slice(consumed)`로 다음 줄로 넘어가는 데 쓴다. 물리 줄과
+ * 논리 줄이 다를 수 있어(줄이어짐) `text.length`로는 구할 수 없다.
  */
 function readLogicalLine(stdin: string, raw: boolean): LogicalLine {
   let text = ''
@@ -87,7 +92,7 @@ function readLogicalLine(stdin: string, raw: boolean): LogicalLine {
     protectedIdx.push(false)
     i += 1
   }
-  return { text, protectedIdx, hitNewline }
+  return { text, protectedIdx, hitNewline, consumed: i }
 }
 
 /** 논리 줄을 nVars 개로 나눈다(마지막이 나머지). RegExp 없이 문자 단위 스캔(ReDoS 무관). */
@@ -157,7 +162,15 @@ export const read: CommandFn = (e): CommandOutput => {
   }
   const { raw, names } = parsed
 
-  const line = readLogicalLine(e.stdin, raw)
+  // 커서가 주입됐으면(while/for 루프 본문, task 6) `e.stdin`이 아니라 커서의 남은 입력에서
+  // 읽고, 소비한 만큼 커서를 앞에서 잘라 갱신한다 — 그래서 같은 커서를 공유하는 다음
+  // 반복의 read 가 그 다음 줄을 읽는다. 커서가 없으면(단독 `read v < file`, 파이프
+  // `echo x | read v`) 예전대로 `e.stdin`을 한 번만 읽는다. 갱신은 REPLY(이름 0개)/일반
+  // 분기보다 먼저 해 두 경로 모두 커서를 전진시킨다.
+  const cursor = e.stdinCursor
+  const source = cursor ? cursor.rest : e.stdin
+  const line = readLogicalLine(source, raw)
+  if (cursor) cursor.rest = source.slice(line.consumed)
   const exitCode = line.hitNewline ? 0 : 1
 
   if (names.length === 0) {
