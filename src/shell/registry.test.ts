@@ -50,7 +50,7 @@ describe('type', () => {
     lookupCommand('type')!({
       name: 'type', args, stdin: '', stdinFromFile: false,
       fs: new VFS(),
-      state: { cwd: '/', oldPwd: '/', env: {}, lastExitCode: 0, home: '/', functions: new Map() },
+      state: { cwd: '/', oldPwd: '/', env: {}, lastExitCode: 0, home: '/', functions: new Map(), arrays: new Map() },
     })
 
   it('빌트인을 빌트인이라 말한다', async () => {

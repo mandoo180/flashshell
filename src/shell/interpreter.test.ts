@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createShell } from './index'
-import { run } from './interpreter'
+import { run, childCtx } from './interpreter'
 import { VFS } from './vfs'
 import { VfsError } from './errors'
 import type { Shell, ShellState } from './types'
@@ -535,7 +535,7 @@ describe('위치 매개변수 (task 3) — run() 에 positional 을 직접 주�
   // docker: debian:stable-slim bash -c 'set -- a b c; echo $1 $#; echo "$*"; echo $@'
   //   => "a 3", "a b c", "a b c"
   function freshState(): ShellState {
-    return { cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' }, lastExitCode: 0, home: '/home/player', functions: new Map() }
+    return { cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' }, lastExitCode: 0, home: '/home/player', functions: new Map(), arrays: new Map() }
   }
 
   it('$1 $2 가 인자로 치환된다', async () => {
@@ -648,7 +648,7 @@ describe('산술 확장 $(( )) 통합 (task-1)', () => {
     // docker: i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done  →  0 1 2
     const r = await run('i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done', fs, {
       cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' },
-      lastExitCode: 0, home: '/home/player', functions: new Map(),
+      lastExitCode: 0, home: '/home/player', functions: new Map(), arrays: new Map(),
     }, 100_000)
     expect(r.stdout).toBe('0\n1\n2\n')
     expect(r.exitCode).toBe(0)
@@ -1710,5 +1710,90 @@ describe('shebang 스크립트 실행 ./script.sh (task 9, docker debian:stable-
     const r = await sh.exec('plain.sh')
     expect(r.exitCode).toBe(127)
     expect(r.stderr).toBe('bash: plain.sh: command not found\n')
+  })
+})
+
+describe('배열 저장 (task-1, M3 Part 3) — 저장 + 격리만. 파싱(arr=(...))/확장(${arr[@]})은 task 2/3', () => {
+  // 아직 arr=(...) 파싱도, ${arr[@]} 확장도 없다. 이 블록은 브리프가 요구하는 대로
+  // "저장 + 격리"만 기계적으로 검증한다 — bash 의미(서브셸 밖으로 안 샘) 자체는
+  // task 2/3 에서 진짜 스크립트로 재검증한다.
+  function freshState(): ShellState {
+    return {
+      cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' },
+      lastExitCode: 0, home: '/home/player', functions: new Map(), arrays: new Map(),
+    }
+  }
+
+  it('ShellState 는 arrays 필드를 갖고, 새로 만들면 빈 Map 이다', () => {
+    const state = freshState()
+    expect(state.arrays).toBeInstanceOf(Map)
+    expect(state.arrays.size).toBe(0)
+  })
+
+  it('run() 은 arrays 가 채워진 state 를 받아도 그대로 동작한다 (저장 필드 배선 확인)', async () => {
+    const state = freshState()
+    state.arrays.set('a', ['x', 'y'])
+    const r = await run('echo hi', fs, state, 100_000)
+    expect(r).toEqual({ stdout: 'hi\n', stderr: '', exitCode: 0 })
+    // 단순 명령 실행은 arrays 를 안 건드린다 (아직 대입 문법이 없으니 당연하지만,
+    // 필드가 실수로 사라지거나 초기화되지 않는지 확인한다).
+    expect(state.arrays.get('a')).toEqual(['x', 'y'])
+  })
+
+  it('childCtx 는 arrays 를 새 Map 으로 복사한다 (부모와 다른 참조 — 서브셸 격리의 핵심)', () => {
+    const state = freshState()
+    state.arrays.set('a', ['x', 'y'])
+    const parentCtx = {
+      fs, state, budget: { remaining: 1000 }, positional: [] as string[],
+      loopDepth: 0, functions: new Map(), funcDepth: 0,
+    }
+    const child = childCtx(parentCtx)
+    expect(child.state.arrays).not.toBe(state.arrays) // 참조가 다르다
+    expect(child.state.arrays.get('a')).toEqual(['x', 'y']) // 값은 상속(스냅샷)됐다
+  })
+
+  it('자식이 배열 맵을 직접 조작해도(Map 조작 — arr[0]=X 파싱 전 대체) 부모로 안 샌다', () => {
+    // bash 근거(파싱/확장 붙는 task 2/3 후 진짜 스크립트로 재검증 예정):
+    // arr=(a b c); ( arr[0]=X; echo ${arr[0]} ); echo ${arr[0]} → X, a
+    const state = freshState()
+    state.arrays.set('a', ['x', 'y'])
+    const parentCtx = {
+      fs, state, budget: { remaining: 1000 }, positional: [] as string[],
+      loopDepth: 0, functions: new Map(), funcDepth: 0,
+    }
+    const child = childCtx(parentCtx)
+
+    // 서브셸 안에서의 "변이" 를 흉내낸다: 기존 원소 갱신 + 새 키 추가
+    child.state.arrays.set('a', ['MUTATED'])
+    child.state.arrays.set('b', ['new'])
+
+    expect(state.arrays.get('a')).toEqual(['x', 'y']) // 부모의 기존 원소는 그대로
+    expect(state.arrays.has('b')).toBe(false) // 자식에서 만든 새 키도 부모엔 없다
+  })
+
+  it('부모가 나중에 배열을 바꿔도 이미 뜬 자식 사본에는 안 보인다 (양방향 격리)', () => {
+    const state = freshState()
+    state.arrays.set('a', ['x'])
+    const parentCtx = {
+      fs, state, budget: { remaining: 1000 }, positional: [] as string[],
+      loopDepth: 0, functions: new Map(), funcDepth: 0,
+    }
+    const child = childCtx(parentCtx)
+    state.arrays.set('c', ['later'])
+    expect(child.state.arrays.has('c')).toBe(false)
+  })
+
+  it('shebang 스크립트 실행(execScriptFile) 은 호출자의 arrays 를 그대로 둔 채로 돈다', async () => {
+    // arr=(...) 대입 문법이 아직 없어 스크립트 "안"에서 배열을 실제로 바꿔볼 수는
+    // 없지만(task 2/3 이후 재검증), execScriptFile 이 이 필드를 안 건드리는지 —
+    // 즉 저장 배선이 스크립트 실행 경로에서도 안 깨지는지는 지금 확인할 수 있다.
+    fs.writeFile('/home/player/arrtest.sh', 'echo scripted\n', 0o755)
+    const state = freshState()
+    state.arrays.set('a', ['x', 'y'])
+    const originalArraysRef = state.arrays
+    const r = await run('./arrtest.sh', fs, state, 100_000)
+    expect(r).toEqual({ stdout: 'scripted\n', stderr: '', exitCode: 0 })
+    expect(state.arrays).toBe(originalArraysRef) // 최상위 state 객체 자체는 안 건드림
+    expect(state.arrays.get('a')).toEqual(['x', 'y'])
   })
 })

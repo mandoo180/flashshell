@@ -9,7 +9,7 @@ let state: ShellState
 beforeEach(() => {
   fs = new VFS()
   fs.mkdir('/home/player/docs', { recursive: true })
-  state = { cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' }, lastExitCode: 0, home: '/home/player', functions: new Map() }
+  state = { cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' }, lastExitCode: 0, home: '/home/player', functions: new Map(), arrays: new Map() }
 })
 
 const env = (name: string, args: string[], stdin = ''): CommandEnv =>

@@ -20,6 +20,14 @@ export interface ShellState {
   lastExitCode: number
   readonly home: string
   functions: Map<string, ListNode>
+  /**
+   * 인덱스 배열(이름 → 원소 문자열 배열). M3 Part 3 은 이 저장 테이블만 추가한다 —
+   * `arr=(...)` 대입 파싱과 `${arr[@]}` 확장은 각각 task 2/3 이다. 배열 "값"은 언제나
+   * 통째로 교체된다(원소를 in-place 로 mutate 하지 않는다) — 그래야 아래 childCtx/
+   * execScriptFile 의 얕은 `new Map(parent)` 복사만으로 서브셸/스크립트 격리가 맞는다.
+   * (원소 배열 자체를 in-place 로 고치면 자식·부모가 같은 배열 객체를 참조해 격리가 샌다.)
+   */
+  arrays: Map<string, string[]>
 }
 
 export interface CommandEnv {

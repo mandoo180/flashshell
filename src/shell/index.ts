@@ -24,6 +24,7 @@ export function createShell(opts: CreateShellOptions = {}): Shell {
     lastExitCode: 0,
     home,
     functions: new Map(),
+    arrays: new Map(),
   }
 
   return {

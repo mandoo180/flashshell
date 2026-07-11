@@ -61,17 +61,22 @@ function spend(ctx: RunCtx): void {
 }
 
 /**
- * ctx 의 상태(cwd/env)만 독립된 복사본으로 뜬 자식 컨텍스트를 만든다. fs 와 budget 은
+ * ctx 의 상태(cwd/env/arrays)만 독립된 복사본으로 뜬 자식 컨텍스트를 만든다. fs 와 budget 은
  * 그대로 공유한다 — 파일시스템 변경은 실제 부작용이라 서브프로세스도 공유해야 하고,
  * 스텝 예산은 무한루프 방어이므로 서브셸이라고 새로 채워지면 안 된다.
  * 명령치환(runSubshell)과, 2개 이상 단계인 파이프라인의 각 단계, 그리고 shebang 스크립트
  * 실행(execScriptFile, Task 9)이 이 함수를 쓴다 — 세 경우 모두 "이 실행이 바깥 셸의
- * cwd/env 를 못 바꾼다"는 같은 규칙이다.
+ * cwd/env/arrays 를 못 바꾼다"는 같은 규칙이다.
  *
  * positional 도 (env 처럼) 얕은 복사 배열을 새로 뜬다 — 지금은 아무도 이 배열을
  * 바꾸지 않지만, Task 7(함수 호출)이 자식 컨텍스트 안에서 positional 을 통째로
  * 교체(swap)하게 될 때 부모 배열이 오염되면 안 된다. 참조를 공유하면 자식이
  * push/splice 로 부모 배열을 직접 건드릴 여지가 생기므로, 여기서 항상 새 배열을 만든다.
+ *
+ * arrays(M3 Part 3 task 1)도 같은 이유로 `new Map(ctx.state.arrays)` 얕은 사본을 뜬다 —
+ * `{ ...ctx.state }` 스프레드만으로는 Map 참조가 그대로 공유돼 자식의 배열 변이가 부모로
+ * 새기 때문이다(env 를 `{ ...ctx.state.env }` 로 얕은 새 객체를 만드는 것과 정확히 같은
+ * 이유). 이 태스크는 저장+격리만 다룬다 — `arr=(...)` 대입 파싱/`${arr[@]}` 확장은 task 2/3.
  *
  * @param opts.isolateFunctions true 면 함수맵도 **새 Map**(빈 상태)으로 뜬다. 기본값
  *   false(공유)는 파이프라인 각 단계용 — 아직 맵을 공유한다(위 `functions` 필드 주석의
@@ -91,10 +96,16 @@ function spend(ctx: RunCtx): void {
  *   isolateFunctions 와 동시에 true 면 isolateFunctions 가 우선한다(새 빈 Map) — 실제로
  *   두 옵션을 함께 넘기는 호출부는 없다.
  */
-function childCtx(ctx: RunCtx, opts: { isolateFunctions?: boolean; copyFunctions?: boolean } = {}): RunCtx {
+export function childCtx(ctx: RunCtx, opts: { isolateFunctions?: boolean; copyFunctions?: boolean } = {}): RunCtx {
   return {
     fs: ctx.fs,
-    state: { ...ctx.state, env: { ...ctx.state.env } },
+    // arrays 는 Map 이라 `{ ...ctx.state }` 스프레드만으로는 **참조가 그대로 복사**된다
+    // (env 의 `{ ...ctx.state.env }` 처럼 얕은 새 객체를 안 만들면 자식의 배열 변이가
+    // 그대로 부모에 보여 서브셸 격리가 깨진다). `new Map(ctx.state.arrays)` 로 얕은
+    // Map 사본을 떠 부모 원소 배열 자체는 상속(스냅샷)하되, 키 추가/삭제·값 교체는
+    // 자식 사본에만 반영되게 한다. 원소 배열을 in-place mutate 하지 않는다는 불변식(위
+    // ShellState.arrays 주석)을 지키는 한, 이 얕은 복사만으로 충분하다.
+    state: { ...ctx.state, env: { ...ctx.state.env }, arrays: new Map(ctx.state.arrays) },
     budget: ctx.budget,
     positional: [...ctx.positional],
     // 서브셸/명령치환/파이프 단계는 새 루프 문맥이다 — 그 안의 break/continue 는 바깥
@@ -439,6 +450,12 @@ async function execScriptFile(ctx: RunCtx, e: CommandEnv): Promise<ExecResult> {
 
   const child = childCtx(ctx, { isolateFunctions: true })
   child.state.env = { ...e.state.env } // 명령앞 대입(VAR=x ./script.sh)이 반영된 commandEnv 를 물려받는다
+  // arrays 도 env 와 같은 이유로 한 번 더 새로 뜬다: childCtx 가 이미 ctx.state.arrays 를
+  // 복사했지만, e.state 는 (프리픽스 대입 셰도우 commandEnv 등으로) ctx.state 와 다른
+  // 객체일 수 있어 env 처럼 e.state 기준으로 다시 떠준다 — 스크립트 안의 배열 정의가
+  // 호출자로 안 새고, 호출자가 나중에 바꿔도 이미 실행 중인 스크립트에 안 보인다(진짜
+  // 프로세스 경계, docker 로 확인된 함수 격리와 같은 성격).
+  child.state.arrays = new Map(e.state.arrays)
   child.positional = e.args // 스크립트명 다음 인자들. ARGS 가 없어도 항상 덮어쓴다(함수 호출과 동일)
 
   try {
