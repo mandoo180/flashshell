@@ -439,3 +439,50 @@ describe('tokenize', () => {
     })
   })
 })
+
+describe('배열 리터럴 인접 캡처 (M3 Part 3 task 2)', () => {
+  // WORD 조각 텍스트까지 보는 shape (배열 캡처가 안쪽 공백을 삼켰는지 확인용).
+  const shapeT = (ts: Token[]) =>
+    ts
+      .filter((t) => t.type !== 'EOF')
+      .map((t) => (t.type === 'OP' ? `OP(${t.value})` : `WORD(${(t as { word: { text: string }[] }).word.map((p) => p.text).join('')})`))
+
+  it('arr=(a b c) 는 안쪽 공백째로 하나의 raw WORD 로 캡처된다 (인접)', () => {
+    const ts = tokenize('arr=(a b c)')
+    expect(shapeT(ts)).toEqual(['WORD(arr=(a b c))'])
+    expect(words(ts)[0]!.word).toEqual([{ kind: 'raw', text: 'arr=(a b c)' }])
+  })
+
+  it('arr= (a b c) [= 뒤 공백] 은 배열이 아니라 WORD(arr=) + OP(() 로 갈린다 (adjacency)', () => {
+    // bash 확인: `arr= (a b c)` 는 배열 대입이 아니라 문법 오류다. 공백이 인접을 깬다 —
+    // 렉서가 공백에서 word 를 flush 하므로 ( 도달 시 word 가 비어 배열 캡처가 안 걸린다.
+    const ts = tokenize('arr= (a b c)')
+    expect(shapeT(ts)).toEqual(['WORD(arr=)', 'OP(()', 'WORD(a)', 'WORD(b)', 'WORD(c)', 'OP())'])
+  })
+
+  it('빈 배열 arr=() 도 하나의 WORD 로 캡처된다', () => {
+    expect(shapeT(tokenize('arr=()'))).toEqual(['WORD(arr=())'])
+  })
+
+  it('첨자 LHS arr[0]=(x y) 도 인접 배열로 캡처된다', () => {
+    expect(shapeT(tokenize('arr[0]=(x y)'))).toEqual(['WORD(arr[0]=(x y))'])
+  })
+
+  it('quote/subst 인식: arr=(")" $(echo a b)) 의 안쪽 ) 는 짝으로 세지 않는다', () => {
+    expect(shapeT(tokenize('arr=(")" $(echo a b))'))).toEqual(['WORD(arr=(")" $(echo a b)))'])
+  })
+
+  it('함수정의 f() 는 영향 없음 (= 로 안 끝나 캡처 안 됨)', () => {
+    expect(shapeT(tokenize('f()'))).toEqual(['WORD(f)', 'OP(()', 'OP())'])
+  })
+
+  it('서브셸 (echo a) 는 영향 없음 (앞에 NAME= 가 없음)', () => {
+    expect(shapeT(tokenize('(echo a)'))).toEqual(['OP(()', 'WORD(echo)', 'WORD(a)', 'OP())'])
+  })
+
+  it('명령 인자의 x=(...) 도 캡처된다 (렉서는 명령 위치를 모른다 — 문서화된 관대함)', () => {
+    // 실제 bash 는 `echo arr=(x)` 를 문법 오류로 보지만, 렉서는 문맥을 모르므로 인접
+    // 배열로 삼킨다. 퍼즐에 없는 obscure edge — "더 관대한" 방향이라 무해하다.
+    expect(shapeT(tokenize('echo arr=(x)'))).toEqual(['WORD(echo)', 'WORD(arr=(x))'])
+  })
+})

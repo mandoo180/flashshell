@@ -135,3 +135,52 @@ export function matchDoubleParenEnd(source: string, i: number): number {
   }
   throw new Error('unexpected EOF while looking for matching `))`')
 }
+
+/**
+ * 배열 리터럴 대입 `NAME=( ... )` 의 여는 `(` (openIndex) 부터 짝이 맞는 `)` 바로 다음
+ * 인덱스를 돌려준다(matchDoubleParenEnd 처럼 "다음 인덱스" 반환 — 호출부가 바로 slice
+ * 종료로 쓴다). matchSubstitutionEnd 계열과 같은 따옴표 인식 괄호-깊이 카운팅이되 두 가지가
+ * 다르다:
+ *  - `((` 가 아니라 단일 `(` 하나에서 시작한다(depth 0에서 openIndex 부터 세기 시작).
+ *  - `${ ... }` 를 통째로 건너뛴다(matchBraceEnd) — arg 안에 불균형 괄호(`${x:-)}` 등)가
+ *    있어도 깊이 카운팅이 안 깨지게 한다. `$( ... )` 는 괄호가 균형이라 아래 depth 카운팅이
+ *    자연히 처리한다(별도 분기 불필요 — `arr=($(echo x) b)` 의 `)` 들이 정확히 상쇄된다).
+ * 짝을 못 찾으면(따옴표/괄호 안 닫힘) 던진다 — 렉서가 잡아 `unterminated` 문법 오류로 만든다.
+ */
+export function matchArrayLiteralEnd(source: string, openIndex: number): number {
+  let depth = 0
+  let j = openIndex // source[openIndex] === '('
+  while (j < source.length) {
+    const c = source[j]!
+    if (c === '\\') {
+      j += 2
+      continue
+    }
+    if (c === "'") {
+      const end = source.indexOf("'", j + 1)
+      if (end === -1) break
+      j = end + 1
+      continue
+    }
+    if (c === '"') {
+      let k = j + 1
+      while (k < source.length && source[k] !== '"') {
+        k += source[k] === '\\' ? 2 : 1
+      }
+      if (k >= source.length) break
+      j = k + 1
+      continue
+    }
+    if (c === '$' && source[j + 1] === '{') {
+      j = matchBraceEnd(source, j) + 1
+      continue
+    }
+    if (c === '(') depth++
+    else if (c === ')') {
+      depth--
+      if (depth === 0) return j + 1
+    }
+    j++
+  }
+  throw new Error('unexpected EOF while looking for matching `)`')
+}

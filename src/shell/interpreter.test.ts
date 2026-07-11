@@ -1797,3 +1797,144 @@ describe('배열 저장 (task-1, M3 Part 3) — 저장 + 격리만. 파싱(arr=(
     expect(state.arrays.get('a')).toEqual(['x', 'y'])
   })
 })
+
+describe('배열 대입 실행 (M3 Part 3 task 2) — state.arrays 에 저장', () => {
+  // 저장까지만 검증한다(읽기 ${arr[@]} 는 task 3). 기대값은 전부 docker
+  // debian:stable-slim bash 5 로 declare -p 대조해 확정했다.
+  function freshState(): ShellState {
+    return {
+      cwd: '/home/player', oldPwd: '/home/player', env: { HOME: '/home/player' },
+      lastExitCode: 0, home: '/home/player', functions: new Map(), arrays: new Map(),
+    }
+  }
+
+  it('arr=(a b c) → arrays 에 [a,b,c], env 스칼라로는 안 샌다', async () => {
+    const state = freshState()
+    const r = await run('arr=(a b c)', fs, state, 100_000)
+    expect(r.exitCode).toBe(0)
+    expect(state.arrays.get('arr')).toEqual(['a', 'b', 'c'])
+    expect('arr' in state.env).toBe(false)
+  })
+
+  it('원소는 단어분할된다: x="1 2"; arr=(a $x b) → [a,1,2,b]', async () => {
+    const state = freshState()
+    state.env.x = '1 2'
+    await run('arr=(a $x b)', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a', '1', '2', 'b'])
+  })
+
+  it('따옴표는 분할을 막는다: arr=("1 2" b) → ["1 2", b]', async () => {
+    const state = freshState()
+    await run('arr=("1 2" b)', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['1 2', 'b'])
+  })
+
+  it('원소는 글롭된다: arr=(*.txt) → [a.txt, b.txt] (cwd 파일 매칭)', async () => {
+    const state = freshState()
+    await run('arr=(*.txt)', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a.txt', 'b.txt'])
+  })
+
+  it('매칭 없으면 리터럴 유지: arr=(*.nomatch) → ["*.nomatch"] (nullglob off)', async () => {
+    const state = freshState()
+    await run('arr=(*.nomatch)', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['*.nomatch'])
+  })
+
+  it('빈 배열 arr=() → []', async () => {
+    const state = freshState()
+    await run('arr=()', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual([])
+  })
+
+  it('명령치환 원소도 분할된다: arr=($(echo x y) b) → [x,y,b]', async () => {
+    const state = freshState()
+    await run('arr=($(echo x y) b)', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['x', 'y', 'b'])
+  })
+
+  it('원소 대입 arr[1]=Z 는 해당 인덱스만 바꾼다 → [a,Z,c]', async () => {
+    const state = freshState()
+    await run('arr=(a b c); arr[1]=Z', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a', 'Z', 'c'])
+  })
+
+  it('sparse: arr[5]=z 는 3,4 를 진짜 hole 로 남긴다 (채우지 않음)', async () => {
+    const state = freshState()
+    await run('arr=(a b c); arr[5]=z', fs, state, 100_000)
+    const arr = state.arrays.get('arr')!
+    expect(arr[0]).toBe('a')
+    expect(arr[2]).toBe('c')
+    expect(arr[5]).toBe('z')
+    expect(3 in arr).toBe(false) // 진짜 구멍 — 빈 문자열로 안 채운다
+    expect(4 in arr).toBe(false)
+    expect(arr.length).toBe(6)
+    expect(Object.keys(arr)).toEqual(['0', '1', '2', '5'])
+  })
+
+  it('첨자는 산술식이다: arr[1+1]=X; i=3; arr[$i]=Y → [a,b,X,Y]', async () => {
+    const state = freshState()
+    state.env.i = '3'
+    await run('arr=(a b c); arr[1+1]=X; arr[$i]=Y', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a', 'b', 'X', 'Y'])
+  })
+
+  it('원소값(arr[i]=v)은 분할/글롭 안 함: x="p q"; arr[1]=$x → [a,"p q",c]', async () => {
+    const state = freshState()
+    state.env.x = 'p q'
+    await run('arr=(a b c); arr[1]=$x', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a', 'p q', 'c'])
+  })
+
+  it('미설정 배열에 arr[2]=x → 배열 생성(sparse, 0/1 은 hole)', async () => {
+    const state = freshState()
+    await run('newarr[2]=x', fs, state, 100_000)
+    const arr = state.arrays.get('newarr')!
+    expect(arr[2]).toBe('x')
+    expect(0 in arr).toBe(false)
+    expect(1 in arr).toBe(false)
+  })
+
+  it('스칼라 승격: x=5; x[1]=y → 배열 [5,y], env 스칼라 제거', async () => {
+    const state = freshState()
+    await run('x=5; x[1]=y', fs, state, 100_000)
+    expect(state.arrays.get('x')).toEqual(['5', 'y'])
+    expect('x' in state.env).toBe(false)
+  })
+
+  it('배열 리터럴은 기존 스칼라를 대체하고 env 에서 지운다: arr=old; arr=(a b c)', async () => {
+    const state = freshState()
+    await run('arr=old; arr=(a b c)', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a', 'b', 'c'])
+    expect('arr' in state.env).toBe(false)
+  })
+
+  it('기존 배열에 스칼라 대입 arr=Z → 인덱스 0 대입 (bash J)', async () => {
+    const state = freshState()
+    await run('arr=(a b c); arr=Z', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['Z', 'b', 'c'])
+    expect('arr' in state.env).toBe(false)
+  })
+
+  it('스칼라 대입 회귀: x=5 는 여전히 env 로 가고 arrays 를 안 만든다', async () => {
+    const state = freshState()
+    await run('x=5', fs, state, 100_000)
+    expect(state.env.x).toBe('5')
+    expect(state.arrays.has('x')).toBe(false)
+  })
+
+  it('unterminated arr=(a b 는 크래시 없이 nonzero exit, 저장 안 함', async () => {
+    const state = freshState()
+    const r = await run('arr=(a b', fs, state, 100_000)
+    expect(r.exitCode).not.toBe(0)
+    expect(state.arrays.has('arr')).toBe(false)
+  })
+
+  it('서브셸 격리: arr=(a b c); ( arr[0]=X ) — 밖의 arrays 는 안 바뀐다', async () => {
+    // bash: arr=(a b c); ( arr[0]=X; ... ); (밖에서) 여전히 a. in-place mutate 를 안 하는
+    // 것(slice 사본)이 없으면 공유 배열이 오염돼 이 격리가 깨진다.
+    const state = freshState()
+    await run('arr=(a b c); ( arr[0]=X )', fs, state, 100_000)
+    expect(state.arrays.get('arr')).toEqual(['a', 'b', 'c'])
+  })
+})

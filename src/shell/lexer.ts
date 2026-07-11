@@ -1,4 +1,4 @@
-import { matchSubstitutionEnd, matchBraceEnd, matchDoubleParenEnd } from './subst'
+import { matchSubstitutionEnd, matchBraceEnd, matchDoubleParenEnd, matchArrayLiteralEnd } from './subst'
 
 export type WordPart =
   | { kind: 'literal'; text: string } // 작은따옴표 안 / 이스케이프됨 → 확장 없음
@@ -18,6 +18,10 @@ export type Token = { type: 'WORD'; word: Word } | { type: 'OP'; value: Operator
 // startsWith 로 스캔되는데, 그 자리에서 `(` 를 먹으면 word-start `((` 산술 캡처가 절대
 // 도달하지 못한다. 그래서 `(`/`)` 는 `((` 캡처 *뒤* 전용 분기에서 따로 토큰화한다.
 const OPERATORS: Operator[] = ['2>>', '2>', '>>', '&&', '||', ';;', ';', '|', '>', '<']
+
+// 진행 중인 word 가 배열 리터럴 대입의 LHS(`NAME=` 또는 `NAME[subscript]=`)인지 —
+// 여는 `(` 를 인접 배열로 삼킬지 판정한다(M3 Part 3 task 2). 반드시 `=` 로 끝나야 한다.
+const ARRAY_ASSIGN_LHS_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?=$/
 
 export function tokenize(input: string): Token[] {
   const tokens: Token[] = []
@@ -180,6 +184,23 @@ export function tokenize(input: string): Token[] {
       const j = matchDoubleParenEnd(input, i)
       push('raw', input.slice(i, j))
       i = j
+      continue
+    }
+
+    // NAME=( ... ) / NAME[sub]=( ... ) 배열 리터럴 대입(M3 Part 3 task 2). `(` 가 대입
+    // LHS(`NAME=`/`NAME[..]=`)에 **공백 없이 바로 붙을** 때만 배열이다 — 진행 중인 word 가
+    // 그 LHS 한 조각(raw)이면, 짝 맞는 `)` 까지(따옴표·${..} 인식, $(..)/중첩 괄호는 depth
+    // 로) 통째로 그 raw 조각에 이어 붙여 `NAME=(...)` 한 WORD 로 만든다. 공백이 끼면
+    // (`arr= (..)`) 는 word 가 이미 flush 돼 여기 안 걸리고 아래에서 OP('(') 로 갈린다 —
+    // 실제 bash 도 그 경우 배열이 아니다(docker 확인: `arr= (a b c)` → syntax error).
+    // 이 분기는 반드시 아래 `(`/`)` 메타문자 분기보다 앞에 둔다 — 안 그러면 `(` 가 OP 로
+    // 먼저 새어 배열 캡처가 도달하지 못한다. (렉서는 명령 위치를 모르므로 `echo arr=(x)`
+    // 같은 비-대입 위치의 `NAME=(` 도 삼킨다 — 실제 bash 는 문법 오류지만, 퍼즐에 없는
+    // obscure edge 이고 "더 관대한" 방향이라 무해하다.)
+    if (ch === '(' && word.length === 1 && word[0]!.kind === 'raw' && ARRAY_ASSIGN_LHS_RE.test(word[0]!.text)) {
+      const end = matchArrayLiteralEnd(input, i)
+      push('raw', input.slice(i, end))
+      i = end
       continue
     }
 

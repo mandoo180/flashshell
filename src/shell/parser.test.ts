@@ -679,3 +679,68 @@ describe('( LIST ) 서브셸 (task 3)', () => {
     expect(parse('(\n  echo one\n  echo two\n)')).toEqual(parse('( echo one; echo two; )'))
   })
 })
+
+describe('배열 대입 파싱 (M3 Part 3 task 2)', () => {
+  function firstAssign(input: string) {
+    const c = parse(input).items[0]!.pipeline.commands[0]!
+    if (c.kind !== 'command') throw new Error(`expected simple command, got ${c.kind}`)
+    return c.assignments[0]!
+  }
+
+  it('arr=(a b c) → elements 3개, index 없음', () => {
+    const a = firstAssign('arr=(a b c)')
+    expect(a.name).toBe('arr')
+    expect(a.index).toBeUndefined()
+    expect(a.elements).toEqual([raw('a'), raw('b'), raw('c')])
+  })
+
+  it('빈 배열 arr=() → elements 빈 배열', () => {
+    const a = firstAssign('arr=()')
+    expect(a.elements).toEqual([])
+  })
+
+  it('arr=("1 2" b) → 원소가 따옴표 구조(dquote)를 보존한다', () => {
+    const a = firstAssign('arr=("1 2" b)')
+    expect(a.elements).toEqual([[{ kind: 'dquote', text: '1 2' }], raw('b')])
+  })
+
+  it('arr=($(echo x) b) → 명령치환 원소가 한 raw 조각으로 보존된다', () => {
+    const a = firstAssign('arr=($(echo x) b)')
+    expect(a.elements).toEqual([raw('$(echo x)'), raw('b')])
+  })
+
+  it('arr[2]=z → index=Word(2), value=Word(z), elements 없음', () => {
+    const a = firstAssign('arr[2]=z')
+    expect(a.name).toBe('arr')
+    expect(a.index).toEqual(raw('2'))
+    expect(a.value).toEqual(raw('z'))
+    expect(a.elements).toBeUndefined()
+  })
+
+  it('arr[$i]=y → index 는 확장 전 Word 그대로($i 보존)', () => {
+    const a = firstAssign('arr[$i]=y')
+    expect(a.index).toEqual(raw('$i'))
+    expect(a.value).toEqual(raw('y'))
+  })
+
+  it('스칼라 x=5 회귀 — index/elements 없음', () => {
+    const a = firstAssign('x=5')
+    expect(a.name).toBe('x')
+    expect(a.value).toEqual(raw('5'))
+    expect(a.index).toBeUndefined()
+    expect(a.elements).toBeUndefined()
+  })
+
+  it('X=a=b 회귀 — 값에 = 가 있어도 스칼라(첫 = 에서만 쪼갬)', () => {
+    const a = firstAssign('X=a=b')
+    expect(a.name).toBe('X')
+    expect(a.value).toEqual(raw('a=b'))
+    expect(a.elements).toBeUndefined()
+  })
+
+  it('arr=(a b)x [뒤에 텍스트] 는 배열이 아니라 스칼라 (bash: arr="(a b)x")', () => {
+    const a = firstAssign('arr=(a b)x')
+    expect(a.elements).toBeUndefined()
+    expect(a.value).toEqual(raw('(a b)x'))
+  })
+})

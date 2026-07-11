@@ -1,7 +1,17 @@
 import { tokenize, type Operator, type Token, type Word } from './lexer'
+import { matchArrayLiteralEnd } from './subst'
 
 export interface Redir { fd: 0 | 1 | 2; op: '>' | '>>' | '<'; target: Word }
-export interface Assignment { name: string; value: Word }
+/**
+ * `NAME=value` 스칼라 대입, `NAME=(a b c)` 배열 리터럴(elements), `NAME[i]=value` 원소
+ * 대입(index) 중 하나(M3 Part 3 task 2). 셋은 상호 배타적이다:
+ *  - elements 있음 → 배열 리터럴. value 는 빈 Word([]). interpreter 가 각 원소를 expandWord
+ *    (단어분할+글롭)로 펴 arrays 에 통째 저장한다.
+ *  - index 있음 → 원소 대입. index 는 대괄호 안쪽(확장 전 Word) — interpreter 가 evalArith
+ *    로 첨자를 평가한다. value 는 스칼라와 동일(분할/글롭 없는 expandForCase 로 편다).
+ *  - 둘 다 없음 → 기존 스칼라 대입.
+ */
+export interface Assignment { name: string; value: Word; index?: Word; elements?: Word[] }
 
 export interface CommandNode {
   kind: 'command'
@@ -128,7 +138,9 @@ export interface ListNode {
 
 const REDIR_OPS: Operator[] = ['>', '>>', '<', '2>', '2>>']
 // NAME= 접두사는 첫 조각(word[0])이 raw 일 때만 인식한다. 값 뒤쪽은 어떤 조각이든 허용한다.
-const ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s
+// 선택적 `[subscript]` 그룹(m[2])으로 원소 대입 `NAME[i]=value` 도 받는다(M3 Part 3 task 2).
+// 그룹 인덱스: m[1]=NAME, m[2]=`[...]`(있으면), m[3]=값.
+const ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_]*)(\[[^\]]*\])?=(.*)$/s
 
 function syntaxError(near: string): never {
   throw new Error(`syntax error near \`${near}'`)
@@ -190,11 +202,42 @@ function tryAssignment(word: Word): Assignment | null {
   const m = ASSIGN_RE.exec(first.text)
   if (!m) return null
   const name = m[1]!
-  const restOfFirst = m[2]!
-  const value: Word = []
-  if (restOfFirst.length > 0) value.push({ kind: 'raw', text: restOfFirst })
-  value.push(...word.slice(1))
-  return { name, value }
+  const subscript = m[2] // '[...]' 또는 undefined
+  const restOfFirst = m[3]!
+
+  // 스칼라/원소 대입의 값 Word: 첫 조각의 나머지(raw) + 뒤 조각들(따옴표 구조 보존).
+  const scalarValue = (): Word => {
+    const value: Word = []
+    if (restOfFirst.length > 0) value.push({ kind: 'raw', text: restOfFirst })
+    value.push(...word.slice(1))
+    return value
+  }
+
+  // NAME[subscript]=value — 원소 대입. index 는 대괄호 안쪽을 확장 전 Word(raw 하나)로
+  // 보존한다(interpreter 가 evalArith 로 첨자를 평가 — `$i`/`1+1` 모두). value 는 스칼라와
+  // 동일한 구조다.
+  if (subscript !== undefined) {
+    return { name, value: scalarValue(), index: [{ kind: 'raw', text: subscript.slice(1, -1) }] }
+  }
+
+  // NAME=( ... ) — 배열 리터럴. 렉서가 인접 배열을 raw 조각 하나로 통째 삼켰으므로
+  // (word.length===1) restOfFirst 는 `(...)` 형태다. 짝 맞는 `)` 가 **정확히 끝**일 때만
+  // 배열이다 — 뒤에 텍스트가 붙으면(`arr=(a b)x`) bash 는 스칼라로 본다(docker 확인:
+  // arr="(a b)x"). 원소는 안쪽 텍스트를 재-토큰화해 얻는다(따옴표/치환 구조는 tokenize 가
+  // 그대로 복원한다 — `"1 2"`→dquote, `$(..)`→raw). 원소별 확장(단어분할+글롭)은 interpreter.
+  if (word.length === 1 && restOfFirst.startsWith('(')) {
+    let end = -1
+    try { end = matchArrayLiteralEnd(restOfFirst, 0) } catch { end = -1 }
+    if (end === restOfFirst.length) {
+      const elements: Word[] = []
+      for (const t of tokenize(restOfFirst.slice(1, -1))) {
+        if (t.type === 'WORD') elements.push(t.word)
+      }
+      return { name, value: [], elements }
+    }
+  }
+
+  return { name, value: scalarValue() }
 }
 
 class Parser {

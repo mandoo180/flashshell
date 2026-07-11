@@ -1,6 +1,6 @@
 import { VFS } from './vfs'
 import { ExecutionLimitError, ControlSignal, LoopSignal, BreakSignal, ReturnSignal, errnoText } from './errors'
-import { parse, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ArithCmdNode, type SubshellNode, type ListNode, type PipelineNode } from './parser'
+import { parse, type Assignment, type Command, type CommandNode, type IfNode, type WhileNode, type ForNode, type CaseNode, type FunctionDefNode, type ArithCmdNode, type SubshellNode, type ListNode, type PipelineNode } from './parser'
 import { expandWord, expandToSingle, expandForCase, expandArithExpr, type ExpandCtx } from './expand'
 import { matchSegment } from './glob'
 import { lookupCommand, isKnownUnimplemented } from './registry'
@@ -467,6 +467,65 @@ async function execScriptFile(ctx: RunCtx, e: CommandEnv): Promise<ExecResult> {
   }
 }
 
+/**
+ * 명령 없는 순수 대입 하나를 셸 상태에 반영한다(M3 Part 3 task 2). 세 갈래(Assignment 주석 참고):
+ *
+ *  - elements 있음(`arr=(a b c)`): 각 원소를 expandWord(단어분할+글롭, 명령 인자와 동일)로
+ *    펴 flatten 한 뒤 arrays 에 통째 저장하고, 동명 스칼라 env 는 지운다 — bash 는 배열
+ *    리터럴이 기존 스칼라를 대체한다(docker: `arr=old; arr=(a b c)` → `${arr}` = a).
+ *  - index 있음(`arr[i]=v`): 첨자를 산술 평가(`$`-확장 선처리 후 evalArith)하고, 값은
+ *    스칼라처럼 expandForCase(분할/글롭 없음, docker: `arr[0]=$x` 안 쪼갬)로 펴 해당 인덱스에
+ *    넣는다. 미설정이면 배열을 만들고, 동명 스칼라가 있으면 그 값을 인덱스 0 으로 승격한 뒤
+ *    대입한다(docker: `x=5; x[1]=y` → `([0]="5" [1]="y")`). 기존 배열은 in-place mutate 하지
+ *    않고 slice 사본에 써 넣는다 — arrays 는 "값을 통째로 교체"하는 격리 불변식(types.ts)을
+ *    지켜야 childCtx 의 얕은 Map 복사만으로 서브셸 격리가 맞는다. 빈 칸(sparse)은 JS 배열의
+ *    진짜 hole 로 남는다(`arr[5]=z` → 3,4 는 `in` 이 false).
+ *  - 둘 다 없음(스칼라 `x=5`): 동명 배열이 있으면 인덱스 0 대입(docker: `arr=(a b c); arr=Z`
+ *    → `([0]="Z" [1]="b" [2]="c")`), 아니면 예전대로 env 에 넣는다.
+ *
+ * 첨자 산술 오류나 원소 확장 오류(글롭 등)는 던지고 — 호출부(runSimpleCommand)의 확장-예외
+ * catch 가 얌전한 ExecResult(stderr + exit 1)로 바꾼다.
+ */
+async function applyAssignment(a: Assignment, ctx: RunCtx, expandCtx: ExpandCtx): Promise<void> {
+  if (a.elements !== undefined) {
+    const flat: string[] = []
+    for (const el of a.elements) flat.push(...(await expandWord(el, expandCtx)))
+    ctx.state.arrays.set(a.name, flat)
+    delete ctx.state.env[a.name]
+    return
+  }
+
+  if (a.index !== undefined) {
+    const idxExpr = await expandArithExpr(wordSourceText(a.index), expandCtx)
+    const idx = evalArith(idxExpr, ctx.state)
+    const value = await expandForCase(a.value, expandCtx)
+    const existing = ctx.state.arrays.get(a.name)
+    let arr: string[]
+    if (existing) {
+      arr = existing.slice() // 통째 교체 불변식: 공유 배열 객체를 in-place 로 안 건드린다
+    } else {
+      arr = []
+      if (Object.prototype.hasOwnProperty.call(ctx.state.env, a.name)) {
+        arr[0] = ctx.state.env[a.name]! // 스칼라 승격: 기존 스칼라 → 인덱스 0
+        delete ctx.state.env[a.name]
+      }
+    }
+    arr[idx] = value
+    ctx.state.arrays.set(a.name, arr)
+    return
+  }
+
+  if (ctx.state.arrays.has(a.name)) {
+    // 스칼라 대입인데 동명 배열이 이미 있으면 인덱스 0 에 넣는다(bash 동작).
+    const arr = ctx.state.arrays.get(a.name)!.slice()
+    arr[0] = await expandForCase(a.value, expandCtx)
+    ctx.state.arrays.set(a.name, arr)
+    return
+  }
+
+  ctx.state.env[a.name] = await expandForCase(a.value, expandCtx)
+}
+
 async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): Promise<ExecResult> {
   spend(ctx)
   const expandCtx = expandCtxFor(ctx)
@@ -487,7 +546,7 @@ async function runSimpleCommand(node: CommandNode, ctx: RunCtx, stdin: string): 
     //    가 깨진다(docker: `IFS=:; IFS=:; echo "[$IFS]"` → `[:]`, `x=a:b:c` → `[a:b:c]`).
     if (argv.length === 0) {
       for (const assignment of node.assignments) {
-        ctx.state.env[assignment.name] = await expandForCase(assignment.value, expandCtx)
+        await applyAssignment(assignment, ctx, expandCtx)
       }
       return { stdout: '', stderr: '', exitCode: 0 }
     }
