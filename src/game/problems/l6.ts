@@ -107,4 +107,115 @@ export const l6: Problem[] = [
     explanation:
       'read u < users.txt 는 파일의 첫 줄(alice)만 한 번 읽고 끝나므로, bob·carol 의 디렉터리는 만들어지지 않습니다. while read u; do ... done < users.txt 는 파일이 끝날 때까지 매 반복마다 다음 줄을 u 에 담아 같은 작업을 되풀이하므로, 줄이 몇 개든 모든 이름에 대해 디렉터리와 profile.txt 가 만들어집니다.',
   },
+  {
+    id: 'l6-06',
+    level: 6,
+    title: '점검 결과 한 파일로',
+    prompt:
+      'api, worker, scheduler 세 서비스를 차례로 점검한 결과를 보고서 파일 하나(report.txt)에 모으세요. 각 서비스마다 "이름: ok" 형식으로 한 줄씩, 나온 순서대로 담겨야 합니다. 리다이렉션(>)은 반복마다 걸지 말고, 루프 전체에 딱 한 번만 걸어 전체 출력을 한꺼번에 report.txt 로 보내세요.',
+    setup: () => {},
+    hints: [
+      '반복마다 파일로 방향을 돌리면 매번 새로 덮어써 마지막 한 줄만 남습니다 — 방향 전환은 루프가 끝나는 지점에서 한 번이면 됩니다.',
+      'for ...; do ... done 전체를 하나의 명령처럼 보고, 닫는 done 뒤에 > 파일 을 붙이면 루프가 찍는 모든 줄이 그 파일로 모입니다.',
+      'for s in api worker scheduler; do echo "$s: ok"; done > report.txt',
+    ],
+    check: (ctx) => safeRead(ctx.fs, `${HOME}/report.txt`) === 'api: ok\nworker: ok\nscheduler: ok\n',
+    solution: 'for s in api worker scheduler; do echo "$s: ok"; done > report.txt',
+    wrongAnswer: 'for s in api worker scheduler; do echo "$s: ok" > report.txt; done',
+    explanation:
+      'echo "$s: ok" > report.txt 를 루프 안에 두면 반복마다 report.txt 를 새로 덮어써서, 마지막 서비스(scheduler) 한 줄만 남습니다 — > 는 이어붙이지 않고 매번 파일을 비우고 다시 씁니다. 반면 done > report.txt 처럼 루프 전체에 리다이렉션을 한 번만 걸면, 루프가 도는 동안 echo 가 찍는 세 줄이 모두 같은 파일로 흘러들어가 순서대로 쌓입니다.',
+  },
+  {
+    id: 'l6-07',
+    level: 6,
+    title: '측정값 개수와 세 번째 값',
+    prompt:
+      'readings.txt 한 줄에는 센서 측정값들이 공백으로 구분돼 있습니다(12 19 7 23 15). 이 줄을 배열로 읽어들여, 측정값이 몇 개인지 count.txt 에, 세 번째 측정값(인덱스 2)을 third.txt 에 쓰세요.',
+    setup: (fs) => {
+      fs.writeFile(`${HOME}/readings.txt`, '12 19 7 23 15\n')
+    },
+    hints: [
+      '한 줄에 여러 값이 공백으로 나열돼 있으면, 하나의 문자열이 아니라 값마다 따로 꺼낼 수 있는 배열로 담아야 개수와 특정 자리를 다룰 수 있습니다.',
+      'read -a 이름 < 파일 로 읽으면 공백으로 나뉜 각 값이 배열의 한 자리씩 들어갑니다. 개수는 ${#이름[@]}, 세 번째 값(0부터 세어 인덱스 2)은 ${이름[2]} 입니다.',
+      'read -a nums < readings.txt; echo "${#nums[@]}" > count.txt; echo "${nums[2]}" > third.txt',
+    ],
+    check: (ctx) =>
+      safeRead(ctx.fs, `${HOME}/count.txt`) === '5\n' && safeRead(ctx.fs, `${HOME}/third.txt`) === '7\n',
+    solution: 'read -a nums < readings.txt; echo "${#nums[@]}" > count.txt; echo "${nums[2]}" > third.txt',
+    wrongAnswer: 'read nums < readings.txt; echo "${#nums[@]}" > count.txt; echo "${nums[2]}" > third.txt',
+    explanation:
+      '-a 없이 read nums 로 읽으면 줄 전체("12 19 7 23 15")가 배열이 아니라 문자열 하나로 nums 에 들어갑니다 — 그러면 ${#nums[@]} 는 원소 하나로 쳐서 1 이 되고, ${nums[2]} 같은 자리 접근은 빈 값이라 count.txt·third.txt 가 모두 틀립니다. read -a nums 로 읽어야 공백으로 나뉜 다섯 값이 각각 배열의 한 자리에 담겨, ${#nums[@]} 로 개수 5 를, ${nums[2]} 로 세 번째 값 7 을 얻습니다.',
+  },
+  {
+    id: 'l6-08',
+    level: 6,
+    title: '설정을 찍어내는 스크립트',
+    prompt:
+      'provision.sh 는 데이터베이스 설정 파일을 만들어 주는 스크립트입니다. 먼저 cat provision.sh 로 내용을 읽어 어떤 파일에 무엇을 담는지 파악한 뒤 실행하세요. 그런 다음 만들어진 설정 파일에서 포트 번호를 얻어, "db-포트" 형식의 디렉터리를 만드세요(예: 포트가 5432 면 db-5432).',
+    setup: (fs) => {
+      fs.writeFile(
+        `${HOME}/provision.sh`,
+        '#!/bin/bash\ncat > db.conf <<EOF\nhost=localhost\nport=5432\ndbname=orders\nEOF\n',
+        0o755
+      )
+    },
+    hints: [
+      '스크립트를 실행하기 전에 cat provision.sh 로 안을 들여다보면, 무슨 파일(db.conf)을 어떤 내용으로 만드는지 알 수 있습니다 — 특히 포트 값이 몇인지 확인해 두세요.',
+      '실행은 ./provision.sh 입니다. 만들어진 db.conf 는 "키=값" 형식이라 source db.conf 로 불러오면 port 변수를 그대로 쓸 수 있습니다.',
+      './provision.sh; source db.conf; mkdir "db-$port"',
+    ],
+    check: (ctx) =>
+      safeRead(ctx.fs, `${HOME}/db.conf`) === 'host=localhost\nport=5432\ndbname=orders\n' &&
+      ctx.fs.isDir(`${HOME}/db-5432`),
+    solution: './provision.sh\nsource db.conf; mkdir "db-$port"',
+    wrongAnswer: './provision.sh',
+    explanation:
+      './provision.sh 만 실행하면 db.conf 는 만들어지지만, 거기 적힌 포트로 디렉터리를 만드는 마무리 작업은 하지 않아 db-5432 가 생기지 않습니다. 스크립트 본문의 cat > db.conf <<EOF ... EOF 는 here-document 로 여러 줄을 그대로 db.conf 에 써넣는 부분입니다 — 실행하면 port=5432 가 담기고, source db.conf 로 그 값을 불러와 mkdir "db-$port" 하면 db-5432 가 만들어집니다.',
+  },
+  {
+    id: 'l6-09',
+    level: 6,
+    title: '환경마다 설정 파일',
+    prompt:
+      'mkconf.sh 는 인자로 받은 환경 이름마다 "이름.conf" 파일을 만들고 그 안에 "environment=이름" 한 줄을 쓰는 스크립트입니다 — 이름을 여러 개 한꺼번에 받아 하나씩 처리합니다. dev, stage, prod 세 환경에 대해 한 번의 실행으로 세 파일을 모두 만드세요.',
+    setup: (fs) => {
+      fs.writeFile(
+        `${HOME}/mkconf.sh`,
+        '#!/bin/bash\nfor name in "$@"; do\n  echo "environment=$name" > "$name.conf"\ndone\n',
+        0o755
+      )
+    },
+    hints: [
+      '스크립트가 이름을 여러 개 받아 하나씩 처리하므로, 이름들을 공백으로 띄워 각각 따로 된 인자로 넘겨야 합니다.',
+      './mkconf.sh 뒤에 세 이름을 각각 별개의 인자로 나열하세요 — 따옴표로 묶어 한 덩어리로 만들면 안 됩니다.',
+      './mkconf.sh dev stage prod',
+    ],
+    check: (ctx) =>
+      safeRead(ctx.fs, `${HOME}/dev.conf`) === 'environment=dev\n' &&
+      safeRead(ctx.fs, `${HOME}/stage.conf`) === 'environment=stage\n' &&
+      safeRead(ctx.fs, `${HOME}/prod.conf`) === 'environment=prod\n',
+    solution: './mkconf.sh dev stage prod',
+    wrongAnswer: './mkconf.sh "dev stage prod"',
+    explanation:
+      './mkconf.sh "dev stage prod" 처럼 따옴표로 묶으면 세 이름이 공백째로 인자 하나가 되어, 스크립트의 for ... in "$@" 루프가 한 번만 돌며 "dev stage prod.conf" 라는 파일 하나만 만듭니다 — dev.conf·stage.conf·prod.conf 는 생기지 않습니다. 따옴표 없이 ./mkconf.sh dev stage prod 로 넘겨야 "$@" 가 세 인자로 나뉘어, 이름마다 반복하며 세 설정 파일을 각각 만듭니다.',
+  },
+  {
+    id: 'l6-10',
+    level: 6,
+    title: '직접 짜는 작업 스크립트',
+    prompt:
+      '반복 작업을 스크립트로 남기세요. echo 로 명령을 job.sh 파일에 써넣어, 실행하면 file1, file2, file3 세 파일을 만드는 스크립트를 직접 작성하세요. 그리고 그 스크립트를 실행해 세 파일을 실제로 만드세요.',
+    setup: () => {},
+    hints: [
+      '명령을 작은따옴표로 통째로 감싸 echo 로 파일에 쓰면, 안의 $변수나 세미콜론이 지금 실행되지 않고 글자 그대로 파일에 저장됩니다 — 실행은 나중에 그 파일을 돌릴 때 일어납니다.',
+      "echo '명령들' > job.sh 로 스크립트를 만든 뒤, 방금 만든 파일엔 실행 권한이 없으니 source job.sh 로 지금 셸에서 불러 실행합니다.",
+      "echo 'for n in 1 2 3; do touch file$n; done' > job.sh; source job.sh",
+    ],
+    check: (ctx) =>
+      ctx.fs.exists(`${HOME}/file1`) && ctx.fs.exists(`${HOME}/file2`) && ctx.fs.exists(`${HOME}/file3`),
+    solution: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh\nsource job.sh",
+    wrongAnswer: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh",
+    explanation:
+      "echo 'for n in 1 2 3; do touch file$n; done' > job.sh 는 명령을 job.sh 에 글자 그대로 저장할 뿐, 아직 실행하지는 않습니다 — 그래서 이 줄만으로는 file1~file3 가 생기지 않습니다. 작은따옴표로 감쌌기 때문에 $n 이나 세미콜론이 지금 해석되지 않고 그대로 파일에 담기고, 이어서 source job.sh 로 그 파일을 불러 실행해야 비로소 루프가 돌아 세 파일이 만들어집니다.",
+  },
 ]
