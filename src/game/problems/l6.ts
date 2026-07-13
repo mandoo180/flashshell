@@ -211,7 +211,11 @@ export const l6: Problem[] = [
       "echo '명령들' > job.sh 로 스크립트를 만든 뒤, 방금 만든 파일엔 실행 권한이 없으니 source job.sh 로 지금 셸에서 불러 실행합니다.",
       "echo 'for n in 1 2 3; do touch file$n; done' > job.sh; source job.sh",
     ],
+    // job.sh 존재까지 요구한다 — 이 문제의 핵심이 "스크립트를 작성해서" 만드는 것이라,
+    // touch file1 file2 file3 처럼 스크립트 없이 결과만 만드는 우회를 막는다. 내용은
+    // 강제하지 않는다(루프든 touch 나열이든, 스크립트로 만들었다면 유효한 풀이다).
     check: (ctx) =>
+      ctx.fs.exists(`${HOME}/job.sh`) &&
       ctx.fs.exists(`${HOME}/file1`) && ctx.fs.exists(`${HOME}/file2`) && ctx.fs.exists(`${HOME}/file3`),
     solution: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh\nsource job.sh",
     wrongAnswer: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh",
