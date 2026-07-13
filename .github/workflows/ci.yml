@@ -1,0 +1,61 @@
+# 풀 게이트 CI + GitHub Pages 배포.
+# test 잡이 이 프로젝트의 네 게이트(build · unit · e2e · 골든 bash-차등)를 전부 돌리고,
+# deploy 잡은 main 푸시에서 test 초록일 때만 실행된다 — CI가 곧 배포 게이트다.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      # 골든 픽스처를 debian:stable-slim 의 진짜 bash 5로 재생성해 커밋본과 바이트
+      # 비교한다 — 엔진의 "bash-정확성" 약속을 CI가 상시 강제하는 단계.
+      - name: golden byte-identical
+        run: |
+          npm run golden
+          git diff --exit-code tests/shell/golden/
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+        env:
+          DEPLOY_BASE: /flashshell/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
