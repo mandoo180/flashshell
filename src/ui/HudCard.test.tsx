@@ -22,7 +22,7 @@ class ResizeObserverMock implements ResizeObserver {
   }
 
   // 실제 ResizeObserver가 레이아웃 변화를 감지해 부르는 콜백을 수동 발화시킨다.
-  // HudCard 의 measure()는 entry 가 아니라 hud 노드의 offsetTop/offsetHeight 를
+  // HudCard 의 measure()는 entry 가 아니라 hud 노드의 offsetTop/getBoundingClientRect()를
   // 직접 읽으므로, 여기서 넘기는 entry 는 형식만 맞춘 더미다(값은 무시된다).
   fire() {
     const entry = { contentRect: { height: 0 } } as ResizeObserverEntry
@@ -34,13 +34,19 @@ function getHudHeightVar(): string {
   return document.documentElement.style.getPropertyValue('--hud-height')
 }
 
-// jsdom 은 레이아웃 엔진이 없어 offsetTop/offsetHeight 가 항상 0 이다. HudCard 의
-// measure() 가 이 둘을 읽어 합을 쓰는지 검증하려면 실제 렌더된 값을 흉내 내야 하므로,
-// .hud 노드에 직접 정의해 준다(실측 픽셀 값은 e2e 가 진짜 브라우저에서 검증한다).
-function setHudBox(offsetTop: number, offsetHeight: number) {
+// jsdom 은 레이아웃 엔진이 없어 offsetTop 도, getBoundingClientRect()도 항상 0 이다.
+// HudCard 의 measure() 가 offsetTop + rect.height 를 Math.ceil 해서 쓰는지 검증하려면
+// 실제 렌더된 값을 흉내 내야 하므로, .hud 노드에 직접 정의해 준다(실측 픽셀 값은
+// e2e 가 진짜 브라우저에서 검증한다). height 는 실제 렌더처럼 소수점을 그대로
+// 받아들인다 — offsetHeight(정수 반올림)가 아니라 getBoundingClientRect().height다.
+function setHudBox(offsetTop: number, height: number) {
   const hud = document.querySelector('.hud') as HTMLElement
   Object.defineProperty(hud, 'offsetTop', { configurable: true, value: offsetTop })
-  Object.defineProperty(hud, 'offsetHeight', { configurable: true, value: offsetHeight })
+  hud.getBoundingClientRect = () => ({
+    height,
+    width: 0, top: 0, left: 0, right: 0, bottom: height, x: 0, y: 0,
+    toJSON() { return this },
+  }) as DOMRect
 }
 
 beforeEach(() => {
@@ -75,13 +81,25 @@ describe('HudCard: --hud-height 측정', () => {
     expect(observer.observedTargets[0]).toBe(document.querySelector('.hud'))
   })
 
-  it('콜백이 발화하면 --hud-height를 hud의 offsetTop+offsetHeight(실측 하단)로 쓴다', async () => {
+  it('콜백이 발화하면 --hud-height를 hud의 offsetTop+rect.height(실측 하단, 올림)로 쓴다', async () => {
     await goToLevel1()
     setHudBox(16, 150)
 
     ResizeObserverMock.instances[0]!.fire()
 
     expect(getHudHeightVar()).toBe('166px') // 16 + 150
+  })
+
+  it('실측 하단이 소수점이면 Math.ceil로 올림해 하단보다 작아지지 않는다', async () => {
+    // 회귀 재현: getBoundingClientRect().height 는 소수점(예: 259.296875)을 가질 수
+    // 있다. offsetHeight(정수 반올림)로 이를 내림해 버리면 padding-top이 실제
+    // 하단보다 작아져 375px 폭 등에서 입력 줄과 다시 겹친다.
+    await goToLevel1()
+    setHudBox(16, 259.296875)
+
+    ResizeObserverMock.instances[0]!.fire()
+
+    expect(getHudHeightVar()).toBe('276px') // ceil(16 + 259.296875) = ceil(275.296875)
   })
 
   it('힌트를 펼쳐 카드가 자라면(다음 리사이즈 발화) --hud-height가 갱신된다', async () => {

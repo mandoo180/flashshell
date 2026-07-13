@@ -36,11 +36,16 @@ export function HudCard() {
 
     const measure = () => {
       // hud 는 위치 기준 조상(.crt)에 대해 position:absolute; top:1rem.
-      // offsetTop(기준 조상 안에서의 위 오프셋) + offsetHeight(border 포함 실제
-      // 렌더 높이) = hud 하단의 y좌표 = .terminal 이 비워야 할 padding-top 이다.
-      // 실제 렌더된 픽셀을 재므로 rem·루트 글꼴 크기가 바뀌어도(접근성 텍스트 확대)
-      // 자동으로 따라간다 — px 상수로 보정하지 않는다.
-      const height = hudEl.offsetTop + hudEl.offsetHeight
+      // offsetTop(기준 조상 안에서의 위 오프셋) + getBoundingClientRect().height
+      // (border 포함 실제 렌더 높이, 소수점까지) = hud 하단의 y좌표 = .terminal 이
+      // 비워야 할 padding-top 이다. offsetHeight는 정수로 반올림되는데, 하단이
+      // 소수점(예: 275.296875)일 때 반올림이 내려가면 padding이 실제 하단보다
+      // 작아져 다음 문제(6칸 난이도 등 폭이 조금만 바뀌어도)에서 다시 겹칠 수 있다
+      // — rect.height로 소수점을 보존하고 Math.ceil로 올림해 padding이 항상 실제
+      // 하단 이상이 되도록 보장한다. 실제 렌더된 픽셀을 재므로 rem·루트 글꼴
+      // 크기가 바뀌어도(접근성 텍스트 확대) 자동으로 따라간다 — px 상수로
+      // 보정하지 않는다.
+      const height = Math.ceil(hudEl.offsetTop + hudEl.getBoundingClientRect().height)
       document.documentElement.style.setProperty('--hud-height', `${height}px`)
     }
 
