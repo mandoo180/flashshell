@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { App } from './App'
@@ -124,5 +124,92 @@ describe('HudCard: --hud-height 측정', () => {
     expect(screen.getByText('첫 접속')).toBeInTheDocument()
 
     expect(getHudHeightVar()).toBe('')
+  })
+})
+
+// --- 네비게이션(이전/다음/RESET/위치/배지) ------------------------------
+
+// l1-01, l1-02 를 이미 풀어둔 상태로 시드한다. frontierProblem은 "첫 미해결
+// 문제"에 착지하므로 openLevel(1)은 l1-03("금고로")에 도착한다 — 이는 동시에
+// 레벨의 프런티어 인덱스(=2)이기도 해서 `다음 문제`가 비활성이어야 하는
+// 경계 케이스를 만든다.
+function seedSolvedFirstTwo() {
+  useGame.setState({ progress: { solved: ['l1-01', 'l1-02'], hintsUsed: [] } })
+}
+
+function hudDiffText(): string | null {
+  return document.querySelector('.hud-diff')?.textContent ?? null
+}
+
+describe('HudCard: 이전/다음 문제 이동, RESET, 위치, 해결 배지', () => {
+  it('프런티어(l1-03)에 착지하면 이전 문제는 활성, 다음 문제는 비활성이다', async () => {
+    seedSolvedFirstTwo()
+    render(<App />)
+    await userEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+
+    expect(await screen.findByText('금고로')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '이전 문제' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '다음 문제' })).toBeDisabled()
+  })
+
+  it('현재 문제 위치가 "인덱스/총개수" 형식으로 hud-diff 옆에 표시된다', async () => {
+    seedSolvedFirstTwo()
+    render(<App />)
+    await userEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+    await screen.findByText('금고로')
+
+    // l1-03은 레벨 1의 3번째(0-index 2) 문제, 레벨 1은 총 10문제.
+    expect(hudDiffText()).toContain('3/10')
+  })
+
+  it('이전 문제 클릭 → l1-02로 이동, SOLVED 배지가 보이고 다음 문제가 활성화된다', async () => {
+    seedSolvedFirstTwo()
+    render(<App />)
+    await userEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+    await screen.findByText('금고로')
+
+    await userEvent.click(screen.getByRole('button', { name: '이전 문제' }))
+
+    expect(await screen.findByText('숨겨진 것')).toBeInTheDocument()
+    expect(screen.getByText('✓ SOLVED')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '다음 문제' })).toBeEnabled()
+    expect(hudDiffText()).toContain('2/10')
+  })
+
+  it('레벨의 첫 문제(l1-01)에서는 이전 문제가 비활성이다', async () => {
+    render(<App />)
+    await userEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+    await screen.findByText('첫 접속')
+
+    expect(screen.getByRole('button', { name: '이전 문제' })).toBeDisabled()
+  })
+
+  it('풀지 않은 문제에서는 SOLVED 배지가 보이지 않는다', async () => {
+    render(<App />)
+    await userEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+    await screen.findByText('첫 접속')
+
+    expect(screen.queryByText('✓ SOLVED')).not.toBeInTheDocument()
+  })
+
+  it('RESET 클릭 → 지운 파일이 원상 복구되고 화면(lines)이 비워진다', async () => {
+    render(<App />)
+    await userEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))
+    await screen.findByText('첫 접속')
+
+    await userEvent.type(screen.getByRole('textbox'), 'rm readme.txt{Enter}')
+    await screen.findByText(/rm readme\.txt/)
+
+    await userEvent.click(screen.getByRole('button', { name: 'RESET' }))
+
+    await waitFor(() => {
+      expect(useGame.getState().lines).toEqual([])
+      expect(useGame.getState().status).toBe('playing')
+    })
+    expect(screen.queryByText(/rm readme\.txt/)).not.toBeInTheDocument()
+
+    // 파일이 정말 복구됐는지: 리셋 전이었다면 cat이 실패했을 것이다.
+    await userEvent.type(screen.getByRole('textbox'), 'cat readme.txt{Enter}')
+    expect(await screen.findByText('[ SOLVED ]')).toBeInTheDocument()
   })
 })

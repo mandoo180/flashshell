@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useGame } from './store'
 import { allProblems } from '../game/problems/index'
+import { levelProblems, frontierIndex } from '../game/progress'
 
 const DIFFICULTY = ['◆◇◇◇◇', '◆◆◇◇◇', '◆◆◆◇◇', '◆◆◆◆◇', '◆◆◆◆◆']
 
@@ -9,7 +10,11 @@ export function HudCard() {
   const hintsShown = useGame((s) => s.hintsShown)
   const revealHint = useGame((s) => s.revealHint)
   const backToLevels = useGame((s) => s.backToLevels)
-  const solvedCount = useGame((s) => s.progress.solved.length)
+  const progress = useGame((s) => s.progress)
+  const solvedCount = progress.solved.length
+  const prevProblem = useGame((s) => s.prevProblem)
+  const nextProblemNav = useGame((s) => s.nextProblemNav)
+  const resetProblem = useGame((s) => s.resetProblem)
   const [collapsed, setCollapsed] = useState(false)
   // useRef 대신 useState 로 DOM 노드를 들고 있는다: `!problem` 이면 이 컴포넌트는
   // null 을 렌더하므로 콜백 ref 가 어느 시점에 노드를 얻고 잃는지 React 가
@@ -44,11 +49,38 @@ export function HudCard() {
   if (!problem) return null
   const hasMoreHints = hintsShown < problem.hints.length
 
+  // 이전/다음 버튼의 활성 범위는 "현재 레벨 안에서의 위치"로 결정된다 —
+  // 레벨을 넘나드는 이동은 스펙 밖(레벨 선택 화면에서만 가능)이라 계산도
+  // levelProblems로 좁힌 리스트 안에서만 한다. 두 함수 모두 순수·저비용이라
+  // 렌더마다 다시 불러도 된다(문제 목록은 정적, progress만 리렌더 트리거).
+  const siblings = levelProblems(problem.level, allProblems)
+  const index = siblings.findIndex((p) => p.id === problem.id)
+  const frontier = frontierIndex(problem.level, progress, allProblems)
+  const isSolved = progress.solved.includes(problem.id)
+
   return (
     <div ref={setHudEl} className={`hud${collapsed ? ' hud-collapsed' : ''}`}>
       <div className="hud-meta">
-        <span className="hud-diff">{DIFFICULTY[problem.level - 1]} LEVEL {problem.level}</span>
+        <span className="hud-diff">{DIFFICULTY[problem.level - 1]} LEVEL {problem.level} · {index + 1}/{siblings.length}</span>
+        {isSolved && <span className="hud-solved">✓ SOLVED</span>}
         <span className="hud-count">{solvedCount}/{allProblems.length} SOLVED</span>
+        <button
+          className="hud-nav"
+          aria-label="이전 문제"
+          disabled={index <= 0}
+          onClick={() => { void prevProblem() }}
+        >
+          ◂
+        </button>
+        <button
+          className="hud-nav"
+          aria-label="다음 문제"
+          disabled={index >= frontier}
+          onClick={() => { void nextProblemNav() }}
+        >
+          ▸
+        </button>
+        <button className="hud-nav" onClick={() => { void resetProblem() }}>RESET</button>
         <button
           className="hud-fold"
           aria-expanded={!collapsed}

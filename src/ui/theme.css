@@ -108,11 +108,19 @@ html, body { margin: 0; }
   backdrop-filter: blur(3px);
   color: var(--phos-green);
 }
-.hud-meta { display: flex; gap: 1rem; align-items: center; font-size: 0.65rem; letter-spacing: 0.24em; }
+.hud-meta { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; font-size: 0.65rem; letter-spacing: 0.24em; }
 .hud-diff { color: var(--phos-amber); }
+/* 밝기 단독 신호 금지 규율(theme.css 상단 "Dual Phosphor" 절 참고): 이 배지는
+   solved 여부를 "✓" 기호 + "SOLVED" 텍스트 둘로 전달한다 — 색(초록)이 지워지거나
+   색맹으로 amber/green 구분이 안 되는 환경에서도 나머지 하나가 의미를 옮긴다.
+   RevealSheet의 "[ SOLVED ]"(exact 매치, sheet-header)와는 별 요소·다른 문자열
+   ("✓ SOLVED")이라 텍스트 쿼리가 서로 충돌하지 않는다. */
+.hud-solved { color: var(--phos-green); text-shadow: var(--glow-green); }
 .hud-count { color: var(--phos-dim); margin-left: auto; }
 .hud-fold,
-.hud-exit { background: none; border: 1px solid var(--phos-border); color: var(--phos-dim); font: inherit; padding: 0.15rem 0.5rem; cursor: pointer; }
+.hud-exit,
+.hud-nav { background: none; border: 1px solid var(--phos-border); color: var(--phos-dim); font: inherit; padding: 0.15rem 0.5rem; cursor: pointer; }
+.hud-nav:disabled { opacity: 0.35; cursor: not-allowed; }
 .hud-collapsed { padding-bottom: 0.55rem; }
 .hud-title { margin: 0.55rem 0 0.2rem; font-size: 1rem; text-shadow: var(--glow-green); }
 .hud-prompt { margin: 0; line-height: 1.55; color: var(--phos-text); }
@@ -171,6 +179,7 @@ html, body { margin: 0; }
    때마다 autoFocus 되므로, 여기서 outline을 지우면 안 된다. */
 .hud-fold:focus-visible,
 .hud-exit:focus-visible,
+.hud-nav:focus-visible,
 .hud-hint-button:focus-visible,
 .level:focus-visible,
 .sheet-next:focus-visible,
