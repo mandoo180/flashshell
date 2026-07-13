@@ -72,3 +72,34 @@ export function isLevelUnlocked(level: Level, progress: Progress, problems: Prob
   if (!isLevelUnlocked(previous, progress, problems)) return false
   return solvedInLevel(progress, previous, problems) >= UNLOCK_THRESHOLD
 }
+
+/**
+ * 레벨에 속한 문제만 배열 순서 그대로 반환.
+ */
+export function levelProblems(level: Level, problems: Problem[]): Problem[] {
+  return problems.filter((p) => p.level === level)
+}
+
+/**
+ * 레벨 내 이동 가능 인덱스 상한 = 첫 미해결 문제의 인덱스.
+ * 전부 해결했다면 이동 범위는 레벨 전체이므로 마지막 인덱스를 반환한다.
+ * solved가 접두 구간이 아니어도(예: l1-01, l1-03만 풀림) "첫 미해결"을 그대로 찾는다.
+ */
+export function frontierIndex(level: Level, progress: Progress, problems: Problem[]): number {
+  const list = levelProblems(level, problems)
+  const solved = new Set(progress.solved)
+  const index = list.findIndex((p) => !solved.has(p.id))
+  return index === -1 ? Math.max(list.length - 1, 0) : index
+}
+
+/**
+ * 착지할 문제 = 첫 미해결 문제. 전부 해결했다면 처음부터 복습하도록 레벨의 첫
+ * 문제로 착지한다 — frontierIndex의 "마지막 인덱스"와 의도적으로 다른 값이다
+ * (착지는 처음부터 복습, 이동 범위는 레벨 전체라는 스펙 결정).
+ * 레벨이 비어 있지 않음은 호출자가 보장한다(openLevel의 find + 가드와 동일 관례).
+ */
+export function frontierProblem(level: Level, progress: Progress, problems: Problem[]): Problem {
+  const list = levelProblems(level, problems)
+  const solved = new Set(progress.solved)
+  return list.find((p) => !solved.has(p.id)) ?? list[0]! // 레벨이 비어 있지 않음을 호출자가 보장
+}

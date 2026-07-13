@@ -8,6 +8,9 @@ import {
   isLevelUnlocked,
   solvedInLevel,
   UNLOCK_THRESHOLD,
+  levelProblems,
+  frontierIndex,
+  frontierProblem,
 } from './progress'
 import type { Problem, Level } from './types'
 
@@ -91,6 +94,51 @@ describe('레벨 해제', () => {
     p = markSolved(p, 'l1-01')
     p = markSolved(p, 'l1-does-not-exist')
     expect(solvedInLevel(p, 1, problems)).toBe(1)
+  })
+})
+
+describe('프런티어 헬퍼', () => {
+  it('levelProblems 는 해당 레벨의 문제만 배열 순서대로 반환한다', () => {
+    const result = levelProblems(2, problems)
+    expect(result).toHaveLength(10)
+    expect(result.every((p) => p.level === 2)).toBe(true)
+    expect(result[0]?.id).toBe('l2-01')
+  })
+
+  it('빈 progress면 프런티어는 레벨의 첫 문제, 이동 범위는 인덱스 0', () => {
+    const p = emptyProgress()
+    expect(frontierProblem(1, p, problems).id).toBe('l1-01')
+    expect(frontierIndex(1, p, problems)).toBe(0)
+  })
+
+  it('일부(접두 구간) 해결 시 첫 미해결 문제가 프런티어', () => {
+    let p = emptyProgress()
+    p = markSolved(p, 'l1-01')
+    p = markSolved(p, 'l1-02')
+    expect(frontierProblem(1, p, problems).id).toBe('l1-03')
+    expect(frontierIndex(1, p, problems)).toBe(2)
+  })
+
+  it('전부 해결하면 착지는 첫 문제(처음부터 복습), 이동 범위는 마지막 인덱스', () => {
+    let p = emptyProgress()
+    for (let i = 1; i <= 10; i++) p = markSolved(p, `l1-${String(i).padStart(2, '0')}`)
+    expect(frontierProblem(1, p, problems).id).toBe('l1-01')
+    expect(frontierIndex(1, p, problems)).toBe(9)
+  })
+
+  it('비접두 solved(예: l1-01, l1-03) 여도 첫 미해결을 일관되게 계산한다', () => {
+    let p = emptyProgress()
+    p = markSolved(p, 'l1-01')
+    p = markSolved(p, 'l1-03')
+    expect(frontierProblem(1, p, problems).id).toBe('l1-02')
+    expect(frontierIndex(1, p, problems)).toBe(1)
+  })
+
+  it('다른 레벨의 solved는 이 레벨의 프런티어에 영향을 주지 않는다', () => {
+    let p = emptyProgress()
+    for (let i = 1; i <= 10; i++) p = markSolved(p, `l1-${String(i).padStart(2, '0')}`)
+    expect(frontierProblem(2, p, problems).id).toBe('l2-01')
+    expect(frontierIndex(2, p, problems)).toBe(0)
   })
 })
 
