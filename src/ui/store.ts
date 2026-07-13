@@ -3,7 +3,8 @@ import { commandNames } from '../shell/registry'
 import { allProblems } from '../game/problems/index'
 import { PLAYER_HOME } from '../game/harness'
 import {
-  loadProgress, saveProgress, markSolved, markHintUsed, type Progress,
+  loadProgress, saveProgress, markSolved, markHintUsed,
+  levelProblems, frontierIndex, frontierProblem, type Progress,
 } from '../game/progress'
 import type { Level, Problem } from '../game/types'
 import type { TermLine } from './Terminal'
@@ -51,6 +52,8 @@ export interface GameStore {
   submit(line: string): Promise<void>
   revealHint(): void
   nextProblem(): Promise<void>
+  prevProblem(): Promise<void>
+  nextProblemNav(): Promise<void>
   resetProblem(): Promise<void>
   backToLevels(): void
   clearSignal(): void
@@ -79,8 +82,11 @@ export const useGame = create<GameStore>((set, get) => ({
   signalTick: 0,
 
   openLevel: (level) => {
-    const first = allProblems.find((p) => p.level === level)
-    if (first) void get().startProblem(first.id)
+    // frontierProblem은 레벨이 비어 있지 않음을 호출자가 보장하는 관례(list[0]!)라,
+    // 여기서 먼저 레벨에 문제가 있는지 확인한다 — 없으면 오늘과 동일하게 조용히 no-op.
+    if (levelProblems(level, allProblems).length === 0) return
+    const target = frontierProblem(level, get().progress, allProblems)
+    void get().startProblem(target.id)
   },
 
   startProblem: async (id) => {
@@ -176,11 +182,32 @@ export const useGame = create<GameStore>((set, get) => ({
   nextProblem: async () => {
     const { problem } = get()
     if (!problem) return
-    const siblings = allProblems.filter((p) => p.level === problem.level)
+    const siblings = levelProblems(problem.level, allProblems)
     const index = siblings.findIndex((p) => p.id === problem.id)
     const next = siblings[index + 1]
     if (next) await get().startProblem(next.id)
     else get().backToLevels()
+  },
+
+  prevProblem: async () => {
+    const { problem } = get()
+    if (!problem) return
+    const siblings = levelProblems(problem.level, allProblems)
+    const index = siblings.findIndex((p) => p.id === problem.id)
+    if (index <= 0) return // 레벨의 첫 문제 — no-op
+    const target = siblings[index - 1]!
+    await get().startProblem(target.id)
+  },
+
+  nextProblemNav: async () => {
+    const { problem, progress } = get()
+    if (!problem) return
+    const siblings = levelProblems(problem.level, allProblems)
+    const index = siblings.findIndex((p) => p.id === problem.id)
+    if (index >= frontierIndex(problem.level, progress, allProblems)) return // 프런티어 캡 — no-op
+    const target = siblings[index + 1]
+    if (!target) return
+    await get().startProblem(target.id)
   },
 
   resetProblem: async () => {

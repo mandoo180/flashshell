@@ -224,6 +224,73 @@ describe('다음 문제', () => {
   })
 })
 
+// openLevel 은 내부적으로 void startProblem(...) 을 fire-and-forget 으로 큐에
+// 실을 뿐 자신은 여전히 동기다 — 세션의 start()가 실제로는 마이크로태스크 한
+// 틱 뒤에 resolve 되므로(signal.test.tsx의 clickLevel1 과 동일한 이유), 결과
+// 상태를 보려면 대기 중인 프로미스 체인을 한 번 흘려보내야 한다.
+const flush = () => new Promise((r) => setTimeout(r, 0))
+
+describe('레벨 착지(프런티어)와 이동', () => {
+  it('openLevel 은 진행도상 첫 미해결 문제에 착지한다', async () => {
+    useGame.setState({ progress: { solved: ['l1-01', 'l1-02'], hintsUsed: [] } })
+    get().openLevel(1)
+    await flush()
+    expect(get().problem?.id).toBe('l1-03')
+  })
+
+  it('레벨을 전부 풀었으면 처음부터 복습하도록 첫 문제에 착지한다', async () => {
+    const solved = allProblems.filter((p) => p.level === 1).map((p) => p.id)
+    useGame.setState({ progress: { solved, hintsUsed: [] } })
+    get().openLevel(1)
+    await flush()
+    expect(get().problem?.id).toBe('l1-01')
+  })
+
+  it('진행도가 비어 있으면 기존과 동일하게 첫 문제에 착지한다(회귀)', async () => {
+    get().openLevel(1)
+    await flush()
+    expect(get().problem?.id).toBe('l1-01')
+  })
+
+  it('prevProblem 은 이전 문제로 완전히 새로 시작한다(터미널 클리어·playing)', async () => {
+    await get().startProblem('l1-03')
+    await get().submit('cat nope.txt') // lines/signal 을 더럽혀 놓는다
+    expect(get().lines.length).toBeGreaterThan(0)
+
+    await get().prevProblem()
+    expect(get().problem?.id).toBe('l1-02')
+    expect(get().status).toBe('playing')
+    expect(get().lines).toEqual([])
+  })
+
+  it('레벨의 첫 문제에서 prevProblem 은 아무것도 하지 않는다', async () => {
+    await get().startProblem('l1-01')
+    await get().prevProblem()
+    expect(get().problem?.id).toBe('l1-01')
+  })
+
+  it('nextProblemNav 는 프런티어까지만 이동하고 그 너머는 no-op 이다', async () => {
+    useGame.setState({ progress: { solved: ['l1-01'], hintsUsed: [] } })
+    await get().startProblem('l1-01')
+
+    await get().nextProblemNav()
+    expect(get().problem?.id).toBe('l1-02') // 프런티어(첫 미해결)까지는 이동 가능
+
+    await get().nextProblemNav()
+    expect(get().problem?.id).toBe('l1-02') // 프런티어 캡: 더는 못 감
+  })
+
+  it('resetProblem 은 hintsShown 을 보존한다(스펙 확정 동작)', async () => {
+    await get().startProblem('l1-01')
+    get().revealHint()
+    get().revealHint()
+    expect(get().hintsShown).toBe(2)
+
+    await get().resetProblem()
+    expect(get().hintsShown).toBe(2)
+  })
+})
+
 describe('세션은 스토어 수명 동안 하나만 만든다', () => {
   it('레벨을 두 번 넘어가도(문제 → 다음 문제) 같은 세션 인스턴스를 재사용한다', async () => {
     await get().startProblem('l1-01')
