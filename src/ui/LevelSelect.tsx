@@ -9,6 +9,7 @@ const LEVELS: { level: Level; name: string; topic: string }[] = [
   { level: 3, name: '텍스트 처리', topic: 'grep · sed · awk · 파이프' },
   { level: 4, name: '시스템', topic: 'find · xargs · chmod' },
   { level: 5, name: '스크립팅', topic: 'if · for · while · 함수' },
+  { level: 6, name: '자동화', topic: '배열 · read · 스크립트' },
 ]
 
 export function LevelSelect() {

@@ -3,7 +3,11 @@ import { useGame } from './store'
 import { allProblems } from '../game/problems/index'
 import { levelProblems, frontierIndex } from '../game/progress'
 
-const DIFFICULTY = ['◆◇◇◇◇', '◆◆◇◇◇', '◆◆◆◇◇', '◆◆◆◆◇', '◆◆◆◆◆']
+const DIFFICULTY_SLOTS = 6
+const DIFFICULTY = Array.from(
+  { length: DIFFICULTY_SLOTS },
+  (_, i) => '◆'.repeat(i + 1) + '◇'.repeat(DIFFICULTY_SLOTS - (i + 1)),
+)
 
 export function HudCard() {
   const problem = useGame((s) => s.problem)

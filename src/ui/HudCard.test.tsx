@@ -192,6 +192,15 @@ describe('HudCard: 이전/다음 문제 이동, RESET, 위치, 해결 배지', (
     expect(screen.queryByText('✓ SOLVED')).not.toBeInTheDocument()
   })
 
+  it('DIFFICULTY는 6칸 표기다 — 레벨 1은 ◆◇◇◇◇◇', async () => {
+    // 레벨이 1~6까지 있으므로(L6 자동화 포함) 난이도 표시도 6칸이어야 한다 —
+    // 5칸(◆◇◇◇◇)이면 L6를 표현할 자리가 없다.
+    await goToLevel1()
+    await screen.findByText('첫 접속')
+
+    expect(hudDiffText()).toContain('◆◇◇◇◇◇')
+  })
+
   it('RESET 클릭 → 지운 파일이 원상 복구되고 화면(lines)이 비워진다', async () => {
     render(<App />)
     await userEvent.click(screen.getByRole('button', { name: /LEVEL 1/ }))

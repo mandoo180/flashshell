@@ -1,7 +1,7 @@
 import type { VFS } from '../shell/vfs'
 import type { ExecResult } from '../shell/types'
 
-export type Level = 1 | 2 | 3 | 4 | 5
+export type Level = 1 | 2 | 3 | 4 | 5 | 6
 
 export interface CheckContext {
   fs: VFS
