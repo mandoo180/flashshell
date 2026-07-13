@@ -50,9 +50,9 @@ jobs:
           node-version: lts/*
           cache: npm
       - run: npm ci
+      # 커스텀 도메인(flashshell.anonpengling.org)은 루트에서 서빙되므로 base 는
+      # 기본값 '/' 그대로 빌드한다 (vite.config.ts 의 DEPLOY_BASE 조건부 참고).
       - run: npm run build
-        env:
-          DEPLOY_BASE: /flashshell/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
