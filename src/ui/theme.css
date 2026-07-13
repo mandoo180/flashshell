@@ -110,7 +110,7 @@ html, body { margin: 0; }
 }
 .hud-meta { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; font-size: 0.65rem; letter-spacing: 0.24em; }
 .hud-diff { color: var(--phos-amber); }
-/* 밝기 단독 신호 금지 규율(theme.css 상단 "Dual Phosphor" 절 참고): 이 배지는
+/* 밝기 단독 신호 금지 규율(아래 "Dual Phosphor 시그널" 절 참고): 이 배지는
    solved 여부를 "✓" 기호 + "SOLVED" 텍스트 둘로 전달한다 — 색(초록)이 지워지거나
    색맹으로 amber/green 구분이 안 되는 환경에서도 나머지 하나가 의미를 옮긴다.
    RevealSheet의 "[ SOLVED ]"(exact 매치, sheet-header)와는 별 요소·다른 문자열
