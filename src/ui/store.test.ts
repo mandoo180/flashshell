@@ -347,3 +347,11 @@ describe('워커 단일-인플라이트 계약(직렬화)', () => {
 // ShellSession 계약) — session.test.ts의 "check 함수가 throws 해도 exec 는
 // 해결되며 solved=false" 테스트가 그 계약을 지킨다. store는 session.exec()의
 // 반환을 그대로 신뢰하므로 여기서 같은 시나리오를 다시 검증할 필요가 없다.
+
+describe('setLang', () => {
+  it('lang 상태를 갱신한다 (node 환경 — localStorage/document 부재에도 안전)', () => {
+    useGame.setState({ lang: 'ko' })
+    useGame.getState().setLang('en')
+    expect(useGame.getState().lang).toBe('en')
+  })
+})

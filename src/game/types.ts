@@ -3,6 +3,14 @@ import type { ExecResult } from '../shell/types'
 
 export type Level = 1 | 2 | 3 | 4 | 5 | 6
 
+export type Lang = 'en' | 'ko'
+
+/** UI·문제 텍스트의 이중 언어 병기. 둘 다 필수 — 번역 누락은 컴파일 에러다. */
+export interface LocalizedText {
+  en: string
+  ko: string
+}
+
 export interface CheckContext {
   fs: VFS
   lastResult: ExecResult

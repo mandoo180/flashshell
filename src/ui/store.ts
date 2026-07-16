@@ -6,10 +6,11 @@ import {
   loadProgress, saveProgress, markSolved, markHintUsed,
   levelProblems, frontierIndex, frontierProblem, type Progress,
 } from '../game/progress'
-import type { Level, Problem } from '../game/types'
+import type { Lang, Level, Problem } from '../game/types'
 import type { TermLine } from './Terminal'
 import type { ShellSession } from './session'
 import { WorkerShellSession } from './worker-session'
+import { loadLang, saveLang, applyDocumentLang } from './i18n'
 
 export type Signal = 'idle' | 'wrong' | 'solved'
 
@@ -31,6 +32,7 @@ function serialize<T>(work: () => Promise<T>): Promise<T> {
 
 export interface GameStore {
   screen: 'levels' | 'play'
+  lang: Lang
   progress: Progress
   problem: Problem | null
   session: ShellSession | null
@@ -47,6 +49,7 @@ export interface GameStore {
   signal: Signal
   signalTick: number
 
+  setLang(lang: Lang): void
   openLevel(level: Level): void
   startProblem(id: string): Promise<void>
   submit(line: string): Promise<void>
@@ -66,8 +69,14 @@ function toLines(text: string, tone: TermLine['tone']): TermLine[] {
   return text.replace(/\n$/, '').split('\n').map((t) => ({ text: t, tone }))
 }
 
+// 언어는 스토어 생성 시점에 한 번 결정하고(저장값 > 브라우저 감지), <html lang> 도
+// 즉시 맞춘다 — index.html 의 정적 lang="ko" 는 JS 로드 전의 초기값일 뿐이다.
+const initialLang = loadLang()
+applyDocumentLang(initialLang)
+
 export const useGame = create<GameStore>((set, get) => ({
   screen: 'levels',
+  lang: initialLang,
   progress: loadProgress(),
   problem: null,
   session: null,
@@ -80,6 +89,12 @@ export const useGame = create<GameStore>((set, get) => ({
   hintsShown: 0,
   signal: 'idle',
   signalTick: 0,
+
+  setLang: (lang) => {
+    saveLang(lang)
+    applyDocumentLang(lang)
+    set({ lang })
+  },
 
   openLevel: (level) => {
     // frontierProblem은 레벨이 비어 있지 않음을 호출자가 보장하는 관례(list[0]!)라,

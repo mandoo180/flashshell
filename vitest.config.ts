@@ -12,7 +12,7 @@ export default defineConfig({
       },
       {
         extends: true,
-        test: { name: 'ui', environment: 'jsdom', include: ['src/ui/**/*.test.tsx'], setupFiles: ['./src/ui/test-setup.ts'] },
+        test: { name: 'ui', environment: 'jsdom', include: ['src/ui/**/*.test.tsx', 'src/ui/i18n.test.ts'], setupFiles: ['./src/ui/test-setup.ts'] },
       },
     ],
   },
