@@ -21,4 +21,12 @@ describe('문제 텍스트 무결성 (60문제 × title/prompt/hints/explanation
       }
     }
   })
+
+  it('en 필드에 한글이 없다 — 60문제 번역 완료의 기계적 증명', () => {
+    for (const p of allProblems) {
+      for (const [name, tx] of textFields(p)) {
+        expect(/[가-힣]/.test(tx.en), `${p.id} ${name}.en 에 한글 잔존: ${tx.en}`).toBe(false)
+      }
+    }
+  })
 })
