@@ -26,7 +26,7 @@ export interface LocalizedText { en: string; ko: string }
   1. `localStorage['flashshell.lang.v1']`이 `'en' | 'ko'`면 그 값
   2. 아니면 `navigator.language`가 `ko`로 시작하면 `'ko'`, 그 외 `'en'`
 - `setLang`: 스토어 갱신 + localStorage 저장 + `document.documentElement.lang` 갱신(초기 적용도 동일 경로).
-- **토글 UI**: CRT 프레임 우상단 고정 `[EN|KO]` — 레벨 선택·플레이 양쪽에서 항상 노출. 전환은 텍스트 리렌더만; 터미널 히스토리·세션·진행 상태 무접촉(셸 세션에 아무 메시지도 보내지 않는다).
+- **토글 UI**: `[EN|KO]` — 레벨 선택 화면은 우상단 고정, 플레이 화면은 HUD 메타 행(화면 최상단 행)의 오른쪽 그룹에 배치해 양쪽에서 항상 노출한다. HUD 위에 떠 있는 별도 오버레이를 만들지 않는다(375px HUD 겹침 이력 회피). 전환은 텍스트 리렌더만; 터미널 히스토리·세션·진행 상태 무접촉(셸 세션에 아무 메시지도 보내지 않는다).
 
 ## 3. UI 크롬 사전 (`src/ui/i18n.ts`)
 
