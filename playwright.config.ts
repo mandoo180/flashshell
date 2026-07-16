@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  use: { baseURL: 'http://localhost:5173' },
+  use: { baseURL: 'http://localhost:5173', locale: 'ko-KR' },
   webServer: {
     command: 'npm run dev',
     url: 'http://localhost:5173',

@@ -121,6 +121,10 @@ html, body { margin: 0; }
 .hud-exit,
 .hud-nav { background: none; border: 1px solid var(--phos-border); color: var(--phos-dim); font: inherit; padding: 0.15rem 0.5rem; cursor: pointer; }
 .hud-nav:disabled { opacity: 0.35; cursor: not-allowed; }
+.lang-toggle { display: inline-flex; gap: 0.25rem; }
+.lang-toggle button { background: none; border: 1px solid var(--phos-border); color: var(--phos-dim); font: inherit; font-size: 0.65rem; letter-spacing: 0.18em; padding: 0.15rem 0.5rem; cursor: pointer; }
+.lang-toggle button[aria-pressed='true'] { color: var(--phos-green); border-color: var(--phos-green); text-shadow: var(--glow-green); }
+.lang-toggle-levels { position: absolute; top: 1.2rem; right: 1.5rem; }
 .hud-collapsed { padding-bottom: 0.55rem; }
 .hud-title { margin: 0.55rem 0 0.2rem; font-size: 1rem; text-shadow: var(--glow-green); }
 .hud-prompt { margin: 0; line-height: 1.55; color: var(--phos-text); }
@@ -183,7 +187,8 @@ html, body { margin: 0; }
 .hud-hint-button:focus-visible,
 .level:focus-visible,
 .sheet-next:focus-visible,
-.term-input:focus-visible {
+.term-input:focus-visible,
+.lang-toggle button:focus-visible {
   outline: 2px solid var(--phos-green);
   outline-offset: 2px;
 }

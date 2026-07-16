@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { useGame } from './store'
 import { allProblems } from '../game/problems/index'
 import { levelProblems, frontierIndex } from '../game/progress'
+import { useT } from './useT'
+import { LangToggle } from './LangToggle'
 
 const DIFFICULTY_SLOTS = 6
 const DIFFICULTY = Array.from(
@@ -19,6 +21,7 @@ export function HudCard() {
   const prevProblem = useGame((s) => s.prevProblem)
   const nextProblemNav = useGame((s) => s.nextProblemNav)
   const resetProblem = useGame((s) => s.resetProblem)
+  const t = useT()
   const [collapsed, setCollapsed] = useState(false)
   // useRef 대신 useState 로 DOM 노드를 들고 있는다: `!problem` 이면 이 컴포넌트는
   // null 을 렌더하므로 콜백 ref 가 어느 시점에 노드를 얻고 잃는지 React 가
@@ -75,7 +78,7 @@ export function HudCard() {
         <span className="hud-count">{solvedCount}/{allProblems.length} SOLVED</span>
         <button
           className="hud-nav"
-          aria-label="이전 문제"
+          aria-label={t('prevProblem')}
           disabled={index <= 0}
           onClick={() => { void prevProblem() }}
         >
@@ -83,7 +86,7 @@ export function HudCard() {
         </button>
         <button
           className="hud-nav"
-          aria-label="다음 문제"
+          aria-label={t('nextProblem')}
           disabled={index >= frontier}
           onClick={() => { void nextProblemNav() }}
         >
@@ -93,11 +96,12 @@ export function HudCard() {
         <button
           className="hud-fold"
           aria-expanded={!collapsed}
-          aria-label={collapsed ? '문제 카드 펼치기' : '문제 카드 접기'}
+          aria-label={collapsed ? t('expandCard') : t('collapseCard')}
           onClick={() => setCollapsed((c) => !c)}
         >
           {collapsed ? '▼' : '▲'}
         </button>
+        <LangToggle />
         <button className="hud-exit" onClick={backToLevels}>← LEVELS</button>
       </div>
 
