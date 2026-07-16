@@ -6,13 +6,13 @@ describe('createShellForProblem (하니스)', () => {
   const base = {
     id: 'l1-01',
     level: 1 as Level,
-    title: '',
-    prompt: '',
+    title: { en: '', ko: '' },
+    prompt: { en: '', ko: '' },
     hints: [],
     check: () => false,
     solution: '',
     wrongAnswer: '',
-    explanation: '',
+    explanation: { en: '', ko: '' },
   }
 
   it('setup이 아무 것도 하지 않아도 홈 디렉터리가 존재하고 cwd/home이 거기다', () => {

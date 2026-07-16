@@ -21,12 +21,12 @@ export interface CheckContext {
 export interface Problem {
   id: string // 'l1-01'
   level: Level
-  title: string // HUD 카드 제목
-  prompt: string // 지문
+  title: LocalizedText // HUD 카드 제목
+  prompt: LocalizedText // 지문
   setup(fs: VFS): void
-  hints: string[]
+  hints: LocalizedText[]
   check(ctx: CheckContext): boolean
   solution: string
   wrongAnswer: string // 그럴듯하지만 틀린 답. 음성 테스트용.
-  explanation: string
+  explanation: LocalizedText
 }

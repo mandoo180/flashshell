@@ -13,6 +13,7 @@ const DIFFICULTY = Array.from(
 
 export function HudCard() {
   const problem = useGame((s) => s.problem)
+  const lang = useGame((s) => s.lang)
   const hintsShown = useGame((s) => s.hintsShown)
   const revealHint = useGame((s) => s.revealHint)
   const backToLevels = useGame((s) => s.backToLevels)
@@ -107,11 +108,11 @@ export function HudCard() {
 
       {!collapsed && (
         <>
-          <h2 className="hud-title">{problem.title}</h2>
-          <p className="hud-prompt">{problem.prompt}</p>
+          <h2 className="hud-title">{problem.title[lang]}</h2>
+          <p className="hud-prompt">{problem.prompt[lang]}</p>
 
           {problem.hints.slice(0, hintsShown).map((hint, i) => (
-            <p key={i} className="hud-hint">▸ {hint}</p>
+            <p key={i} className="hud-hint">▸ {hint[lang]}</p>
           ))}
 
           {hasMoreHints && (

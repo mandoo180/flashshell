@@ -10,93 +10,93 @@ export const l6: Problem[] = [
   {
     id: 'l6-01',
     level: 6,
-    title: '서버 명단 배열',
+    title: { en: '서버 명단 배열', ko: '서버 명단 배열' },
     prompt:
-      '관리 중인 서버 세 대의 이름(web, db, cache)을 배열에 담으세요. 이름들을 공백으로 구분한 한 줄로 servers.txt 에 쓰고, 서버가 몇 대인지(개수)는 직접 세지 말고 배열 크기로 구해 count.txt 에 쓰세요.',
+      { en: '관리 중인 서버 세 대의 이름(web, db, cache)을 배열에 담으세요. 이름들을 공백으로 구분한 한 줄로 servers.txt 에 쓰고, 서버가 몇 대인지(개수)는 직접 세지 말고 배열 크기로 구해 count.txt 에 쓰세요.', ko: '관리 중인 서버 세 대의 이름(web, db, cache)을 배열에 담으세요. 이름들을 공백으로 구분한 한 줄로 servers.txt 에 쓰고, 서버가 몇 대인지(개수)는 직접 세지 말고 배열 크기로 구해 count.txt 에 쓰세요.' },
     setup: () => {},
     hints: [
-      '이름을 각각 다른 변수에 담는 대신, 여러 값을 한 변수에 묶는 배열을 쓰면 목록 전체와 개수를 한꺼번에 다룰 수 있습니다.',
-      '배열은 이름=(값1 값2 값3) 로 만듭니다. 전체 원소는 "${이름[@]}", 원소 개수는 ${#이름[@]} 로 꺼냅니다.',
-      'servers=(web db cache); echo "${servers[@]}" > servers.txt; echo "${#servers[@]}" > count.txt',
+      { en: '이름을 각각 다른 변수에 담는 대신, 여러 값을 한 변수에 묶는 배열을 쓰면 목록 전체와 개수를 한꺼번에 다룰 수 있습니다.', ko: '이름을 각각 다른 변수에 담는 대신, 여러 값을 한 변수에 묶는 배열을 쓰면 목록 전체와 개수를 한꺼번에 다룰 수 있습니다.' },
+      { en: '배열은 이름=(값1 값2 값3) 로 만듭니다. 전체 원소는 "${이름[@]}", 원소 개수는 ${#이름[@]} 로 꺼냅니다.', ko: '배열은 이름=(값1 값2 값3) 로 만듭니다. 전체 원소는 "${이름[@]}", 원소 개수는 ${#이름[@]} 로 꺼냅니다.' },
+      { en: 'servers=(web db cache); echo "${servers[@]}" > servers.txt; echo "${#servers[@]}" > count.txt', ko: 'servers=(web db cache); echo "${servers[@]}" > servers.txt; echo "${#servers[@]}" > count.txt' },
     ],
     check: (ctx) =>
       safeRead(ctx.fs, `${HOME}/servers.txt`) === 'web db cache\n' && safeRead(ctx.fs, `${HOME}/count.txt`) === '3\n',
     solution: 'servers=(web db cache); echo "${servers[@]}" > servers.txt; echo "${#servers[@]}" > count.txt',
     wrongAnswer: 'echo "web db cache" > servers.txt',
     explanation:
-      'echo "web db cache" > servers.txt 는 이름 목록만 손으로 적어 넣을 뿐, 개수를 담은 count.txt 는 아예 만들지 않습니다. 이름들을 servers=(web db cache) 처럼 배열에 담아 두면, "${servers[@]}" 로 전체 목록을 한 줄로 쓰고 ${#servers[@]} 로 원소 개수(3)를 직접 세지 않고도 얻어 count.txt 에 남길 수 있습니다.',
+      { en: 'echo "web db cache" > servers.txt 는 이름 목록만 손으로 적어 넣을 뿐, 개수를 담은 count.txt 는 아예 만들지 않습니다. 이름들을 servers=(web db cache) 처럼 배열에 담아 두면, "${servers[@]}" 로 전체 목록을 한 줄로 쓰고 ${#servers[@]} 로 원소 개수(3)를 직접 세지 않고도 얻어 count.txt 에 남길 수 있습니다.', ko: 'echo "web db cache" > servers.txt 는 이름 목록만 손으로 적어 넣을 뿐, 개수를 담은 count.txt 는 아예 만들지 않습니다. 이름들을 servers=(web db cache) 처럼 배열에 담아 두면, "${servers[@]}" 로 전체 목록을 한 줄로 쓰고 ${#servers[@]} 로 원소 개수(3)를 직접 세지 않고도 얻어 count.txt 에 남길 수 있습니다.' },
   },
   {
     id: 'l6-02',
     level: 6,
-    title: '담당자 교체',
+    title: { en: '담당자 교체', ko: '담당자 교체' },
     prompt:
-      'team.txt 에는 담당자 명단이 한 줄에 공백으로 구분돼 있습니다(alice bob carol dave). 두 번째 담당자(인덱스 1)가 bob 에서 erin 으로 바뀌었습니다. 명단을 배열로 읽어들여 그 자리 하나만 erin 으로 교체하고, 전체 명단을 다시 한 줄로 roster.txt 에 쓰세요.',
+      { en: 'team.txt 에는 담당자 명단이 한 줄에 공백으로 구분돼 있습니다(alice bob carol dave). 두 번째 담당자(인덱스 1)가 bob 에서 erin 으로 바뀌었습니다. 명단을 배열로 읽어들여 그 자리 하나만 erin 으로 교체하고, 전체 명단을 다시 한 줄로 roster.txt 에 쓰세요.', ko: 'team.txt 에는 담당자 명단이 한 줄에 공백으로 구분돼 있습니다(alice bob carol dave). 두 번째 담당자(인덱스 1)가 bob 에서 erin 으로 바뀌었습니다. 명단을 배열로 읽어들여 그 자리 하나만 erin 으로 교체하고, 전체 명단을 다시 한 줄로 roster.txt 에 쓰세요.' },
     setup: (fs) => {
       fs.writeFile(`${HOME}/team.txt`, 'alice bob carol dave\n')
     },
     hints: [
-      '명단을 통째로 다시 적는 대신, 배열의 특정 자리 하나만 콕 집어 바꿀 수 있습니다.',
-      '한 줄을 배열로 읽으려면 read -a 이름 < 파일 을 씁니다. 배열의 자리는 0 부터 세며, 이름[n]=값 으로 그 자리만 교체합니다.',
-      'read -a team < team.txt; team[1]=erin; echo "${team[@]}" > roster.txt',
+      { en: '명단을 통째로 다시 적는 대신, 배열의 특정 자리 하나만 콕 집어 바꿀 수 있습니다.', ko: '명단을 통째로 다시 적는 대신, 배열의 특정 자리 하나만 콕 집어 바꿀 수 있습니다.' },
+      { en: '한 줄을 배열로 읽으려면 read -a 이름 < 파일 을 씁니다. 배열의 자리는 0 부터 세며, 이름[n]=값 으로 그 자리만 교체합니다.', ko: '한 줄을 배열로 읽으려면 read -a 이름 < 파일 을 씁니다. 배열의 자리는 0 부터 세며, 이름[n]=값 으로 그 자리만 교체합니다.' },
+      { en: 'read -a team < team.txt; team[1]=erin; echo "${team[@]}" > roster.txt', ko: 'read -a team < team.txt; team[1]=erin; echo "${team[@]}" > roster.txt' },
     ],
     check: (ctx) => safeRead(ctx.fs, `${HOME}/roster.txt`) === 'alice erin carol dave\n',
     solution: 'read -a team < team.txt; team[1]=erin; echo "${team[@]}" > roster.txt',
     wrongAnswer: 'read -a team < team.txt; echo "${team[@]}" > roster.txt',
     explanation:
-      'read -a team < team.txt; echo "${team[@]}" > roster.txt 는 명단을 읽어 그대로 다시 쓸 뿐 bob 을 바꾸지 않아, roster.txt 에 여전히 bob 이 남습니다. 배열에서는 team[1]=erin 처럼 인덱스로 한 자리만 지정해 교체할 수 있습니다 — 인덱스는 0 부터 세므로 [1] 이 두 번째 자리(bob)이고, 나머지 alice·carol·dave 는 건드리지 않고 그대로 둡니다.',
+      { en: 'read -a team < team.txt; echo "${team[@]}" > roster.txt 는 명단을 읽어 그대로 다시 쓸 뿐 bob 을 바꾸지 않아, roster.txt 에 여전히 bob 이 남습니다. 배열에서는 team[1]=erin 처럼 인덱스로 한 자리만 지정해 교체할 수 있습니다 — 인덱스는 0 부터 세므로 [1] 이 두 번째 자리(bob)이고, 나머지 alice·carol·dave 는 건드리지 않고 그대로 둡니다.', ko: 'read -a team < team.txt; echo "${team[@]}" > roster.txt 는 명단을 읽어 그대로 다시 쓸 뿐 bob 을 바꾸지 않아, roster.txt 에 여전히 bob 이 남습니다. 배열에서는 team[1]=erin 처럼 인덱스로 한 자리만 지정해 교체할 수 있습니다 — 인덱스는 0 부터 세므로 [1] 이 두 번째 자리(bob)이고, 나머지 alice·carol·dave 는 건드리지 않고 그대로 둡니다.' },
   },
   {
     id: 'l6-03',
     level: 6,
-    title: '허용 목록 이어붙이기',
+    title: { en: '허용 목록 이어붙이기', ko: '허용 목록 이어붙이기' },
     prompt:
-      '방화벽 허용 IP 목록을 단계적으로 채웁니다. 처음엔 10.0.0.1 하나로 시작한 배열에, 새로 승인된 10.0.0.2 와 10.0.0.3 을 뒤에 이어 붙이세요. 최종 목록을 공백으로 구분한 한 줄로 allowlist.txt 에 쓰세요.',
+      { en: '방화벽 허용 IP 목록을 단계적으로 채웁니다. 처음엔 10.0.0.1 하나로 시작한 배열에, 새로 승인된 10.0.0.2 와 10.0.0.3 을 뒤에 이어 붙이세요. 최종 목록을 공백으로 구분한 한 줄로 allowlist.txt 에 쓰세요.', ko: '방화벽 허용 IP 목록을 단계적으로 채웁니다. 처음엔 10.0.0.1 하나로 시작한 배열에, 새로 승인된 10.0.0.2 와 10.0.0.3 을 뒤에 이어 붙이세요. 최종 목록을 공백으로 구분한 한 줄로 allowlist.txt 에 쓰세요.' },
     setup: () => {},
     hints: [
-      '이미 있는 배열을 통째로 다시 만들지 않고, 뒤에 새 원소만 덧붙일 수 있습니다.',
-      '배열에 원소를 덧붙일 때는 = 가 아니라 += 를 씁니다: 이름+=(값 값). = 로 다시 대입하면 기존 원소가 사라집니다.',
-      'ips=(10.0.0.1); ips+=(10.0.0.2 10.0.0.3); echo "${ips[@]}" > allowlist.txt',
+      { en: '이미 있는 배열을 통째로 다시 만들지 않고, 뒤에 새 원소만 덧붙일 수 있습니다.', ko: '이미 있는 배열을 통째로 다시 만들지 않고, 뒤에 새 원소만 덧붙일 수 있습니다.' },
+      { en: '배열에 원소를 덧붙일 때는 = 가 아니라 += 를 씁니다: 이름+=(값 값). = 로 다시 대입하면 기존 원소가 사라집니다.', ko: '배열에 원소를 덧붙일 때는 = 가 아니라 += 를 씁니다: 이름+=(값 값). = 로 다시 대입하면 기존 원소가 사라집니다.' },
+      { en: 'ips=(10.0.0.1); ips+=(10.0.0.2 10.0.0.3); echo "${ips[@]}" > allowlist.txt', ko: 'ips=(10.0.0.1); ips+=(10.0.0.2 10.0.0.3); echo "${ips[@]}" > allowlist.txt' },
     ],
     check: (ctx) => safeRead(ctx.fs, `${HOME}/allowlist.txt`) === '10.0.0.1 10.0.0.2 10.0.0.3\n',
     solution: 'ips=(10.0.0.1); ips+=(10.0.0.2 10.0.0.3); echo "${ips[@]}" > allowlist.txt',
     wrongAnswer: 'ips=(10.0.0.1); ips=(10.0.0.2 10.0.0.3); echo "${ips[@]}" > allowlist.txt',
     explanation:
-      'ips=(10.0.0.1) 다음에 다시 ips=(10.0.0.2 10.0.0.3) 을 하면, = 는 배열을 통째로 갈아치우므로 처음의 10.0.0.1 이 사라져 allowlist.txt 에 두 개만 남습니다. += 는 기존 원소를 유지한 채 뒤에 덧붙이므로, ips+=(10.0.0.2 10.0.0.3) 으로 세 IP 가 모두 순서대로 남습니다.',
+      { en: 'ips=(10.0.0.1) 다음에 다시 ips=(10.0.0.2 10.0.0.3) 을 하면, = 는 배열을 통째로 갈아치우므로 처음의 10.0.0.1 이 사라져 allowlist.txt 에 두 개만 남습니다. += 는 기존 원소를 유지한 채 뒤에 덧붙이므로, ips+=(10.0.0.2 10.0.0.3) 으로 세 IP 가 모두 순서대로 남습니다.', ko: 'ips=(10.0.0.1) 다음에 다시 ips=(10.0.0.2 10.0.0.3) 을 하면, = 는 배열을 통째로 갈아치우므로 처음의 10.0.0.1 이 사라져 allowlist.txt 에 두 개만 남습니다. += 는 기존 원소를 유지한 채 뒤에 덧붙이므로, ips+=(10.0.0.2 10.0.0.3) 으로 세 IP 가 모두 순서대로 남습니다.' },
   },
   {
     id: 'l6-04',
     level: 6,
-    title: '설정값 뽑아내기',
+    title: { en: '설정값 뽑아내기', ko: '설정값 뽑아내기' },
     prompt:
-      'message.conf 의 첫 줄은 "키 값" 형식입니다(title Welcome to Flash Shell). 여기서 값 부분만 message.txt 에 쓰세요 — 값 안의 공백까지 그대로 살려야 합니다.',
+      { en: 'message.conf 의 첫 줄은 "키 값" 형식입니다(title Welcome to Flash Shell). 여기서 값 부분만 message.txt 에 쓰세요 — 값 안의 공백까지 그대로 살려야 합니다.', ko: 'message.conf 의 첫 줄은 "키 값" 형식입니다(title Welcome to Flash Shell). 여기서 값 부분만 message.txt 에 쓰세요 — 값 안의 공백까지 그대로 살려야 합니다.' },
     setup: (fs) => {
       fs.writeFile(`${HOME}/message.conf`, 'title Welcome to Flash Shell\n')
     },
     hints: [
-      '한 줄을 앞의 키와 뒤의 값으로 나눠 담고 싶을 때, read 에 변수를 두 개 주면 됩니다.',
-      'read 키변수 값변수 < 파일 로 읽으면, 첫 단어는 키변수에, 그 뒤 나머지 전부(중간 공백 포함)는 마지막 변수에 통째로 들어갑니다.',
-      'read key value < message.conf; echo "$value" > message.txt',
+      { en: '한 줄을 앞의 키와 뒤의 값으로 나눠 담고 싶을 때, read 에 변수를 두 개 주면 됩니다.', ko: '한 줄을 앞의 키와 뒤의 값으로 나눠 담고 싶을 때, read 에 변수를 두 개 주면 됩니다.' },
+      { en: 'read 키변수 값변수 < 파일 로 읽으면, 첫 단어는 키변수에, 그 뒤 나머지 전부(중간 공백 포함)는 마지막 변수에 통째로 들어갑니다.', ko: 'read 키변수 값변수 < 파일 로 읽으면, 첫 단어는 키변수에, 그 뒤 나머지 전부(중간 공백 포함)는 마지막 변수에 통째로 들어갑니다.' },
+      { en: 'read key value < message.conf; echo "$value" > message.txt', ko: 'read key value < message.conf; echo "$value" > message.txt' },
     ],
     check: (ctx) => safeRead(ctx.fs, `${HOME}/message.txt`) === 'Welcome to Flash Shell\n',
     solution: 'read key value < message.conf; echo "$value" > message.txt',
     wrongAnswer: 'read value < message.conf; echo "$value" > message.txt',
     explanation:
-      'read value < message.conf 처럼 변수를 하나만 주면, 그 변수에 줄 전체("title Welcome to Flash Shell")가 들어가 키 title 까지 섞여 나옵니다. read key value 처럼 변수를 둘 주면 첫 단어 title 은 key 로 떼어내고, 나머지 "Welcome to Flash Shell" 은 중간 공백까지 그대로 마지막 변수 value 에 통째로 담깁니다 — 마지막 변수가 남은 전부를 받는다는 규칙 덕분입니다.',
+      { en: 'read value < message.conf 처럼 변수를 하나만 주면, 그 변수에 줄 전체("title Welcome to Flash Shell")가 들어가 키 title 까지 섞여 나옵니다. read key value 처럼 변수를 둘 주면 첫 단어 title 은 key 로 떼어내고, 나머지 "Welcome to Flash Shell" 은 중간 공백까지 그대로 마지막 변수 value 에 통째로 담깁니다 — 마지막 변수가 남은 전부를 받는다는 규칙 덕분입니다.', ko: 'read value < message.conf 처럼 변수를 하나만 주면, 그 변수에 줄 전체("title Welcome to Flash Shell")가 들어가 키 title 까지 섞여 나옵니다. read key value 처럼 변수를 둘 주면 첫 단어 title 은 key 로 떼어내고, 나머지 "Welcome to Flash Shell" 은 중간 공백까지 그대로 마지막 변수 value 에 통째로 담깁니다 — 마지막 변수가 남은 전부를 받는다는 규칙 덕분입니다.' },
   },
   {
     id: 'l6-05',
     level: 6,
-    title: '명단으로 폴더 만들기',
+    title: { en: '명단으로 폴더 만들기', ko: '명단으로 폴더 만들기' },
     prompt:
-      'users.txt 에는 사용자 이름이 한 줄에 하나씩 있습니다. 줄이 몇 개인지 몰라도 되도록 while read 로 한 줄씩 읽어, 이름마다 그 이름의 디렉터리를 만들고 그 안에 profile.txt 를 만드세요.',
+      { en: 'users.txt 에는 사용자 이름이 한 줄에 하나씩 있습니다. 줄이 몇 개인지 몰라도 되도록 while read 로 한 줄씩 읽어, 이름마다 그 이름의 디렉터리를 만들고 그 안에 profile.txt 를 만드세요.', ko: 'users.txt 에는 사용자 이름이 한 줄에 하나씩 있습니다. 줄이 몇 개인지 몰라도 되도록 while read 로 한 줄씩 읽어, 이름마다 그 이름의 디렉터리를 만들고 그 안에 profile.txt 를 만드세요.' },
     setup: (fs) => {
       fs.writeFile(`${HOME}/users.txt`, 'alice\nbob\ncarol\n')
     },
     hints: [
-      '줄이 몇 개인지 미리 모른다면, 파일이 끝날 때까지 한 줄씩 반복해서 읽어야 합니다 — while read 입니다.',
-      'while read 변수; do ... done < 파일 형태입니다. 반복마다 변수에 다음 한 줄이 담기고, 읽을 줄이 떨어지면 저절로 멈춥니다.',
-      'while read u; do mkdir "$u"; touch "$u/profile.txt"; done < users.txt',
+      { en: '줄이 몇 개인지 미리 모른다면, 파일이 끝날 때까지 한 줄씩 반복해서 읽어야 합니다 — while read 입니다.', ko: '줄이 몇 개인지 미리 모른다면, 파일이 끝날 때까지 한 줄씩 반복해서 읽어야 합니다 — while read 입니다.' },
+      { en: 'while read 변수; do ... done < 파일 형태입니다. 반복마다 변수에 다음 한 줄이 담기고, 읽을 줄이 떨어지면 저절로 멈춥니다.', ko: 'while read 변수; do ... done < 파일 형태입니다. 반복마다 변수에 다음 한 줄이 담기고, 읽을 줄이 떨어지면 저절로 멈춥니다.' },
+      { en: 'while read u; do mkdir "$u"; touch "$u/profile.txt"; done < users.txt', ko: 'while read u; do mkdir "$u"; touch "$u/profile.txt"; done < users.txt' },
     ],
     check: (ctx) =>
       ctx.fs.exists(`${HOME}/alice/profile.txt`) &&
@@ -105,53 +105,53 @@ export const l6: Problem[] = [
     solution: 'while read u; do mkdir "$u"; touch "$u/profile.txt"; done < users.txt',
     wrongAnswer: 'read u < users.txt; mkdir "$u"; touch "$u/profile.txt"',
     explanation:
-      'read u < users.txt 는 파일의 첫 줄(alice)만 한 번 읽고 끝나므로, bob·carol 의 디렉터리는 만들어지지 않습니다. while read u; do ... done < users.txt 는 파일이 끝날 때까지 매 반복마다 다음 줄을 u 에 담아 같은 작업을 되풀이하므로, 줄이 몇 개든 모든 이름에 대해 디렉터리와 profile.txt 가 만들어집니다.',
+      { en: 'read u < users.txt 는 파일의 첫 줄(alice)만 한 번 읽고 끝나므로, bob·carol 의 디렉터리는 만들어지지 않습니다. while read u; do ... done < users.txt 는 파일이 끝날 때까지 매 반복마다 다음 줄을 u 에 담아 같은 작업을 되풀이하므로, 줄이 몇 개든 모든 이름에 대해 디렉터리와 profile.txt 가 만들어집니다.', ko: 'read u < users.txt 는 파일의 첫 줄(alice)만 한 번 읽고 끝나므로, bob·carol 의 디렉터리는 만들어지지 않습니다. while read u; do ... done < users.txt 는 파일이 끝날 때까지 매 반복마다 다음 줄을 u 에 담아 같은 작업을 되풀이하므로, 줄이 몇 개든 모든 이름에 대해 디렉터리와 profile.txt 가 만들어집니다.' },
   },
   {
     id: 'l6-06',
     level: 6,
-    title: '점검 결과 한 파일로',
+    title: { en: '점검 결과 한 파일로', ko: '점검 결과 한 파일로' },
     prompt:
-      'api, worker, scheduler 세 서비스를 차례로 점검한 결과를 보고서 파일 하나(report.txt)에 모으세요. 각 서비스마다 "이름: ok" 형식으로 한 줄씩, 나온 순서대로 담겨야 합니다. 리다이렉션(>)은 반복마다 걸지 말고, 루프 전체에 딱 한 번만 걸어 전체 출력을 한꺼번에 report.txt 로 보내세요.',
+      { en: 'api, worker, scheduler 세 서비스를 차례로 점검한 결과를 보고서 파일 하나(report.txt)에 모으세요. 각 서비스마다 "이름: ok" 형식으로 한 줄씩, 나온 순서대로 담겨야 합니다. 리다이렉션(>)은 반복마다 걸지 말고, 루프 전체에 딱 한 번만 걸어 전체 출력을 한꺼번에 report.txt 로 보내세요.', ko: 'api, worker, scheduler 세 서비스를 차례로 점검한 결과를 보고서 파일 하나(report.txt)에 모으세요. 각 서비스마다 "이름: ok" 형식으로 한 줄씩, 나온 순서대로 담겨야 합니다. 리다이렉션(>)은 반복마다 걸지 말고, 루프 전체에 딱 한 번만 걸어 전체 출력을 한꺼번에 report.txt 로 보내세요.' },
     setup: () => {},
     hints: [
-      '반복마다 파일로 방향을 돌리면 매번 새로 덮어써 마지막 한 줄만 남습니다 — 방향 전환은 루프가 끝나는 지점에서 한 번이면 됩니다.',
-      'for ...; do ... done 전체를 하나의 명령처럼 보고, 닫는 done 뒤에 > 파일 을 붙이면 루프가 찍는 모든 줄이 그 파일로 모입니다.',
-      'for s in api worker scheduler; do echo "$s: ok"; done > report.txt',
+      { en: '반복마다 파일로 방향을 돌리면 매번 새로 덮어써 마지막 한 줄만 남습니다 — 방향 전환은 루프가 끝나는 지점에서 한 번이면 됩니다.', ko: '반복마다 파일로 방향을 돌리면 매번 새로 덮어써 마지막 한 줄만 남습니다 — 방향 전환은 루프가 끝나는 지점에서 한 번이면 됩니다.' },
+      { en: 'for ...; do ... done 전체를 하나의 명령처럼 보고, 닫는 done 뒤에 > 파일 을 붙이면 루프가 찍는 모든 줄이 그 파일로 모입니다.', ko: 'for ...; do ... done 전체를 하나의 명령처럼 보고, 닫는 done 뒤에 > 파일 을 붙이면 루프가 찍는 모든 줄이 그 파일로 모입니다.' },
+      { en: 'for s in api worker scheduler; do echo "$s: ok"; done > report.txt', ko: 'for s in api worker scheduler; do echo "$s: ok"; done > report.txt' },
     ],
     check: (ctx) => safeRead(ctx.fs, `${HOME}/report.txt`) === 'api: ok\nworker: ok\nscheduler: ok\n',
     solution: 'for s in api worker scheduler; do echo "$s: ok"; done > report.txt',
     wrongAnswer: 'for s in api worker scheduler; do echo "$s: ok" > report.txt; done',
     explanation:
-      'echo "$s: ok" > report.txt 를 루프 안에 두면 반복마다 report.txt 를 새로 덮어써서, 마지막 서비스(scheduler) 한 줄만 남습니다 — > 는 이어붙이지 않고 매번 파일을 비우고 다시 씁니다. 반면 done > report.txt 처럼 루프 전체에 리다이렉션을 한 번만 걸면, 루프가 도는 동안 echo 가 찍는 세 줄이 모두 같은 파일로 흘러들어가 순서대로 쌓입니다.',
+      { en: 'echo "$s: ok" > report.txt 를 루프 안에 두면 반복마다 report.txt 를 새로 덮어써서, 마지막 서비스(scheduler) 한 줄만 남습니다 — > 는 이어붙이지 않고 매번 파일을 비우고 다시 씁니다. 반면 done > report.txt 처럼 루프 전체에 리다이렉션을 한 번만 걸면, 루프가 도는 동안 echo 가 찍는 세 줄이 모두 같은 파일로 흘러들어가 순서대로 쌓입니다.', ko: 'echo "$s: ok" > report.txt 를 루프 안에 두면 반복마다 report.txt 를 새로 덮어써서, 마지막 서비스(scheduler) 한 줄만 남습니다 — > 는 이어붙이지 않고 매번 파일을 비우고 다시 씁니다. 반면 done > report.txt 처럼 루프 전체에 리다이렉션을 한 번만 걸면, 루프가 도는 동안 echo 가 찍는 세 줄이 모두 같은 파일로 흘러들어가 순서대로 쌓입니다.' },
   },
   {
     id: 'l6-07',
     level: 6,
-    title: '측정값 개수와 세 번째 값',
+    title: { en: '측정값 개수와 세 번째 값', ko: '측정값 개수와 세 번째 값' },
     prompt:
-      'readings.txt 한 줄에는 센서 측정값들이 공백으로 구분돼 있습니다(12 19 7 23 15). 이 줄을 배열로 읽어들여, 측정값이 몇 개인지 count.txt 에, 세 번째 측정값(인덱스 2)을 third.txt 에 쓰세요.',
+      { en: 'readings.txt 한 줄에는 센서 측정값들이 공백으로 구분돼 있습니다(12 19 7 23 15). 이 줄을 배열로 읽어들여, 측정값이 몇 개인지 count.txt 에, 세 번째 측정값(인덱스 2)을 third.txt 에 쓰세요.', ko: 'readings.txt 한 줄에는 센서 측정값들이 공백으로 구분돼 있습니다(12 19 7 23 15). 이 줄을 배열로 읽어들여, 측정값이 몇 개인지 count.txt 에, 세 번째 측정값(인덱스 2)을 third.txt 에 쓰세요.' },
     setup: (fs) => {
       fs.writeFile(`${HOME}/readings.txt`, '12 19 7 23 15\n')
     },
     hints: [
-      '한 줄에 여러 값이 공백으로 나열돼 있으면, 하나의 문자열이 아니라 값마다 따로 꺼낼 수 있는 배열로 담아야 개수와 특정 자리를 다룰 수 있습니다.',
-      'read -a 이름 < 파일 로 읽으면 공백으로 나뉜 각 값이 배열의 한 자리씩 들어갑니다. 개수는 ${#이름[@]}, 세 번째 값(0부터 세어 인덱스 2)은 ${이름[2]} 입니다.',
-      'read -a nums < readings.txt; echo "${#nums[@]}" > count.txt; echo "${nums[2]}" > third.txt',
+      { en: '한 줄에 여러 값이 공백으로 나열돼 있으면, 하나의 문자열이 아니라 값마다 따로 꺼낼 수 있는 배열로 담아야 개수와 특정 자리를 다룰 수 있습니다.', ko: '한 줄에 여러 값이 공백으로 나열돼 있으면, 하나의 문자열이 아니라 값마다 따로 꺼낼 수 있는 배열로 담아야 개수와 특정 자리를 다룰 수 있습니다.' },
+      { en: 'read -a 이름 < 파일 로 읽으면 공백으로 나뉜 각 값이 배열의 한 자리씩 들어갑니다. 개수는 ${#이름[@]}, 세 번째 값(0부터 세어 인덱스 2)은 ${이름[2]} 입니다.', ko: 'read -a 이름 < 파일 로 읽으면 공백으로 나뉜 각 값이 배열의 한 자리씩 들어갑니다. 개수는 ${#이름[@]}, 세 번째 값(0부터 세어 인덱스 2)은 ${이름[2]} 입니다.' },
+      { en: 'read -a nums < readings.txt; echo "${#nums[@]}" > count.txt; echo "${nums[2]}" > third.txt', ko: 'read -a nums < readings.txt; echo "${#nums[@]}" > count.txt; echo "${nums[2]}" > third.txt' },
     ],
     check: (ctx) =>
       safeRead(ctx.fs, `${HOME}/count.txt`) === '5\n' && safeRead(ctx.fs, `${HOME}/third.txt`) === '7\n',
     solution: 'read -a nums < readings.txt; echo "${#nums[@]}" > count.txt; echo "${nums[2]}" > third.txt',
     wrongAnswer: 'read nums < readings.txt; echo "${#nums[@]}" > count.txt; echo "${nums[2]}" > third.txt',
     explanation:
-      '-a 없이 read nums 로 읽으면 줄 전체("12 19 7 23 15")가 배열이 아니라 문자열 하나로 nums 에 들어갑니다 — 그러면 ${#nums[@]} 는 원소 하나로 쳐서 1 이 되고, ${nums[2]} 같은 자리 접근은 빈 값이라 count.txt·third.txt 가 모두 틀립니다. read -a nums 로 읽어야 공백으로 나뉜 다섯 값이 각각 배열의 한 자리에 담겨, ${#nums[@]} 로 개수 5 를, ${nums[2]} 로 세 번째 값 7 을 얻습니다.',
+      { en: '-a 없이 read nums 로 읽으면 줄 전체("12 19 7 23 15")가 배열이 아니라 문자열 하나로 nums 에 들어갑니다 — 그러면 ${#nums[@]} 는 원소 하나로 쳐서 1 이 되고, ${nums[2]} 같은 자리 접근은 빈 값이라 count.txt·third.txt 가 모두 틀립니다. read -a nums 로 읽어야 공백으로 나뉜 다섯 값이 각각 배열의 한 자리에 담겨, ${#nums[@]} 로 개수 5 를, ${nums[2]} 로 세 번째 값 7 을 얻습니다.', ko: '-a 없이 read nums 로 읽으면 줄 전체("12 19 7 23 15")가 배열이 아니라 문자열 하나로 nums 에 들어갑니다 — 그러면 ${#nums[@]} 는 원소 하나로 쳐서 1 이 되고, ${nums[2]} 같은 자리 접근은 빈 값이라 count.txt·third.txt 가 모두 틀립니다. read -a nums 로 읽어야 공백으로 나뉜 다섯 값이 각각 배열의 한 자리에 담겨, ${#nums[@]} 로 개수 5 를, ${nums[2]} 로 세 번째 값 7 을 얻습니다.' },
   },
   {
     id: 'l6-08',
     level: 6,
-    title: '설정을 찍어내는 스크립트',
+    title: { en: '설정을 찍어내는 스크립트', ko: '설정을 찍어내는 스크립트' },
     prompt:
-      'provision.sh 는 데이터베이스 설정 파일을 만들어 주는 스크립트입니다. 먼저 cat provision.sh 로 내용을 읽어 어떤 파일에 무엇을 담는지 파악한 뒤 실행하세요. 그런 다음 만들어진 설정 파일에서 포트 번호를 얻어, "db-포트" 형식의 디렉터리를 만드세요(예: 포트가 5432 면 db-5432).',
+      { en: 'provision.sh 는 데이터베이스 설정 파일을 만들어 주는 스크립트입니다. 먼저 cat provision.sh 로 내용을 읽어 어떤 파일에 무엇을 담는지 파악한 뒤 실행하세요. 그런 다음 만들어진 설정 파일에서 포트 번호를 얻어, "db-포트" 형식의 디렉터리를 만드세요(예: 포트가 5432 면 db-5432).', ko: 'provision.sh 는 데이터베이스 설정 파일을 만들어 주는 스크립트입니다. 먼저 cat provision.sh 로 내용을 읽어 어떤 파일에 무엇을 담는지 파악한 뒤 실행하세요. 그런 다음 만들어진 설정 파일에서 포트 번호를 얻어, "db-포트" 형식의 디렉터리를 만드세요(예: 포트가 5432 면 db-5432).' },
     setup: (fs) => {
       fs.writeFile(
         `${HOME}/provision.sh`,
@@ -160,9 +160,9 @@ export const l6: Problem[] = [
       )
     },
     hints: [
-      '스크립트를 실행하기 전에 cat provision.sh 로 안을 들여다보면, 무슨 파일(db.conf)을 어떤 내용으로 만드는지 알 수 있습니다 — 특히 포트 값이 몇인지 확인해 두세요.',
-      '실행은 ./provision.sh 입니다. 만들어진 db.conf 는 "키=값" 형식이라 source db.conf 로 불러오면 port 변수를 그대로 쓸 수 있습니다.',
-      './provision.sh; source db.conf; mkdir "db-$port"',
+      { en: '스크립트를 실행하기 전에 cat provision.sh 로 안을 들여다보면, 무슨 파일(db.conf)을 어떤 내용으로 만드는지 알 수 있습니다 — 특히 포트 값이 몇인지 확인해 두세요.', ko: '스크립트를 실행하기 전에 cat provision.sh 로 안을 들여다보면, 무슨 파일(db.conf)을 어떤 내용으로 만드는지 알 수 있습니다 — 특히 포트 값이 몇인지 확인해 두세요.' },
+      { en: '실행은 ./provision.sh 입니다. 만들어진 db.conf 는 "키=값" 형식이라 source db.conf 로 불러오면 port 변수를 그대로 쓸 수 있습니다.', ko: '실행은 ./provision.sh 입니다. 만들어진 db.conf 는 "키=값" 형식이라 source db.conf 로 불러오면 port 변수를 그대로 쓸 수 있습니다.' },
+      { en: './provision.sh; source db.conf; mkdir "db-$port"', ko: './provision.sh; source db.conf; mkdir "db-$port"' },
     ],
     check: (ctx) =>
       safeRead(ctx.fs, `${HOME}/db.conf`) === 'host=localhost\nport=5432\ndbname=orders\n' &&
@@ -170,14 +170,14 @@ export const l6: Problem[] = [
     solution: './provision.sh\nsource db.conf; mkdir "db-$port"',
     wrongAnswer: './provision.sh',
     explanation:
-      './provision.sh 만 실행하면 db.conf 는 만들어지지만, 거기 적힌 포트로 디렉터리를 만드는 마무리 작업은 하지 않아 db-5432 가 생기지 않습니다. 스크립트 본문의 cat > db.conf <<EOF ... EOF 는 here-document 로 여러 줄을 그대로 db.conf 에 써넣는 부분입니다 — 실행하면 port=5432 가 담기고, source db.conf 로 그 값을 불러와 mkdir "db-$port" 하면 db-5432 가 만들어집니다.',
+      { en: './provision.sh 만 실행하면 db.conf 는 만들어지지만, 거기 적힌 포트로 디렉터리를 만드는 마무리 작업은 하지 않아 db-5432 가 생기지 않습니다. 스크립트 본문의 cat > db.conf <<EOF ... EOF 는 here-document 로 여러 줄을 그대로 db.conf 에 써넣는 부분입니다 — 실행하면 port=5432 가 담기고, source db.conf 로 그 값을 불러와 mkdir "db-$port" 하면 db-5432 가 만들어집니다.', ko: './provision.sh 만 실행하면 db.conf 는 만들어지지만, 거기 적힌 포트로 디렉터리를 만드는 마무리 작업은 하지 않아 db-5432 가 생기지 않습니다. 스크립트 본문의 cat > db.conf <<EOF ... EOF 는 here-document 로 여러 줄을 그대로 db.conf 에 써넣는 부분입니다 — 실행하면 port=5432 가 담기고, source db.conf 로 그 값을 불러와 mkdir "db-$port" 하면 db-5432 가 만들어집니다.' },
   },
   {
     id: 'l6-09',
     level: 6,
-    title: '환경마다 설정 파일',
+    title: { en: '환경마다 설정 파일', ko: '환경마다 설정 파일' },
     prompt:
-      'mkconf.sh 는 인자로 받은 환경 이름마다 "이름.conf" 파일을 만들고 그 안에 "environment=이름" 한 줄을 쓰는 스크립트입니다 — 이름을 여러 개 한꺼번에 받아 하나씩 처리합니다. dev, stage, prod 세 환경에 대해 한 번의 실행으로 세 파일을 모두 만드세요.',
+      { en: 'mkconf.sh 는 인자로 받은 환경 이름마다 "이름.conf" 파일을 만들고 그 안에 "environment=이름" 한 줄을 쓰는 스크립트입니다 — 이름을 여러 개 한꺼번에 받아 하나씩 처리합니다. dev, stage, prod 세 환경에 대해 한 번의 실행으로 세 파일을 모두 만드세요.', ko: 'mkconf.sh 는 인자로 받은 환경 이름마다 "이름.conf" 파일을 만들고 그 안에 "environment=이름" 한 줄을 쓰는 스크립트입니다 — 이름을 여러 개 한꺼번에 받아 하나씩 처리합니다. dev, stage, prod 세 환경에 대해 한 번의 실행으로 세 파일을 모두 만드세요.' },
     setup: (fs) => {
       fs.writeFile(
         `${HOME}/mkconf.sh`,
@@ -186,9 +186,9 @@ export const l6: Problem[] = [
       )
     },
     hints: [
-      '스크립트가 이름을 여러 개 받아 하나씩 처리하므로, 이름들을 공백으로 띄워 각각 따로 된 인자로 넘겨야 합니다.',
-      './mkconf.sh 뒤에 세 이름을 각각 별개의 인자로 나열하세요 — 따옴표로 묶어 한 덩어리로 만들면 안 됩니다.',
-      './mkconf.sh dev stage prod',
+      { en: '스크립트가 이름을 여러 개 받아 하나씩 처리하므로, 이름들을 공백으로 띄워 각각 따로 된 인자로 넘겨야 합니다.', ko: '스크립트가 이름을 여러 개 받아 하나씩 처리하므로, 이름들을 공백으로 띄워 각각 따로 된 인자로 넘겨야 합니다.' },
+      { en: './mkconf.sh 뒤에 세 이름을 각각 별개의 인자로 나열하세요 — 따옴표로 묶어 한 덩어리로 만들면 안 됩니다.', ko: './mkconf.sh 뒤에 세 이름을 각각 별개의 인자로 나열하세요 — 따옴표로 묶어 한 덩어리로 만들면 안 됩니다.' },
+      { en: './mkconf.sh dev stage prod', ko: './mkconf.sh dev stage prod' },
     ],
     check: (ctx) =>
       safeRead(ctx.fs, `${HOME}/dev.conf`) === 'environment=dev\n' &&
@@ -197,19 +197,19 @@ export const l6: Problem[] = [
     solution: './mkconf.sh dev stage prod',
     wrongAnswer: './mkconf.sh "dev stage prod"',
     explanation:
-      './mkconf.sh "dev stage prod" 처럼 따옴표로 묶으면 세 이름이 공백째로 인자 하나가 되어, 스크립트의 for ... in "$@" 루프가 한 번만 돌며 "dev stage prod.conf" 라는 파일 하나만 만듭니다 — dev.conf·stage.conf·prod.conf 는 생기지 않습니다. 따옴표 없이 ./mkconf.sh dev stage prod 로 넘겨야 "$@" 가 세 인자로 나뉘어, 이름마다 반복하며 세 설정 파일을 각각 만듭니다.',
+      { en: './mkconf.sh "dev stage prod" 처럼 따옴표로 묶으면 세 이름이 공백째로 인자 하나가 되어, 스크립트의 for ... in "$@" 루프가 한 번만 돌며 "dev stage prod.conf" 라는 파일 하나만 만듭니다 — dev.conf·stage.conf·prod.conf 는 생기지 않습니다. 따옴표 없이 ./mkconf.sh dev stage prod 로 넘겨야 "$@" 가 세 인자로 나뉘어, 이름마다 반복하며 세 설정 파일을 각각 만듭니다.', ko: './mkconf.sh "dev stage prod" 처럼 따옴표로 묶으면 세 이름이 공백째로 인자 하나가 되어, 스크립트의 for ... in "$@" 루프가 한 번만 돌며 "dev stage prod.conf" 라는 파일 하나만 만듭니다 — dev.conf·stage.conf·prod.conf 는 생기지 않습니다. 따옴표 없이 ./mkconf.sh dev stage prod 로 넘겨야 "$@" 가 세 인자로 나뉘어, 이름마다 반복하며 세 설정 파일을 각각 만듭니다.' },
   },
   {
     id: 'l6-10',
     level: 6,
-    title: '직접 짜는 작업 스크립트',
+    title: { en: '직접 짜는 작업 스크립트', ko: '직접 짜는 작업 스크립트' },
     prompt:
-      '반복 작업을 스크립트로 남기세요. echo 로 명령을 job.sh 파일에 써넣어, 실행하면 file1, file2, file3 세 파일을 만드는 스크립트를 직접 작성하세요. 그리고 그 스크립트를 실행해 세 파일을 실제로 만드세요.',
+      { en: '반복 작업을 스크립트로 남기세요. echo 로 명령을 job.sh 파일에 써넣어, 실행하면 file1, file2, file3 세 파일을 만드는 스크립트를 직접 작성하세요. 그리고 그 스크립트를 실행해 세 파일을 실제로 만드세요.', ko: '반복 작업을 스크립트로 남기세요. echo 로 명령을 job.sh 파일에 써넣어, 실행하면 file1, file2, file3 세 파일을 만드는 스크립트를 직접 작성하세요. 그리고 그 스크립트를 실행해 세 파일을 실제로 만드세요.' },
     setup: () => {},
     hints: [
-      '명령을 작은따옴표로 통째로 감싸 echo 로 파일에 쓰면, 안의 $변수나 세미콜론이 지금 실행되지 않고 글자 그대로 파일에 저장됩니다 — 실행은 나중에 그 파일을 돌릴 때 일어납니다.',
-      "echo '명령들' > job.sh 로 스크립트를 만든 뒤, 방금 만든 파일엔 실행 권한이 없으니 source job.sh 로 지금 셸에서 불러 실행합니다.",
-      "echo 'for n in 1 2 3; do touch file$n; done' > job.sh; source job.sh",
+      { en: '명령을 작은따옴표로 통째로 감싸 echo 로 파일에 쓰면, 안의 $변수나 세미콜론이 지금 실행되지 않고 글자 그대로 파일에 저장됩니다 — 실행은 나중에 그 파일을 돌릴 때 일어납니다.', ko: '명령을 작은따옴표로 통째로 감싸 echo 로 파일에 쓰면, 안의 $변수나 세미콜론이 지금 실행되지 않고 글자 그대로 파일에 저장됩니다 — 실행은 나중에 그 파일을 돌릴 때 일어납니다.' },
+      { en: "echo '명령들' > job.sh 로 스크립트를 만든 뒤, 방금 만든 파일엔 실행 권한이 없으니 source job.sh 로 지금 셸에서 불러 실행합니다.", ko: "echo '명령들' > job.sh 로 스크립트를 만든 뒤, 방금 만든 파일엔 실행 권한이 없으니 source job.sh 로 지금 셸에서 불러 실행합니다." },
+      { en: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh; source job.sh", ko: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh; source job.sh" },
     ],
     // job.sh 존재까지 요구한다 — 이 문제의 핵심이 "스크립트를 작성해서" 만드는 것이라,
     // touch file1 file2 file3 처럼 스크립트 없이 결과만 만드는 우회를 막는다. 내용은
@@ -220,6 +220,6 @@ export const l6: Problem[] = [
     solution: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh\nsource job.sh",
     wrongAnswer: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh",
     explanation:
-      "echo 'for n in 1 2 3; do touch file$n; done' > job.sh 는 명령을 job.sh 에 글자 그대로 저장할 뿐, 아직 실행하지는 않습니다 — 그래서 이 줄만으로는 file1~file3 가 생기지 않습니다. 작은따옴표로 감쌌기 때문에 $n 이나 세미콜론이 지금 해석되지 않고 그대로 파일에 담기고, 이어서 source job.sh 로 그 파일을 불러 실행해야 비로소 루프가 돌아 세 파일이 만들어집니다.",
+      { en: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh 는 명령을 job.sh 에 글자 그대로 저장할 뿐, 아직 실행하지는 않습니다 — 그래서 이 줄만으로는 file1~file3 가 생기지 않습니다. 작은따옴표로 감쌌기 때문에 $n 이나 세미콜론이 지금 해석되지 않고 그대로 파일에 담기고, 이어서 source job.sh 로 그 파일을 불러 실행해야 비로소 루프가 돌아 세 파일이 만들어집니다.", ko: "echo 'for n in 1 2 3; do touch file$n; done' > job.sh 는 명령을 job.sh 에 글자 그대로 저장할 뿐, 아직 실행하지는 않습니다 — 그래서 이 줄만으로는 file1~file3 가 생기지 않습니다. 작은따옴표로 감쌌기 때문에 $n 이나 세미콜론이 지금 해석되지 않고 그대로 파일에 담기고, 이어서 source job.sh 로 그 파일을 불러 실행해야 비로소 루프가 돌아 세 파일이 만들어집니다." },
   },
 ]

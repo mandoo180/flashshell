@@ -17,8 +17,8 @@ import type { Problem, Level } from './types'
 function fakeProblems(): Problem[] {
   const make = (level: Level, n: number): Problem => ({
     id: `l${level}-${String(n).padStart(2, '0')}`,
-    level, title: '', prompt: '', setup: () => {}, hints: [],
-    check: () => false, solution: '', wrongAnswer: '', explanation: '',
+    level, title: { en: '', ko: '' }, prompt: { en: '', ko: '' }, setup: () => {}, hints: [],
+    check: () => false, solution: '', wrongAnswer: '', explanation: { en: '', ko: '' },
   })
   return [1, 2, 3, 4, 5].flatMap((level) =>
     Array.from({ length: 10 }, (_, i) => make(level as Level, i + 1)),
