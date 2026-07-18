@@ -27,3 +27,7 @@ npm run build      # static build (dist/)
 ```
 
 Stack: Vite · React · TypeScript · Zustand · Vitest · Playwright.
+
+---
+
+An app by [Pengling](https://anonpengling.org) — an indie studio building daily learning games.

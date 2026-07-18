@@ -27,3 +27,7 @@ npm run build      # 정적 빌드 (dist/)
 ```
 
 스택: Vite · React · TypeScript · Zustand · Vitest · Playwright.
+
+---
+
+인디 스튜디오 [Pengling](https://anonpengling.org)의 앱입니다 — 매일 한 판의 학습 게임.
