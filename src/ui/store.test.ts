@@ -355,3 +355,26 @@ describe('setLang', () => {
     expect(useGame.getState().lang).toBe('en')
   })
 })
+
+describe('실행 한도 메시지 로컬라이즈 (스텝 예산 경로)', () => {
+  // 엔진(interpreter)과 워커 데드라인은 언어를 모른 채 한국어 상수 하나를 stderr 전체로
+  // 낸다 — 스토어가 렌더 직전에 현재 언어로 치환한다. 이 테스트는 인프로세스 세션으로
+  // 실제 스텝 예산 소진을 일으켜 치환 경로 전체(엔진 상수 == UI 미러 상수 드리프트 포함)를
+  // 검증한다: 엔진 문자열이 바뀌면 en 케이스가 한국어를 렌더해 실패한다.
+  it('lang=en 이면 폭주 명령의 한도 메시지가 영어로 렌더된다', async () => {
+    useGame.setState({ lang: 'en' })
+    await get().startProblem('l1-01')
+    await get().submit('while true; do :; done')
+    const text = get().lines.map((l) => l.text).join('\n')
+    expect(text).toContain('execution limit exceeded')
+    expect(text).not.toContain('실행 한도 초과')
+  })
+
+  it('lang=ko 면 기존 한국어 메시지 그대로다', async () => {
+    useGame.setState({ lang: 'ko' })
+    await get().startProblem('l1-01')
+    await get().submit('while true; do :; done')
+    const text = get().lines.map((l) => l.text).join('\n')
+    expect(text).toContain('실행 한도 초과')
+  })
+})

@@ -33,6 +33,14 @@ export function applyDocumentLang(lang: Lang): void {
 }
 
 /**
+ * 실행 한도 초과 시 엔진(interpreter.ts 스텝 예산)과 워커 데드라인(worker-session.ts)이
+ * stderr 전체로 내는 상수의 UI측 미러. 엔진은 순수 계층이라 언어를 모른다 — 스토어가
+ * 렌더 직전에 이 마커를 정확 일치로 찾아 현재 언어(STRINGS.execLimit)로 치환한다.
+ * 엔진 쪽 문자열이 바뀌면 store.test 의 en 케이스가 한국어를 렌더해 실패한다(드리프트 가드).
+ */
+export const EXEC_LIMIT_MARKER = '^C  flashshell: 실행 한도 초과 — 무한 루프인가요?\n'
+
+/**
  * UI 크롬 사전. 문제 텍스트는 여기 넣지 않는다(문제 정의에 병기).
  * HINT/RESET/SOLVED/NEXT ▸ 등 테마 라벨은 양 언어 공통 영어라 사전 밖이다.
  */
@@ -49,6 +57,10 @@ export const STRINGS = {
   explanationDialog: { en: 'Explanation', ko: '해설' },
   sheetSolution: { en: 'SOLUTION', ko: '모범답안' },
   sheetExplanation: { en: 'EXPLANATION', ko: '해설' },
+  execLimit: {
+    en: '^C  flashshell: execution limit exceeded — infinite loop?\n',
+    ko: EXEC_LIMIT_MARKER,
+  },
 } satisfies Record<string, LocalizedText>
 
 export type StringKey = keyof typeof STRINGS

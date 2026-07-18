@@ -1,5 +1,6 @@
 import type { ShellSession, StateSnapshot, ExecResponse } from './session'
 import { PLAYER_HOME } from '../game/harness'
+import { EXEC_LIMIT_MARKER } from './i18n'
 
 /** exec 하나가 이 시간(ms)을 넘기면 워커를 죽이고 리플레이로 복원한다. 게임 명령은
  * 1ms 미만, grep ReDoS 는 수 초 — 넉넉히 가른다. */
@@ -7,7 +8,8 @@ export const EXEC_DEADLINE_MS = 2000
 
 const TIMEOUT_RESPONSE = (snapshot: StateSnapshot): ExecResponse => ({
   stdout: '',
-  stderr: '^C  flashshell: 실행 한도 초과 — 무한 루프인가요?\n',
+  // 엔진의 스텝-예산 메시지와 같은 상수를 낸다 — 스토어가 렌더 시점에 언어별로 치환한다.
+  stderr: EXEC_LIMIT_MARKER,
   exitCode: 130,
   snapshot,
   solved: false,

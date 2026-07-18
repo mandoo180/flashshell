@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   detectLang, loadLang, saveLang, applyDocumentLang,
-  LANG_STORAGE_KEY, t, lockedStatus, STRINGS,
+  LANG_STORAGE_KEY, t, lockedStatus, STRINGS, EXEC_LIMIT_MARKER,
 } from './i18n'
 
 describe('detectLang: 저장값 > 브라우저 감지 > en 기본', () => {
@@ -51,5 +51,12 @@ describe('applyDocumentLang / t / lockedStatus', () => {
       expect(tx.en.trim(), `${key}.en`).not.toBe('')
       expect(tx.ko.trim(), `${key}.ko`).not.toBe('')
     }
+  })
+})
+
+describe('EXEC_LIMIT_MARKER', () => {
+  it('ko 사전 값과 정확히 일치한다 (엔진이 내는 상수의 UI측 미러)', () => {
+    expect(STRINGS.execLimit.ko).toBe(EXEC_LIMIT_MARKER)
+    expect(EXEC_LIMIT_MARKER.endsWith('\n')).toBe(true)
   })
 })

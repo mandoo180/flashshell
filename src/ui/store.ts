@@ -10,7 +10,7 @@ import type { Lang, Level, Problem } from '../game/types'
 import type { TermLine } from './Terminal'
 import type { ShellSession } from './session'
 import { WorkerShellSession } from './worker-session'
-import { loadLang, saveLang, applyDocumentLang } from './i18n'
+import { loadLang, saveLang, applyDocumentLang, t, EXEC_LIMIT_MARKER } from './i18n'
 
 export type Signal = 'idle' | 'wrong' | 'solved'
 
@@ -164,8 +164,13 @@ export const useGame = create<GameStore>((set, get) => ({
       const response = await session.exec(trimmed)
       const history = [...get().history, trimmed]
 
+      // 실행 한도 메시지는 엔진(스텝 예산)/워커(월클록 데드라인)가 언어를 모른 채
+      // 한국어 상수를 stderr 전체로 낸다(둘 다 stdout ''/exit 130 전체 치환) —
+      // 렌더 직전 이 seam 에서만 현재 언어로 바꾼다. 정확 일치라 부분 출력과 안 섞인다.
+      const stderr = response.stderr === EXEC_LIMIT_MARKER ? t(get().lang, 'execLimit') : response.stderr
+
       set((s) => ({
-        lines: [...s.lines, echoed, ...toLines(response.stdout, 'green'), ...toLines(response.stderr, 'amber')],
+        lines: [...s.lines, echoed, ...toLines(response.stdout, 'green'), ...toLines(stderr, 'amber')],
         history,
         cwd: response.snapshot.cwd,
         cwdEntries: response.snapshot.cwdEntries,
